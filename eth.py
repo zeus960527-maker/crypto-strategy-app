@@ -73,7 +73,7 @@ DB_HOST = "aws-0-ap-northeast-1.pooler.supabase.com"
 DB_PORT = "5432"
 DB_NAME = "postgres"
 
-@st.cache_data(ttl=10)
+@st.cache_data(ttl=2)  # 快取設為 2 秒，確保背景寫入新 K 線時能立刻讀取
 def load_historical_data(table_name, symbol_name):
     """從 Supabase (PostgreSQL) 讀取 K 線資料，並精準解析時間戳記轉換為台灣時間 (UTC+8)"""
     try:
@@ -150,7 +150,7 @@ if st.session_state.is_searched:
     df_initial = load_historical_data(target_table, symbol_name)
     
     if not df_initial.empty:
-        c1, c2, c3, c4 = st.columns([2.0, 1.8, 1.2, 1.0])
+        c1, c2, c3 = st.columns([2.5, 2, 1.5])
         with c1:
             timeframes = list(df_initial['timeframe'].unique())
             selected_tf = st.radio("時間週期 (小波段/大波段)", timeframes, horizontal=True, key="timeframe_select")
@@ -160,11 +160,6 @@ if st.session_state.is_searched:
             st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
             auto_scroll = st.toggle("📍 跟隨最新價", value=st.session_state.auto_scroll, key="auto_scroll_toggle")
             st.session_state.auto_scroll = auto_scroll
-        with c4:
-            st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
-            if st.button("🔄 立即同步", use_container_width=True):
-                st.cache_data.clear()
-                st.rerun()
         
         volume_ratio = 1.0 - kline_ratio
         
@@ -338,7 +333,8 @@ if st.session_state.is_searched:
                     </div>
                     """, unsafe_allow_html=True)
             
-            # 🎯 前端無感自動重新整理計時器（每 3 秒背景觸發一次網頁重新載入，且不閃爍、不變淡）
+            # 🎯 核心自動更新：透過前端 JS 每 3 秒在背景靜默重新整理頁面
+            # 搭配上方 CSS 設定（opacity: 1），重新整理時絕對不會畫面變淡、不會發白、零閃爍
             components.html("""
                 <script>
                     setTimeout(() => {
@@ -355,4 +351,4 @@ if st.session_state.is_searched:
 elif st.session_state.search_query != "":
     st.warning(f"找不到與「{st.session_state.search_query}」相關的圖表，請嘗試輸入 **BTC** 或 **ETH**。")
 else:
-    st.info("💡 請在上方查詢欄輸入 **BTC** 或 **ETH** 並按下 **Enter** 顯示圖表。")
+    st.info("💡 請在上方查詢欄輸入 **BTC** 或 **ETH** 與按下 **Enter** 顯示圖表。")
