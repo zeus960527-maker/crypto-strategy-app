@@ -283,7 +283,7 @@ if st.session_state.is_searched:
             fig.update_layout(
                 template="plotly_dark", paper_bgcolor="#0b0e11", plot_bgcolor="#0b0e11", hovermode="closest",
                 xaxis_rangeslider_visible=False, dragmode='pan', height=820, bargap=0.15, showlegend=False,
-                margin=dict(l=10, r=85, t=25, b=30), uirevision="constant_lock_state"  # 👈 固定 uirevision 防止畫面閃爍與視角重置
+                margin=dict(l=10, r=85, t=25, b=30), uirevision="constant_lock_state"
             )
             if auto_scroll:
                 fig.update_layout(xaxis=dict(range=[start_time, end_time], autorange=False))
@@ -321,7 +321,7 @@ if st.session_state.is_searched:
                     </div>
                     """, unsafe_allow_html=True)
         else:
-        v    st.warning("此週期目前尚無資料。")
+            st.warning("此週期目前尚無資料。")
     else:
         st.warning("Supabase 資料庫中目前尚無資料。")
 
