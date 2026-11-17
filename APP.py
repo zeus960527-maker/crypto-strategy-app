@@ -11,7 +11,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 # 頁面基本設定
-st.set_page_config(page_title="加密貨幣極速突破策略", layout="wide")
+st.set_page_config(page_title="加密貨幣超精準防假突破策略", layout="wide")
 
 # 注入 OKX 專業暗色系樣式、介面微調與十字游標設定
 st.markdown("""
@@ -40,7 +40,7 @@ if "last_notified_times" not in st.session_state:
     st.session_state.last_notified_times = {}  # 記錄各幣種、週期與多空方向上次推送到 Discord 的時間
 
 # ==================== 1. 頂部標題與搜尋表單 ====================
-st.title("加密貨幣分析")
+st.title("加密貨幣分析 - 動態趨勢突破 + 防假突破智慧風控系統")
 
 with st.form(key="search_form"):
     col1, col2 = st.columns([4, 1])
@@ -135,8 +135,8 @@ def get_htf_trend_dataframe(df_all, current_tf):
     
     return df_htf[['open_time', 'HTF_Trend', 'HTF_Name']]
 
-def calculate_trendline_channel(df, window=20, num_dev=1.6):
-    """計算極速動態線性回歸趨勢線與上下通道（將視窗縮短至 20、標準差 1.6，大幅減少延遲）"""
+def calculate_trendline_channel(df, window=35, num_dev=2.0):
+    """計算更穩健的動態線性回歸趨勢線與通道（微調寬度以過濾雜訊）"""
     close = df['close_price'].values
     n = len(close)
     mid = np.zeros(n)
@@ -193,9 +193,10 @@ def global_background_signal_scanner():
 
                 df_m_tf['EMA_21'] = df_m_tf['close_price'].ewm(span=21, adjust=False).mean()
                 df_m_tf['EMA_50'] = df_m_tf['close_price'].ewm(span=50, adjust=False).mean()
+                df_m_tf['EMA_100'] = df_m_tf['close_price'].ewm(span=100, adjust=False).mean()
                 
-                # 採用極速動態通道（window=20）
-                df_m_tf = calculate_trendline_channel(df_m_tf, window=20, num_dev=1.6)
+                df_m_tf['Vol_MA20'] = df_m_tf['volume'].rolling(window=20).mean()
+                df_m_tf = calculate_trendline_channel(df_m_tf, window=35, num_dev=2.0)
                 
                 delta = df_m_tf['close_price'].diff()
                 gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
@@ -209,19 +210,22 @@ def global_background_signal_scanner():
                 tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
                 df_m_tf['ATR'] = tr.rolling(window=14).mean()
                 
-                # 🎯【極速超前突破訊號】：只要價格觸及或超越通道線，且短均向上/向下，即刻標出
+                # 🎯【防假突破精準過濾條件】
+                # 1. 收盤價必須實體突破通道
+                # 2. 必須帶有基本量能支撐 (volume > Vol_MA20 * 1.1)
+                # 3. 均線與 RSI 形成動能共振，避免在盤整區亂跳
                 df_m_tf['Long_Signal'] = (
-                    (df_m_tf['close_price'] >= df_m_tf['Trend_Resistance']) & 
-                    (df_m_tf['close_price'] > df_m_tf['open_price']) &  # 當根 K 線必須是紅K（實體向上）
-                    (df_m_tf['EMA_21'] >= df_m_tf['EMA_50']) &
-                    (df_m_tf['RSI'] >= 40) & (df_m_tf['RSI'] <= 85)
+                    (df_m_tf['close_price'] > df_m_tf['Trend_Resistance']) & 
+                    (df_m_tf['volume'] > df_m_tf['Vol_MA20'] * 1.1) & 
+                    (df_m_tf['EMA_21'] > df_m_tf['EMA_50']) &
+                    (df_m_tf['RSI'] >= 52) & (df_m_tf['RSI'] <= 78)
                 )
                 
                 df_m_tf['Short_Signal'] = (
-                    (df_m_tf['close_price'] <= df_m_tf['Trend_Support']) & 
-                    (df_m_tf['close_price'] < df_m_tf['open_price']) &  # 當根 K 線必須是黑K（實體向下）
-                    (df_m_tf['EMA_21'] <= df_m_tf['EMA_50']) &
-                    (df_m_tf['RSI'] >= 15) & (df_m_tf['RSI'] <= 60)
+                    (df_m_tf['close_price'] < df_m_tf['Trend_Support']) & 
+                    (df_m_tf['volume'] > df_m_tf['Vol_MA20'] * 1.1) & 
+                    (df_m_tf['EMA_21'] < df_m_tf['EMA_50']) &
+                    (df_m_tf['RSI'] >= 22) & (df_m_tf['RSI'] <= 48)
                 )
 
                 # --- 檢查做多訊號 ---
@@ -237,10 +241,10 @@ def global_background_signal_scanner():
                         st.session_state.last_notified_times[long_key] = long_time
                         entry = latest_long['close_price']
                         atr_val = latest_long['ATR'] if not pd.isna(latest_long['ATR']) else entry * 0.015
-                        sl = entry - (atr_val * 1.5)
-                        tp = entry + (atr_val * 1.5 * 2.5)
+                        sl = entry - (atr_val * 1.8)  # 給予適當緩衝空間防插針
+                        tp = entry + (atr_val * 1.8 * 2.5)
                         msg = (
-                            f"🚨 **【Supabase策略 - 極速做多 LONG】** 🚨\n"
+                            f"🚨 **【Supabase策略 - 精準做多 LONG】** 🚨\n"
                             f"📌 **標的:** {m_pair} ({m_tf})\n"
                             f"🕒 **時間:** `{long_time.strftime('%Y-%m-%d %H:%M:%S')}`\n"
                             f"🟢 **精準進場價:** `{entry:,.2f}`\n"
@@ -262,10 +266,10 @@ def global_background_signal_scanner():
                         st.session_state.last_notified_times[short_key] = short_time
                         entry = latest_short['close_price']
                         atr_val = latest_short['ATR'] if not pd.isna(latest_short['ATR']) else entry * 0.015
-                        sl = entry + (atr_val * 1.5)
-                        tp = entry - (atr_val * 1.5 * 2.5)
+                        sl = entry + (atr_val * 1.8)  # 給予適當緩衝空間防插針
+                        tp = entry - (atr_val * 1.8 * 2.5)
                         msg = (
-                            f"🚨 **【Supabase策略 - 極速做空 SHORT】** 🚨\n"
+                            f"🚨 **【Supabase策略 - 精準做空 SHORT】** 🚨\n"
                             f"📌 **標的:** {m_pair} ({m_tf})\n"
                             f"🕒 **時間:** `{short_time.strftime('%Y-%m-%d %H:%M:%S')}`\n"
                             f"🔴 **精準進場價:** `{entry:,.2f}`\n"
@@ -327,8 +331,10 @@ if st.session_state.is_searched:
 
                 df_tf['EMA_21'] = df_tf['close_price'].ewm(span=21, adjust=False).mean()
                 df_tf['EMA_50'] = df_tf['close_price'].ewm(span=50, adjust=False).mean()
+                df_tf['EMA_100'] = df_tf['close_price'].ewm(span=100, adjust=False).mean()
 
-                df_tf = calculate_trendline_channel(df_tf, window=20, num_dev=1.6)
+                df_tf['Vol_MA20'] = df_tf['volume'].rolling(window=20).mean()
+                df_tf = calculate_trendline_channel(df_tf, window=35, num_dev=2.0)
                 
                 delta = df_tf['close_price'].diff()
                 gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
@@ -342,18 +348,18 @@ if st.session_state.is_searched:
                 tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
                 df_tf['ATR'] = tr.rolling(window=14).mean()
 
-                # 🎯【圖表端同步極速提前捕捉條件】
+                # 🎯【圖表端同步精準防假突破條件】
                 df_tf['Long_Signal'] = (
-                    (df_tf['close_price'] >= df_tf['Trend_Resistance']) & 
-                    (df_tf['close_price'] > df_tf['open_price']) & 
-                    (df_tf['EMA_21'] >= df_tf['EMA_50']) & 
-                    (df_tf['RSI'] >= 40) & (df_tf['RSI'] <= 85)
+                    (df_tf['close_price'] > df_tf['Trend_Resistance']) & 
+                    (df_tf['volume'] > df_tf['Vol_MA20'] * 1.1) & 
+                    (df_tf['EMA_21'] > df_tf['EMA_50']) &
+                    (df_tf['RSI'] >= 52) & (df_tf['RSI'] <= 78)
                 )
                 df_tf['Short_Signal'] = (
-                    (df_tf['close_price'] <= df_tf['Trend_Support']) & 
-                    (df_tf['close_price'] < df_tf['open_price']) & 
-                    (df_tf['EMA_21'] <= df_tf['EMA_50']) & 
-                    (df_tf['RSI'] >= 15) & (df_tf['RSI'] <= 60)
+                    (df_tf['close_price'] < df_tf['Trend_Support']) & 
+                    (df_tf['volume'] > df_tf['Vol_MA20'] * 1.1) & 
+                    (df_tf['EMA_21'] < df_tf['EMA_50']) &
+                    (df_tf['RSI'] >= 22) & (df_tf['RSI'] <= 48)
                 )
 
                 display_count = 90 if sym == 'ETH' else 120
@@ -384,6 +390,7 @@ if st.session_state.is_searched:
                 
                 fig.add_trace(go.Scatter(x=df_tf['open_time'], y=df_tf['EMA_21'], mode='lines', name='EMA21', line=dict(color='#2962FF', width=1.2)), row=1, col=1)
                 fig.add_trace(go.Scatter(x=df_tf['open_time'], y=df_tf['EMA_50'], mode='lines', name='EMA50', line=dict(color='#FFB300', width=1.2)), row=1, col=1)
+                fig.add_trace(go.Scatter(x=df_tf['open_time'], y=df_tf['EMA_100'], mode='lines', name='EMA100', line=dict(color='#AB47BC', width=1.2)), row=1, col=1)
 
                 fig.add_trace(go.Scatter(x=df_tf['open_time'], y=df_tf['Trend_Resistance'], mode='lines', name='壓力趨勢線', line=dict(color='rgba(246, 70, 93, 0.7)', width=1.5, dash='dash')), row=1, col=1)
                 fig.add_trace(go.Scatter(x=df_tf['open_time'], y=df_tf['Trend_Support'], mode='lines', name='支撐趨勢線', line=dict(color='rgba(14, 203, 129, 0.7)', width=1.5, dash='dash'), fill='tonexty', fillcolor='rgba(126, 87, 194, 0.02)'), row=1, col=1)
@@ -407,10 +414,10 @@ if st.session_state.is_searched:
 
                 if df_tf.iloc[-1]['Long_Signal']:
                     active_signal_type = 'LONG'
-                    active_entry, active_sl, active_tp = latest_close, latest_close - (latest_atr * 1.5), latest_close + (latest_atr * 1.5 * 2.5)
+                    active_entry, active_sl, active_tp = latest_close, latest_close - (latest_atr * 1.8), latest_close + (latest_atr * 1.8 * 2.5)
                 elif df_tf.iloc[-1]['Short_Signal']:
                     active_signal_type = 'SHORT'
-                    active_entry, active_sl, active_tp = latest_close, latest_close + (latest_atr * 1.5), latest_close - (latest_atr * 1.5 * 2.5)
+                    active_entry, active_sl, active_tp = latest_close, latest_close + (latest_atr * 1.8), latest_close - (latest_atr * 1.8 * 2.5)
 
                 if active_signal_type != 'None':
                     fig.add_hline(y=active_entry, line_dash="dash", line_color="#f0b90b", annotation_text=f" 進場: {active_entry:,.2f} ", annotation_position="left", row=1, col=1)
