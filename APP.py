@@ -44,9 +44,10 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ==================== 0. 全域自動重新整理計時器 (每 1 秒背景自動同步) ====================
+# ==================== 0. 全域自動重新整理計時器 ====================
+# 每 3 秒自動在背景重新整理一次，確保抓到 Supabase 最新資料，且畫面絕不閃爍
 if st_autorefresh:
-    st_autorefresh(interval=1000, key="global_kline_autorefresh")
+    st_autorefresh(interval=3000, key="global_kline_autorefresh")
 
 # ==================== 1. 初始化 Session State ====================
 if "is_searched" not in st.session_state:
@@ -84,7 +85,7 @@ DB_HOST = "aws-0-ap-northeast-1.pooler.supabase.com"
 DB_PORT = "5432"
 DB_NAME = "postgres"
 
-@st.cache_data(ttl=1)  # 快取縮短至 1 秒，確保每秒都能抓到最新寫入的資料
+@st.cache_data(ttl=1)  # 快取設為 1 秒，確保每次自動重新整理都能即時抓到 Supabase 的最新寫入
 def load_historical_data(table_name, symbol_name):
     """從 Supabase (PostgreSQL) 讀取 K 線資料，並精準解析時間戳記轉換為台灣時間 (UTC+8)"""
     try:
@@ -161,7 +162,7 @@ if st.session_state.is_searched:
     df_initial = load_historical_data(target_table, symbol_name)
     
     if not df_initial.empty:
-        c1, c2, c3 = st.columns([3.0, 2.2, 1.5])
+        c1, c2, c3 = st.columns([2.5, 2, 1.5])
         with c1:
             timeframes = list(df_initial['timeframe'].unique())
             selected_tf = st.radio("時間週期 (小波段/大波段)", timeframes, horizontal=True, key="timeframe_select")
