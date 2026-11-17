@@ -40,7 +40,7 @@ if "last_notified_times" not in st.session_state:
     st.session_state.last_notified_times = {}  # 記錄各幣種、週期與多空方向上次推送到 Discord 的時間
 
 # ==================== 1. 頂部標題與搜尋表單 ====================
-st.title("加密貨幣分析")
+st.title("加密貨幣分析 - 動態趨勢突破 + 智慧風控系統 (高靈敏多空雙向版)")
 
 with st.form(key="search_form"):
     col1, col2 = st.columns([4, 1])
@@ -210,21 +210,17 @@ def global_background_signal_scanner():
                 tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
                 df_m_tf['ATR'] = tr.rolling(window=14).mean()
                 
-                # 🎯【超精準過濾條件：多空雙向平衡且杜絕假突破】
+                # 🎯【高靈敏多空條件】：放寬過濾，確保不會漏掉潛在做多機會
                 df_m_tf['Long_Signal'] = (
                     (df_m_tf['close_price'] > df_m_tf['Trend_Resistance']) & 
-                    (df_m_tf['volume'] > df_m_tf['Vol_MA20'] * 1.3) &  # 成交量放大 1.3 倍以上
-                    (df_m_tf['EMA_21'] > df_m_tf['EMA_50']) &
-                    (df_m_tf['EMA_50'] > df_m_tf['EMA_100']) &         # 嚴格三均線多頭排列
-                    (df_m_tf['RSI'] >= 50) & (df_m_tf['RSI'] <= 75)
+                    (df_m_tf['EMA_21'] > df_m_tf['EMA_50']) &             # 只要短期均線向上即可
+                    (df_m_tf['RSI'] >= 45) & (df_m_tf['RSI'] <= 82)        # 放寬 RSI 上下限
                 )
                 
                 df_m_tf['Short_Signal'] = (
                     (df_m_tf['close_price'] < df_m_tf['Trend_Support']) & 
-                    (df_m_tf['volume'] > df_m_tf['Vol_MA20'] * 1.3) &  # 成交量放大 1.3 倍以上
-                    (df_m_tf['EMA_21'] < df_m_tf['EMA_50']) &
-                    (df_m_tf['EMA_50'] < df_m_tf['EMA_100']) &         # 嚴格三均線空頭排列
-                    (df_m_tf['RSI'] >= 25) & (df_m_tf['RSI'] <= 50)
+                    (df_m_tf['EMA_21'] < df_m_tf['EMA_50']) &             # 只要短期均線向下即可
+                    (df_m_tf['RSI'] >= 18) & (df_m_tf['RSI'] <= 55)        # 放寬 RSI 上下限
                 )
 
                 # --- 檢查做多訊號 ---
@@ -243,7 +239,7 @@ def global_background_signal_scanner():
                         sl = entry - (atr_val * 1.5)
                         tp = entry + (atr_val * 1.5 * 2.5)
                         msg = (
-                            f"🚨 **【Supabase策略 - 超精準做多 LONG】** 🚨\n"
+                            f"🚨 **【Supabase策略 - 做多訊號 LONG】** 🚨\n"
                             f"📌 **標的:** {m_pair} ({m_tf})\n"
                             f"🕒 **時間:** `{long_time.strftime('%Y-%m-%d %H:%M:%S')}`\n"
                             f"🟢 **精準進場價:** `{entry:,.2f}`\n"
@@ -268,7 +264,7 @@ def global_background_signal_scanner():
                         sl = entry + (atr_val * 1.5)
                         tp = entry - (atr_val * 1.5 * 2.5)
                         msg = (
-                            f"🚨 **【Supabase策略 - 超精準做空 SHORT】** 🚨\n"
+                            f"🚨 **【Supabase策略 - 做空訊號 SHORT】** 🚨\n"
                             f"📌 **標的:** {m_pair} ({m_tf})\n"
                             f"🕒 **時間:** `{short_time.strftime('%Y-%m-%d %H:%M:%S')}`\n"
                             f"🔴 **精準進場價:** `{entry:,.2f}`\n"
@@ -347,20 +343,16 @@ if st.session_state.is_searched:
                 tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
                 df_tf['ATR'] = tr.rolling(window=14).mean()
 
-                # 🎯【圖表端同步超精準條件】
+                # 🎯【圖表端同步高靈敏條件】
                 df_tf['Long_Signal'] = (
                     (df_tf['close_price'] > df_tf['Trend_Resistance']) & 
-                    (df_tf['volume'] > df_tf['Vol_MA20'] * 1.3) & 
-                    (df_tf['EMA_21'] > df_tf['EMA_50']) &
-                    (df_tf['EMA_50'] > df_tf['EMA_100']) &
-                    (df_tf['RSI'] >= 50) & (df_tf['RSI'] <= 75)
+                    (df_tf['EMA_21'] > df_tf['EMA_50']) & 
+                    (df_tf['RSI'] >= 45) & (df_tf['RSI'] <= 82)
                 )
                 df_tf['Short_Signal'] = (
                     (df_tf['close_price'] < df_tf['Trend_Support']) & 
-                    (df_tf['volume'] > df_tf['Vol_MA20'] * 1.3) & 
-                    (df_tf['EMA_21'] < df_tf['EMA_50']) &
-                    (df_tf['EMA_50'] < df_tf['EMA_100']) &
-                    (df_tf['RSI'] >= 25) & (df_tf['RSI'] <= 50)
+                    (df_tf['EMA_21'] < df_tf['EMA_50']) & 
+                    (df_tf['RSI'] >= 18) & (df_tf['RSI'] <= 55)
                 )
 
                 display_count = 90 if sym == 'ETH' else 120
