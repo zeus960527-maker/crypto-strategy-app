@@ -7,9 +7,13 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 # 📌 請務必將下方 url 中的專案代碼換成你 Supabase 真正的 Reference ID，並把密碼中的 @ 改為 %40
 SUPABASE_DB_URL = "postgresql://postgres.ygzeqvcyqtvhvjrxhzdv:%4010233960527Ken@aws-0-ap-northeast-1.pooler.supabase.com:6543/postgres"
 
-# 建立 Supabase 資料庫連線 helper
+# 建立 Supabase 資料庫連線 helper（加上連線逾時設定，防止網路抖動時卡死）
 def get_db_connection():
-    return psycopg2.connect(SUPABASE_DB_URL)
+    return psycopg2.connect(
+        SUPABASE_DB_URL,
+        connect_timeout=10,
+        options="-c statement_timeout=15000"
+    )
 
 def catch_up_historical_data(tf):
     """ 
