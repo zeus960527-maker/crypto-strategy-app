@@ -5,7 +5,7 @@ import numpy as np
 from sqlalchemy import create_engine
 
 # ==================== 參數設定 ====================
-DISCORD_WEBHOOK_URL = "YOUR_DISCORD_WEBHOOK_URL_HERE"  # 👈 請換成你的 Discord Webhook 網址
+DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/1571457845772165170/MZt_7HpNi9VD_peLI8ttwP_EXlAD5gAePTNSPff65whlJ-IMdv9qbPRnVy22npwjftI7"  # 👈 請換成你的 Discord Webhook 網址
 
 DB_USER = "postgres.ygzeqvcyqtvhvjrxhzdv"
 DB_PASSWORD = "%4010233960527Ken"
