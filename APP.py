@@ -40,7 +40,7 @@ if "last_notified_times" not in st.session_state:
     st.session_state.last_notified_times = {}  # 記錄各幣種、週期與多空方向上次推送到 Discord 的時間
 
 # ==================== 1. 頂部標題與搜尋表單 ====================
-st.title("加密貨幣分析)")
+st.title("加密貨幣策略分析 (多空雙向靈活版)")
 
 with st.form(key="search_form"):
     col1, col2 = st.columns([4, 1])
@@ -210,22 +210,19 @@ def global_background_signal_scanner():
                 tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
                 df_m_tf['ATR'] = tr.rolling(window=14).mean()
                 
+                # 🎯【優化調整】：放寬多空條件限制，讓多空訊號更容易觸發
                 df_m_tf['Long_Signal'] = (
                     (df_m_tf['close_price'] > df_m_tf['Trend_Resistance']) & 
-                    (df_m_tf['volume'] > df_m_tf['Vol_MA20'] * 1.5) & 
+                    (df_m_tf['volume'] > df_m_tf['Vol_MA20'] * 1.2) &  # 將成交量倍數從 1.5 降為 1.2
                     (df_m_tf['EMA_21'] > df_m_tf['EMA_50']) &
-                    (df_m_tf['EMA_50'] > df_m_tf['EMA_100']) &
-                    (df_m_tf['RSI'] >= 50) & (df_m_tf['RSI'] <= 75) &
-                    (df_m_tf['HTF_Trend'] == 1)
+                    (df_m_tf['RSI'] >= 45) & (df_m_tf['RSI'] <= 80)     # 放寬 RSI 區間
                 )
                 
                 df_m_tf['Short_Signal'] = (
                     (df_m_tf['close_price'] < df_m_tf['Trend_Support']) & 
-                    (df_m_tf['volume'] > df_m_tf['Vol_MA20'] * 1.5) & 
+                    (df_m_tf['volume'] > df_m_tf['Vol_MA20'] * 1.2) &  # 將成交量倍數從 1.5 降為 1.2
                     (df_m_tf['EMA_21'] < df_m_tf['EMA_50']) &
-                    (df_m_tf['EMA_50'] < df_m_tf['EMA_100']) &
-                    (df_m_tf['RSI'] >= 25) & (df_m_tf['RSI'] <= 50) &
-                    (df_m_tf['HTF_Trend'] == -1)
+                    (df_m_tf['RSI'] >= 20) & (df_m_tf['RSI'] <= 55)     # 放寬 RSI 區間
                 )
 
                 # --- 檢查做多訊號 ---
@@ -348,21 +345,18 @@ if st.session_state.is_searched:
                 tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
                 df_tf['ATR'] = tr.rolling(window=14).mean()
 
+                # 🎯【圖表端同步放寬】
                 df_tf['Long_Signal'] = (
                     (df_tf['close_price'] > df_tf['Trend_Resistance']) & 
-                    (df_tf['volume'] > df_tf['Vol_MA20'] * 1.5) & 
+                    (df_tf['volume'] > df_tf['Vol_MA20'] * 1.2) & 
                     (df_tf['EMA_21'] > df_tf['EMA_50']) &
-                    (df_tf['EMA_50'] > df_tf['EMA_100']) &
-                    (df_tf['RSI'] >= 50) & (df_tf['RSI'] <= 75) &
-                    (df_tf['HTF_Trend'] == 1)
+                    (df_tf['RSI'] >= 45) & (df_tf['RSI'] <= 80)
                 )
                 df_tf['Short_Signal'] = (
                     (df_tf['close_price'] < df_tf['Trend_Support']) & 
-                    (df_tf['volume'] > df_tf['Vol_MA20'] * 1.5) & 
+                    (df_tf['volume'] > df_tf['Vol_MA20'] * 1.2) & 
                     (df_tf['EMA_21'] < df_tf['EMA_50']) &
-                    (df_tf['EMA_50'] < df_tf['EMA_100']) &
-                    (df_tf['RSI'] >= 25) & (df_tf['RSI'] <= 50) &
-                    (df_tf['HTF_Trend'] == -1)
+                    (df_tf['RSI'] >= 20) & (df_tf['RSI'] <= 55)
                 )
 
                 display_count = 90 if sym == 'ETH' else 120
@@ -384,7 +378,6 @@ if st.session_state.is_searched:
 
                 fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.015, row_heights=[k_ratio, v_ratio])
                 
-                # 固定上漲為綠色、下跌為紅色
                 fig.add_trace(go.Candlestick(
                     x=df_tf['open_time'], open=df_tf['open_price'], high=df_tf['high_price'], low=df_tf['low_price'], close=df_tf['close_price'],
                     name=sym, line=dict(width=1.5), 
