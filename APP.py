@@ -5,7 +5,7 @@ from sqlalchemy import create_engine
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-# 嘗試匯入自動重新整理套件（如果沒有安裝，下方會自動處理）
+# 嘗試載入自動重新整理套件
 try:
     from streamlit_autorefresh import st_autorefresh
 except ImportError:
@@ -44,7 +44,13 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ==================== 0. 初始化 Session State ====================
+# ==================== 0. 全域自動重新整理計時器 ====================
+# 每 3 秒自動在背景重新整理一次網頁，以讀取 Supabase 最新 K 線
+# 配合上方 CSS，重新整理時絕對不閃爍、不變淡
+if st_autorefresh:
+    st_autorefresh(interval=3000, key="global_kline_autorefresh")
+
+# ==================== 1. 初始化 Session State ====================
 if "is_searched" not in st.session_state:
     st.session_state.is_searched = False
 if "search_query" not in st.session_state:
@@ -52,7 +58,7 @@ if "search_query" not in st.session_state:
 if "auto_scroll" not in st.session_state:
     st.session_state.auto_scroll = True
 
-# ==================== 1. 頂部標題與搜尋表單 ====================
+# ==================== 2. 頂部標題與搜尋表單 ====================
 st.title("加密貨幣分析 - 雙軌策略看盤系統（小波段 5m/15m + 大波段 1h/4h）")
 
 with st.form(key="search_form"):
@@ -73,7 +79,7 @@ if submitted:
 
 st.markdown("---")
 
-# ==================== 2. Supabase 資料庫連線與工具函式 ====================
+# ==================== 3. Supabase 資料庫連線與工具函式 ====================
 DB_USER = "postgres.ygzeqvcyqtvhvjrxhzdv"
 DB_PASSWORD = "%4010233960527Ken"
 DB_HOST = "aws-0-ap-northeast-1.pooler.supabase.com"
@@ -141,7 +147,7 @@ def calculate_trendline_channel(df, window=30, num_dev=1.8):
     df['Trend_Support'] = lower     
     return df
 
-# ==================== 3. 主畫面渲染邏輯 ====================
+# ==================== 4. 主畫面渲染邏輯 ====================
 if st.session_state.is_searched:
     query_str = st.session_state.search_query.upper()
     
@@ -174,10 +180,6 @@ if st.session_state.is_searched:
                 st.rerun()
         
         volume_ratio = 1.0 - kline_ratio
-        
-        # 🎯 啟用自動背景定時重新整理（每 4 秒自動抓取 Supabase 最新資料並更新圖表，搭配上方 CSS 確保絕不閃爍）
-        if st_autorefresh:
-            st_autorefresh(interval=4000, key="kline_auto_refresh")
         
         df = load_historical_data(target_table, symbol_name)
         df_tf = df[df['timeframe'] == selected_tf].sort_values('open_time').copy()
@@ -353,6 +355,6 @@ if st.session_state.is_searched:
         st.warning("Supabase 資料庫中目前尚無資料。")
 
 elif st.session_state.search_query != "":
-    st.warning(f"找不到與「{st.session_state.search_query}」相關的圖表，請嘗試輸入 **BTC** 或 **ETH**。")
+    st.warning(f"找不到與「{st.search_query}」相關的圖表，請嘗試輸入 **BTC** 或 **ETH**。")
 else:
     st.info("💡 請在上方查詢欄輸入 **BTC** 或 **ETH** 並按下 **Enter** 顯示圖表。")
