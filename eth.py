@@ -16,7 +16,7 @@ st.markdown("""
     .stTextInput input { background-color: #1e2329; color: #eaecef; border: 1px solid #2b313a; }
     .stTextInput input:focus { border-color: #f0b90b; }
     
-    /* 🎯 關鍵：徹底禁止 Streamlit 局部更新時的畫面變淡與 Loading 遮罩 */
+    /* 絕對禁止任何畫面變淡與 Loading 遮罩 */
     .stApp, .element-container, iframe, div[data-testid="stVerticalBlock"], div[data-testid="stFragment"] {
         opacity: 1 !important;
         transition: none !important;
@@ -50,10 +50,10 @@ if "auto_scroll" not in st.session_state:
 st.title("加密貨幣分析 - 雙軌策略看盤系統（小波段 5m/15m + 大波段 1h/4h）")
 
 with st.form(key="search_form"):
-    col1, col2 = st.columns([4, 1])
-    with col1:
+    col_f1, col_f2 = st.columns([4, 1])
+    with col_f1:
         input_val = st.text_input("🔍 請輸入加密貨幣名稱 (例如 BTC 或 ETH)：", value=st.session_state.search_query)
-    with col2:
+    with col_f2:
         st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
         submitted = st.form_submit_button(label="送出查詢", use_container_width=True)
 
@@ -74,7 +74,7 @@ DB_HOST = "aws-0-ap-northeast-1.pooler.supabase.com"
 DB_PORT = "5432"
 DB_NAME = "postgres"
 
-@st.cache_data(ttl=3)
+@st.cache_data(ttl=2)  # 將快取縮短至 2 秒
 def load_historical_data(table_name, symbol_name):
     """從 Supabase (PostgreSQL) 讀取 K 線資料，並精準解析時間戳記轉換為台灣時間 (UTC+8)"""
     try:
@@ -151,7 +151,7 @@ if st.session_state.is_searched:
     df_initial = load_historical_data(target_table, symbol_name)
     
     if not df_initial.empty:
-        c1, c2, c3 = st.columns([2.5, 2, 1.5])
+        c1, c2, c3, c4 = st.columns([2.0, 1.8, 1.2, 1.0])
         with c1:
             timeframes = list(df_initial['timeframe'].unique())
             selected_tf = st.radio("時間週期 (小波段/大波段)", timeframes, horizontal=True, key="timeframe_select")
@@ -161,11 +161,15 @@ if st.session_state.is_searched:
             st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
             auto_scroll = st.toggle("📍 跟隨最新價", value=st.session_state.auto_scroll, key="auto_scroll_toggle")
             st.session_state.auto_scroll = auto_scroll
+        with c4:
+            st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
+            if st.button("🔄 立即同步", use_container_width=True):
+                st.cache_data.clear() # 清除快取強制重新拉取 Supabase 最新資料
+                st.rerun()
         
         volume_ratio = 1.0 - kline_ratio
         
-        # 🎯 核心：使用 st.fragment(run_every=3) 每 3 秒在背景自動拉取最新資料並更新圖表
-        # 搭配上方 CSS 阻擋變淡與轉圈，達到「背景自動更新，但眼睛完全感覺不到閃爍或發白」
+        # 🎯 核心：使用 st.fragment(run_every=3) 背景自動刷新，配合立即同步按鈕
         @st.fragment(run_every=3)
         def render_live_chart_section(tbl, sym, pair, tf, k_rat, v_rat, follow_latest):
             df = load_historical_data(tbl, sym)
@@ -340,7 +344,7 @@ if st.session_state.is_searched:
             else:
                 st.warning("此週期目前尚無資料。")
 
-        # 呼叫自動背景更新函數
+        # 呼叫圖表區塊
         render_live_chart_section(target_table, symbol_name, pair_name, selected_tf, kline_ratio, volume_ratio, auto_scroll)
     else:
         st.warning("Supabase 資料庫中目前尚無資料。")
