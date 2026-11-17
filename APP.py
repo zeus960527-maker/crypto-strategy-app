@@ -11,7 +11,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 # 頁面基本設定
-st.set_page_config(page_title="加密貨幣超精準防假突破策略", layout="wide")
+st.set_page_config(page_title="加密貨幣雙軌策略（小波段 + 大波段）", layout="wide")
 
 # 注入 OKX 專業暗色系樣式、介面微調與十字游標設定
 st.markdown("""
@@ -35,12 +35,12 @@ if "is_searched" not in st.session_state:
 if "search_query" not in st.session_state:
     st.session_state.search_query = ""
 if "auto_scroll" not in st.session_state:
-    st.session_state.auto_scroll = True  # 預設跟隨最新價
+    st.session_state.auto_scroll = True
 if "last_notified_times" not in st.session_state:
     st.session_state.last_notified_times = {}
 
 # ==================== 1. 頂部標題與搜尋表單 ====================
-st.title("加密貨幣分析 - 動態趨勢突破 + 視覺標記優化版")
+st.title("加密貨幣分析 - 雙軌策略系統（小波段 5m/15m + 大波段 1h/4h）")
 
 with st.form(key="search_form"):
     col1, col2 = st.columns([4, 1])
@@ -113,29 +113,7 @@ def load_historical_data(table_name, symbol_name):
             
     return df
 
-def get_htf_trend_dataframe(df_all, current_tf):
-    """根據當前時間週期自動對應大時間級別 (HTF)，計算大週期趨勢並與主表對齊"""
-    hierarchy = {'1m': '15m', '5m': '1h', '15m': '4h', '30m': '4h', '1h': '4h', '4h': '1d', '1d': '1d'}
-    htf = hierarchy.get(current_tf, '4h')
-    
-    available_tfs = df_all['timeframe'].unique()
-    if htf not in available_tfs:
-        htf = current_tf
-        
-    df_htf = df_all[df_all['timeframe'] == htf].sort_values('open_time').copy()
-    if df_htf.empty:
-        df_all['HTF_Trend'] = 1
-        df_all['HTF_Name'] = current_tf
-        return df_all
-        
-    df_htf['HTF_EMA21'] = df_htf['close_price'].ewm(span=21, adjust=False).mean()
-    df_htf['HTF_EMA50'] = df_htf['close_price'].ewm(span=50, adjust=False).mean()
-    df_htf['HTF_Trend'] = (df_htf['HTF_EMA21'] > df_htf['HTF_EMA50']).astype(int) * 2 - 1
-    df_htf['HTF_Name'] = htf
-    
-    return df_htf[['open_time', 'HTF_Trend', 'HTF_Name']]
-
-def calculate_trendline_channel(df, window=35, num_dev=2.0):
+def calculate_trendline_channel(df, window=30, num_dev=1.8):
     """計算動態線性回歸趨勢線與通道"""
     close = df['close_price'].values
     n = len(close)
@@ -162,10 +140,10 @@ def calculate_trendline_channel(df, window=35, num_dev=2.0):
     df['Trend_Support'] = lower     
     return df
 
-# ==================== 3. 全域背景即時多空信號與風控偵測 ====================
+# ==================== 3. 全域背景雙軌策略掃描器 (小波段 + 大波段) ====================
 @st.fragment(run_every=1)
 def global_background_signal_scanner():
-    """背景持續自動掃描 Supabase 中的 K 線資料"""
+    """背景持續自動掃描 Supabase 中的 K 線資料（區分小波段與大波段）"""
     all_monitoring_targets = [
         ('btc_contract_klines', 'BTC', 'BTC-USDT-SWAP'),
         ('eth_contract_klines', 'ETH', 'ETH-USDT-SWAP')
@@ -180,21 +158,15 @@ def global_background_signal_scanner():
                 df_m_tf = df_m[df_m['timeframe'] == m_tf].sort_values('open_time').copy()
                 if df_m_tf.empty:
                     continue
-                
-                df_htf_part = get_htf_trend_dataframe(df_m, m_tf)
-                df_m_tf = pd.merge_asof(
-                    df_m_tf.sort_values('open_time'),
-                    df_htf_part.sort_values('open_time'),
-                    on='open_time',
-                    direction='backward'
-                )
-                df_m_tf['HTF_Trend'] = df_m_tf['HTF_Trend'].fillna(1)
 
+                df_m_tf['EMA_10'] = df_m_tf['close_price'].ewm(span=10, adjust=False).mean() # 短波段快線
                 df_m_tf['EMA_21'] = df_m_tf['close_price'].ewm(span=21, adjust=False).mean()
                 df_m_tf['EMA_50'] = df_m_tf['close_price'].ewm(span=50, adjust=False).mean()
                 
-                df_m_tf['Vol_MA20'] = df_m_tf['volume'].rolling(window=20).mean()
-                df_m_tf = calculate_trendline_channel(df_m_tf, window=35, num_dev=2.0)
+                # 依週期動態調整通道參數：小波段用較靈敏通道，大波段用較寬穩健通道
+                win = 20 if m_tf in ['5m', '15m'] else 40
+                dev = 1.6 if m_tf in ['5m', '15m'] else 2.1
+                df_m_tf = calculate_trendline_channel(df_m_tf, window=win, num_dev=dev)
                 
                 delta = df_m_tf['close_price'].diff()
                 gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
@@ -208,18 +180,33 @@ def global_background_signal_scanner():
                 tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
                 df_m_tf['ATR'] = tr.rolling(window=14).mean()
                 
-                # 🎯【優化後的靈敏進場邏輯】：只要價格突破通道且均線多頭/空頭排列即標記
-                df_m_tf['Long_Signal'] = (
-                    (df_m_tf['close_price'] > df_m_tf['Trend_Resistance']) & 
-                    (df_m_tf['EMA_21'] > df_m_tf['EMA_50']) &
-                    (df_m_tf['RSI'] >= 45)
-                )
-                
-                df_m_tf['Short_Signal'] = (
-                    (df_m_tf['close_price'] < df_m_tf['Trend_Support']) & 
-                    (df_m_tf['EMA_21'] < df_m_tf['EMA_50']) &
-                    (df_m_tf['RSI'] <= 55)
-                )
+                # 🎯 區分「小波段」與「大波段」的判定邏輯
+                if m_tf in ['5m', '15m']:
+                    # 小波段：著重靈敏度，快進快出
+                    mode_label = "⚡【小波段閃電策略】"
+                    df_m_tf['Long_Signal'] = (
+                        (df_m_tf['close_price'] > df_m_tf['Trend_Resistance']) & 
+                        (df_m_tf['EMA_10'] > df_m_tf['EMA_21']) &
+                        (df_m_tf['RSI'] >= 45) & (df_m_tf['RSI'] <= 85)
+                    )
+                    df_m_tf['Short_Signal'] = (
+                        (df_m_tf['close_price'] < df_m_tf['Trend_Support']) & 
+                        (df_m_tf['EMA_10'] < df_m_tf['EMA_21']) &
+                        (df_m_tf['RSI'] >= 15) & (df_m_tf['RSI'] <= 55)
+                    )
+                else:
+                    # 大波段：1h/4h 著重趨勢延續與穩定度
+                    mode_label = "🌊【大波段趨勢策略】"
+                    df_m_tf['Long_Signal'] = (
+                        (df_m_tf['close_price'] > df_m_tf['Trend_Resistance']) & 
+                        (df_m_tf['EMA_21'] > df_m_tf['EMA_50']) &
+                        (df_m_tf['RSI'] >= 50) & (df_m_tf['RSI'] <= 78)
+                    )
+                    df_m_tf['Short_Signal'] = (
+                        (df_m_tf['close_price'] < df_m_tf['Trend_Support']) & 
+                        (df_m_tf['EMA_21'] < df_m_tf['EMA_50']) &
+                        (df_m_tf['RSI'] >= 22) & (df_m_tf['RSI'] <= 50)
+                    )
 
                 # --- 檢查做多訊號 ---
                 long_key = f"{m_sym}_{m_tf}_LONG"
@@ -234,15 +221,15 @@ def global_background_signal_scanner():
                         st.session_state.last_notified_times[long_key] = long_time
                         entry = latest_long['close_price']
                         atr_val = latest_long['ATR'] if not pd.isna(latest_long['ATR']) else entry * 0.015
-                        sl = entry - (atr_val * 1.5)
-                        tp = entry + (atr_val * 1.5 * 2.5)
+                        sl = entry - (atr_val * (1.2 if m_tf in ['5m', '15m'] else 2.0))
+                        tp = entry + (atr_val * (1.2 if m_tf in ['5m', '15m'] else 2.0) * (2.0 if m_tf in ['5m', '15m'] else 3.0))
                         msg = (
-                            f"🚨 **【Supabase策略 - 做多 LONG】** 🚨\n"
+                            f"🚨 **{mode_label} - 建議做多 LONG** 🚨\n"
                             f"📌 **標的:** {m_pair} ({m_tf})\n"
                             f"🕒 **時間:** `{long_time.strftime('%Y-%m-%d %H:%M:%S')}`\n"
                             f"🟢 **精準進場價:** `{entry:,.2f}`\n"
                             f"🔴 **止損價 (SL):** `{sl:,.2f}`\n"
-                            f"🎯 **止盈價 (TP):** `{tp:,.2f}` (1:2.5 盈虧比)"
+                            f"🎯 **止盈價 (TP):** `{tp:,.2f}`"
                         )
                         send_discord_alert(msg)
 
@@ -259,15 +246,15 @@ def global_background_signal_scanner():
                         st.session_state.last_notified_times[short_key] = short_time
                         entry = latest_short['close_price']
                         atr_val = latest_short['ATR'] if not pd.isna(latest_short['ATR']) else entry * 0.015
-                        sl = entry + (atr_val * 1.5)
-                        tp = entry - (atr_val * 1.5 * 2.5)
+                        sl = entry + (atr_val * (1.2 if m_tf in ['5m', '15m'] else 2.0))
+                        tp = entry - (atr_val * (1.2 if m_tf in ['5m', '15m'] else 2.0) * (2.0 if m_tf in ['5m', '15m'] else 3.0))
                         msg = (
-                            f"🚨 **【Supabase策略 - 做空 SHORT】** 🚨\n"
+                            f"🚨 **{mode_label} - 建議做空 SHORT** 🚨\n"
                             f"📌 **標的:** {m_pair} ({m_tf})\n"
                             f"🕒 **時間:** `{short_time.strftime('%Y-%m-%d %H:%M:%S')}`\n"
                             f"🔴 **精準進場價:** `{entry:,.2f}`\n"
                             f"🟢 **止損價 (SL):** `{sl:,.2f}`\n"
-                            f"🎯 **止盈價 (TP):** `{tp:,.2f}` (1:2.5 盈虧比)"
+                            f"🎯 **止盈價 (TP):** `{tp:,.2f}`"
                         )
                         send_discord_alert(msg)
 
@@ -295,7 +282,7 @@ if st.session_state.is_searched:
         c1, c2, c3 = st.columns([2.5, 2, 1.5])
         with c1:
             timeframes = list(df_initial['timeframe'].unique())
-            selected_tf = st.radio("時間週期", timeframes, horizontal=True, key="timeframe_select")
+            selected_tf = st.radio("時間週期 (小波段/大波段)", timeframes, horizontal=True, key="timeframe_select")
         with c2:
             kline_ratio = st.slider("主圖 / 量佔比", min_value=0.5, max_value=0.9, value=0.75, step=0.05, key="ratio_slider")
         with c3:
@@ -311,22 +298,13 @@ if st.session_state.is_searched:
             df_tf = df[df['timeframe'] == tf].sort_values('open_time').copy()
             
             if not df_tf.empty:
-                df_htf_part = get_htf_trend_dataframe(df, tf)
-                df_tf = pd.merge_asof(
-                    df_tf.sort_values('open_time'),
-                    df_htf_part.sort_values('open_time'),
-                    on='open_time',
-                    direction='backward'
-                )
-                df_tf['HTF_Trend'] = df_tf['HTF_Trend'].fillna(1)
-                htf_label = df_tf['HTF_Name'].iloc[-1] if 'HTF_Name' in df_tf.columns else 'HTF'
-                htf_status_text = "🟢 多頭向上" if df_tf['HTF_Trend'].iloc[-1] == 1 else "🔴 空頭向下"
-
+                df_tf['EMA_10'] = df_tf['close_price'].ewm(span=10, adjust=False).mean()
                 df_tf['EMA_21'] = df_tf['close_price'].ewm(span=21, adjust=False).mean()
                 df_tf['EMA_50'] = df_tf['close_price'].ewm(span=50, adjust=False).mean()
 
-                df_tf['Vol_MA20'] = df_tf['volume'].rolling(window=20).mean()
-                df_tf = calculate_trendline_channel(df_tf, window=35, num_dev=2.0)
+                win = 20 if tf in ['5m', '15m'] else 40
+                dev = 1.6 if tf in ['5m', '15m'] else 2.1
+                df_tf = calculate_trendline_channel(df_tf, window=win, num_dev=dev)
                 
                 delta = df_tf['close_price'].diff()
                 gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
@@ -340,17 +318,29 @@ if st.session_state.is_searched:
                 tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
                 df_tf['ATR'] = tr.rolling(window=14).mean()
 
-                # 🎯【圖表端同步優化條件】
-                df_tf['Long_Signal'] = (
-                    (df_tf['close_price'] > df_tf['Trend_Resistance']) & 
-                    (df_tf['EMA_21'] > df_tf['EMA_50']) &
-                    (df_tf['RSI'] >= 45)
-                )
-                df_tf['Short_Signal'] = (
-                    (df_tf['close_price'] < df_tf['Trend_Support']) & 
-                    (df_tf['EMA_21'] < df_tf['EMA_50']) &
-                    (df_tf['RSI'] <= 55)
-                )
+                # 圖表端同步雙軌策略
+                if tf in ['5m', '15m']:
+                    df_tf['Long_Signal'] = (
+                        (df_tf['close_price'] > df_tf['Trend_Resistance']) & 
+                        (df_tf['EMA_10'] > df_tf['EMA_21']) &
+                        (df_tf['RSI'] >= 45) & (df_tf['RSI'] <= 85)
+                    )
+                    df_tf['Short_Signal'] = (
+                        (df_tf['close_price'] < df_tf['Trend_Support']) & 
+                        (df_tf['EMA_10'] < df_tf['EMA_21']) &
+                        (df_tf['RSI'] >= 15) & (df_tf['RSI'] <= 55)
+                    )
+                else:
+                    df_tf['Long_Signal'] = (
+                        (df_tf['close_price'] > df_tf['Trend_Resistance']) & 
+                        (df_tf['EMA_21'] > df_tf['EMA_50']) &
+                        (df_tf['RSI'] >= 50) & (df_tf['RSI'] <= 78)
+                    )
+                    df_tf['Short_Signal'] = (
+                        (df_tf['close_price'] < df_tf['Trend_Support']) & 
+                        (df_tf['EMA_21'] < df_tf['EMA_50']) &
+                        (df_tf['RSI'] >= 22) & (df_tf['RSI'] <= 50)
+                    )
 
                 display_count = 90 if sym == 'ETH' else 120
                 default_view_df = df_tf.tail(display_count)
@@ -378,36 +368,30 @@ if st.session_state.is_searched:
                     decreasing_line_color='#F6465D', decreasing_fillcolor='#F6465D'
                 ), row=1, col=1)
                 
+                fig.add_trace(go.Scatter(x=df_tf['open_time'], y=df_tf['EMA_10'], mode='lines', name='EMA10', line=dict(color='#00E676', width=1)), row=1, col=1)
                 fig.add_trace(go.Scatter(x=df_tf['open_time'], y=df_tf['EMA_21'], mode='lines', name='EMA21', line=dict(color='#2962FF', width=1.2)), row=1, col=1)
                 fig.add_trace(go.Scatter(x=df_tf['open_time'], y=df_tf['EMA_50'], mode='lines', name='EMA50', line=dict(color='#FFB300', width=1.2)), row=1, col=1)
 
                 fig.add_trace(go.Scatter(x=df_tf['open_time'], y=df_tf['Trend_Resistance'], mode='lines', name='壓力趨勢線', line=dict(color='rgba(246, 70, 93, 0.7)', width=1.5, dash='dash')), row=1, col=1)
                 fig.add_trace(go.Scatter(x=df_tf['open_time'], y=df_tf['Trend_Support'], mode='lines', name='支撐趨勢線', line=dict(color='rgba(14, 203, 129, 0.7)', width=1.5, dash='dash'), fill='tonexty', fillcolor='rgba(126, 87, 194, 0.02)'), row=1, col=1)
 
-                # 🎯【視覺化優化】：將買賣點明確標記在 K 線實體附近，並放大顯示
                 long_df = df_tf[df_tf['Long_Signal']]
                 if not long_df.empty:
                     fig.add_trace(go.Scatter(
-                        x=long_df['open_time'], 
-                        y=long_df['low_price'] * 0.995, 
-                        mode='markers+text', 
-                        name='做多買點', 
+                        x=long_df['open_time'], y=long_df['low_price'] * 0.995, 
+                        mode='markers+text', name='做多買點', 
                         marker=dict(symbol='triangle-up', size=16, color='#0ECB81', line=dict(width=1, color='white')), 
-                        text=["🟢 多" for _ in range(len(long_df))], 
-                        textposition="bottom center",
+                        text=["🟢 多" for _ in range(len(long_df))], textposition="bottom center",
                         textfont=dict(color='#0ECB81', size=12, family="Arial Black")
                     ), row=1, col=1)
 
                 short_df = df_tf[df_tf['Short_Signal']]
                 if not short_df.empty:
                     fig.add_trace(go.Scatter(
-                        x=short_df['open_time'], 
-                        y=short_df['high_price'] * 1.005, 
-                        mode='markers+text', 
-                        name='做空賣點', 
+                        x=short_df['open_time'], y=short_df['high_price'] * 1.005, 
+                        mode='markers+text', name='做空賣點', 
                         marker=dict(symbol='triangle-down', size=16, color='#F6465D', line=dict(width=1, color='white')), 
-                        text=["🔴 空" for _ in range(len(short_df))], 
-                        textposition="top center",
+                        text=["🔴 空" for _ in range(len(short_df))], textposition="top center",
                         textfont=dict(color='#F6465D', size=12, family="Arial Black")
                     ), row=1, col=1)
 
@@ -432,8 +416,9 @@ if st.session_state.is_searched:
                     fig.add_hline(y=active_sl, line_dash="dash", line_color="#F6465D", annotation_text=f" ATR止損: {active_sl:,.2f} ", annotation_position="left", row=1, col=1)
                     fig.add_hline(y=active_tp, line_dash="dash", line_color="#0ECB81", annotation_text=f" ATR止盈: {active_tp:,.2f} ", annotation_position="left", row=1, col=1)
 
+                mode_desc = "⚡ 小波段閃電模式 (5m/15m)" if tf in ['5m', '15m'] else "🌊 大波段趨勢模式 (1h/4h)"
                 ohlc_text = (
-                    f"<b>{pair} · {tf} (Supabase)</b> &nbsp;&nbsp; <b>大週期({htf_label}):</b> {htf_status_text} &nbsp;&nbsp; <b>RSI(14):</b> {latest_rsi:.1f}<br>"
+                    f"<b>{pair} · {tf} ({mode_desc})</b> &nbsp;&nbsp; <b>RSI(14):</b> {latest_rsi:.1f}<br>"
                     f"收: <span style='color:{status_color}'>{latest['close_price']:,.2f} ({change_pct:+.2f}%)</span>"
                 )
                 fig.add_annotation(text=ohlc_text, xref="paper", yref="paper", x=0.01, y=0.98, xanchor="left", yanchor="top", showarrow=False, font=dict(size=11, color="#848e9c"))
@@ -441,7 +426,7 @@ if st.session_state.is_searched:
                 fig.update_layout(
                     template="plotly_dark", paper_bgcolor="#0b0e11", plot_bgcolor="#0b0e11", hovermode="closest",
                     xaxis_rangeslider_visible=False, dragmode='pan', height=820, bargap=0.15, showlegend=False,
-                    margin=dict(l=10, r=85, t=25, b=30), uirevision=f"{sym}_{tf}_v20"
+                    margin=dict(l=10, r=85, t=25, b=30), uirevision=f"{sym}_{tf}_v21"
                 )
                 if follow_latest:
                     fig.update_layout(xaxis=dict(range=[start_time, end_time], autorange=False))
@@ -486,6 +471,6 @@ if st.session_state.is_searched:
         st.warning("Supabase 資料庫中目前尚無資料。")
 
 elif st.session_state.search_query != "":
-    st.warning(f"找不到與「{st.session_state.search_query}」相關的圖表，請嘗試輸入 **BTC** 或者 **ETH**。")
+    st.warning(f"找不到與「{st.session_state.search_query}」相關的圖表，請嘗試輸入 **BTC** 或 **ETH**。")
 else:
     st.info("💡 請在上方查詢欄輸入 **BTC** 或 **ETH** 並按下 **Enter** 顯示圖表。")
