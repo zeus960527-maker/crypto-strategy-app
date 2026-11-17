@@ -2,14 +2,8 @@ import ccxt
 import psycopg2
 import schedule
 import time
-import threading
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
-
-# 控制狀態全域變數
-is_running = False
-is_paused = False
-program_active = True
 
 # Supabase 雲端資料庫連線字串（請確認密碼中的 @ 是否已改為 %40）
 SUPABASE_DB_URL = "postgresql://postgres.ygzeqvcyqtvhvjrxhzdv:%4010233960527Ken@aws-0-ap-northeast-1.pooler.supabase.com:6543/postgres"
@@ -20,10 +14,6 @@ def get_db_connection():
 
 def fetch_single_timeframe(tf):
     """ 處理單一週期的完整增量抓取與分頁補齊（支援 5m, 15m, 1h, 4h） """
-    global is_running, is_paused
-    if not is_running or is_paused:
-        return
-
     # 啟用 CCXT 內建 Rate Limit 控制，避免觸發交易所封鎖
     exchange = ccxt.okx({'enableRateLimit': True})
     symbol = 'BTC/USDT:USDT'
@@ -48,7 +38,7 @@ def fetch_single_timeframe(tf):
                 print(f"[BTC-{tf}] 首次同步，正在抓取歷史資料...")
 
             # 2. 分頁迴圈（Pagination loop）：確保資料缺口大時也能一次完全補齊
-            while is_running and not is_paused:
+            while True:
                 params = {'symbol': symbol, 'timeframe': tf, 'limit': 300}
                 if current_since:
                     params['since'] = current_since
@@ -113,12 +103,7 @@ def fetch_single_timeframe(tf):
 
 def fetch_and_save_btc_contracts():
     """ 使用 ThreadPoolExecutor 平行抓取 5m, 15m, 1h, 4h 四個週期 """
-    global is_running, is_paused
-    if not is_running or is_paused:
-        return
-
     print("--- 開始 BTC 本輪同步作業 (5m, 15m, 1h, 4h) ---")
-    # 🎯 限制只同步這 4 個週期
     timeframes = ['5m', '15m', '1h', '4h']
     
     # 透過執行緒池同時向 OKX 發送多個週期的 API 請求
@@ -132,55 +117,18 @@ def fetch_and_save_btc_contracts():
                 
     print("--- BTC 本輪同步作業結束 ---")
 
-def keyboard_listener():
-    """ 獨立執行緒監聽鍵盤輸入 """
-    global is_running, is_paused, program_active
-    
-    print("==========================================")
-    print(" BTC 雲端數據同步控制台 (Supabase)")
-    print(" 指令控制說明：")
-    print("  [ENTER] 開始執行抓取")
-    print("  [S]     暫停抓取")
-    print("  [Q]     結束程式")
-    print("==========================================")
-    
-    while program_active:
-        user_input = input().strip().upper()
-        
-        if user_input == '': # 按下 ENTER
-            if not is_running:
-                is_running = True
-                is_paused = False
-                print("【狀態】BTC 程式已開始執行！")
-            elif is_paused:
-                is_paused = False
-                print("【狀態】BTC 程式已恢復執行！")
-            else:
-                print("【提示】程式已經在執行中。")
-                
-        elif user_input == 'S': # 按下 S
-            if is_running and not is_paused:
-                is_paused = True
-                print("【狀態】程式已【暫停】（按下 Enter 可恢復）。")
-            else:
-                print("【提示】目前並未在執行中。")
-                
-        elif user_input == 'Q': # 按下 Q
-            is_running = False
-            program_active = False
-            print("【狀態】正在安全結束程式...")
-            sys.exit(0)
-
 if __name__ == "__main__":
-    # 啟動鍵盤監聽執行緒
-    t = threading.Thread(target=keyboard_listener, daemon=True)
-    t.start()
+    print("==========================================")
+    print(" BTC 雲端數據同步排程 (Supabase / GitHub Actions)")
+    print("==========================================")
 
-    # 排程頻率：改為每 10 秒檢查一次
-    schedule.every(0.5).seconds.do(fetch_and_save_btc_contracts)
+    # 程式啟動立即執行一次同步
+    fetch_and_save_btc_contracts()
 
-    # 主迴圈維持程式運行
-    while program_active:
-        if is_running and not is_paused:
-            schedule.run_pending()
-        time.sleep(0.5)
+    # 設定排程（例如每 10 秒執行一次，或視需求調整）
+    schedule.every(10).seconds.do(fetch_and_save_btc_contracts)
+
+    # 主迴圈維持程式在雲端持續運行
+    while True:
+        schedule.run_pending()
+        time.sleep(1)
