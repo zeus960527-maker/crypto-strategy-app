@@ -8,13 +8,20 @@ from plotly.subplots import make_subplots
 # 頁面基本設定
 st.set_page_config(page_title="加密貨幣雙軌策略看盤系統", layout="wide")
 
-# 注入 OKX 專業暗色系樣式、介面微調與十字游標設定
+# 注入 OKX 專業暗色系樣式、強制取消畫面變淡遮罩與十字游標設定
 st.markdown("""
 <style>
     .block-container { padding-top: 1.2rem; padding-bottom: 1rem; }
     div[data-testid="stRadio"] > div { flex-direction: row; gap: 12px; }
     .stTextInput input { background-color: #1e2329; color: #eaecef; border: 1px solid #2b313a; }
     .stTextInput input:focus { border-color: #f0b90b; }
+    
+    /* 🎯 關鍵：徹底隱藏 Streamlit 局部更新或重新整理時的畫面變淡（Loading 遮罩） */
+    .stApp > div[data-baseweb="block"] { opacity: 1 !important; }
+    div.st-emotion-cache-1fcdicd, div[data-testid="stStatusWidget"], .stToast { opacity: 1 !important; }
+    .element-container { opacity: 1 !important; transition: none !important; }
+    iframe { opacity: 1 !important; }
+
     /* 將 Plotly 圖表區域滑鼠游標強制改為十字 */
     .js-plotly-plot .plotly .nsewdrag, 
     .js-plotly-plot .plotly .draglayer,
@@ -60,7 +67,7 @@ DB_HOST = "aws-0-ap-northeast-1.pooler.supabase.com"
 DB_PORT = "5432"
 DB_NAME = "postgres"
 
-@st.cache_data(ttl=5)  # 快取設為 5 秒，確保能定期從 Supabase 讀取最新寫入的 K 線
+@st.cache_data(ttl=5)
 def load_historical_data(table_name, symbol_name):
     """從 Supabase (PostgreSQL) 讀取 K 線資料，並精準解析時間戳記轉換為台灣時間 (UTC+8)"""
     try:
@@ -150,7 +157,7 @@ if st.session_state.is_searched:
         
         volume_ratio = 1.0 - kline_ratio
         
-        # 🎯 使用局部 Fragment（每 3 秒自動在背景重新整理圖表與數據，畫面絕不閃爍）
+        # 🎯 使用局部 Fragment（每 3 秒自動在背景更新，配合上方 CSS 確保更新時絕對不發白、不變淡）
         @st.fragment(run_every=3)
         def render_live_chart_section(tbl, sym, pair, tf, k_rat, v_rat, follow_latest):
             df = load_historical_data(tbl, sym)
