@@ -40,7 +40,7 @@ if "last_notified_times" not in st.session_state:
     st.session_state.last_notified_times = {}  # 記錄各幣種、週期與多空方向上次推送到 Discord 的時間
 
 # ==================== 1. 頂部標題與搜尋表單 ====================
-st.title("加密貨幣分析 - 動態趨勢突破 + 智慧風控系統 (超精準多空雙向版)")
+st.title("加密貨幣分析")
 
 with st.form(key="search_form"):
     col1, col2 = st.columns([4, 1])
