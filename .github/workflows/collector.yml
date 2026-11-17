@@ -3,7 +3,7 @@ name: Run Data Collector
 on:
   schedule:
     # 每 1 小時執行一次
-    - cron: '*/1* * * *'
+    - cron: '*/1 * * * *'
   workflow_dispatch:
 
 jobs:
