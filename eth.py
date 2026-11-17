@@ -11,12 +11,11 @@ SUPABASE_DB_URL = "postgresql://postgres.ygzeqvcyqtvhvjrxhzdv:%4010233960527Ken@
 def get_db_connection():
     return psycopg2.connect(SUPABASE_DB_URL)
 
-def fetch_single_timeframe_realtime(tf):
+def catch_up_historical_data(tf):
     """ 
-    高頻即時同步：
-    - 針對指定週期（5m, 15m, 1h, 4h）
-    - 每次直接抓取 OKX 最近的幾筆 K 棒（例如 limit=10），確保能夠覆蓋並更新當前正在跳動的最新一根 K 棒
-    - 透過資料庫的 ON CONFLICT 即時覆蓋更新高、低、收、量
+    【啟動補齊函式】
+    檢查 Supabase 中該週期最新的 open_time，自動分頁補齊至當前最新資料，
+    確保重新執行時不會遺漏中斷期間的歷史 K 棒。
     """
     exchange = ccxt.okx({'enableRateLimit': True})
     symbol = 'ETH/USDT:USDT'  # ETH 合約交易對
@@ -24,13 +23,101 @@ def fetch_single_timeframe_realtime(tf):
     connection = get_db_connection()
     try:
         with connection.cursor() as cursor:
-            # 抓取最近的 15 筆最新資料（包含正在進行中的當前 K 棒與前幾根歷史 K 棒）
+            # 1. 查詢 Supabase 中該週期目前最新的 open_time
+            cursor.execute(
+                "SELECT MAX(open_time) FROM eth_contract_klines WHERE timeframe = %s",
+                (tf,)
+            )
+            result = cursor.fetchone()
+            last_open_time = result[0] if result and result[0] is not None else None
+
+            all_data_to_insert = []
+            current_since = last_open_time
+            
+            if current_since:
+                print(f"[ETH-{tf}] 檢測到歷史斷點，開始補齊自時間戳 {current_since} 起的資料...")
+            else:
+                print(f"[ETH-{tf}] 首次同步，正在從 OKX 完整抓取 [{tf}] 歷史資料...")
+
+            # 2. 分頁迴圈（Pagination loop）補滿中斷的歷史資料
+            while True:
+                params = {'symbol': symbol, 'timeframe': tf, 'limit': 300}
+                if current_since:
+                    params['since'] = current_since
+                
+                try:
+                    ohlcv = exchange.fetch_ohlcv(**params)
+                except Exception as e:
+                    print(f"[ETH-{tf}] 歷史補齊 OKX API 抓取失敗: {e}")
+                    break
+
+                if not ohlcv:
+                    break
+
+                batch_data = [
+                    (tf, candle[0], candle[1], candle[2], candle[3], candle[4], candle[5])
+                    for candle in ohlcv
+                ]
+
+                # 避免重複寫入邊界資料
+                if current_since and all_data_to_insert and batch_data[0][1] == all_data_to_insert[-1][1]:
+                    batch_data = batch_data[1:]
+
+                if not batch_data:
+                    break
+
+                all_data_to_insert.extend(batch_data)
+                
+                if len(ohlcv) < params['limit']:
+                    break
+                
+                next_since = ohlcv[-1][0] + 1
+                if current_since and next_since <= current_since:
+                    break
+                current_since = next_since
+
+            # 3. 批次寫入 Supabase
+            if all_data_to_insert:
+                sql = """
+                    INSERT INTO eth_contract_klines 
+                    (timeframe, open_time, open_price, high_price, low_price, close_price, volume)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (timeframe, open_time) DO UPDATE SET 
+                    high_price = GREATEST(eth_contract_klines.high_price, EXCLUDED.high_price),
+                    low_price = LEAST(eth_contract_klines.low_price, EXCLUDED.low_price),
+                    close_price = EXCLUDED.close_price,
+                    volume = EXCLUDED.volume;
+                """
+                cursor.executemany(sql, all_data_to_insert)
+                connection.commit()
+                print(f"  -> ETH 週期 [{tf}] 歷史資料補齊成功！共補入 {len(all_data_to_insert)} 筆")
+            else:
+                print(f"  -> ETH 週期 [{tf}] 歷史資料已是最新，無需補齊。")
+
+    except Exception as e:
+        connection.rollback()
+        print(f"  -> ETH 週期 [{tf}] 歷史補齊寫入錯誤: {e}")
+    finally:
+        connection.close()
+
+def fetch_single_timeframe_realtime(tf):
+    """ 
+    【高頻即時同步】
+    針對指定週期（5m, 15m, 1h, 4h）抓取最近 15 筆 K 棒，
+    即時覆蓋更新當前正在跳動的最新一根 K 棒。
+    """
+    exchange = ccxt.okx({'enableRateLimit': True})
+    symbol = 'ETH/USDT:USDT'
+    
+    connection = get_db_connection()
+    try:
+        with connection.cursor() as cursor:
             params = {'symbol': symbol, 'timeframe': tf, 'limit': 15}
             
             try:
                 ohlcv = exchange.fetch_ohlcv(**params)
             except Exception as e:
-                print(f"[ETH-{tf}] OKX API 抓取失敗: {e}")
+                print(f"[ETH-{tf}] 即時同步 OKX API 抓取失敗: {e}")
                 return
 
             if not ohlcv:
@@ -41,7 +128,6 @@ def fetch_single_timeframe_realtime(tf):
                 for candle in ohlcv
             ]
 
-            # 即時批次寫入 / 覆蓋更新 Supabase (PostgreSQL 語法)
             sql = """
                 INSERT INTO eth_contract_klines 
                 (timeframe, open_time, open_price, high_price, low_price, close_price, volume)
@@ -61,16 +147,16 @@ def fetch_single_timeframe_realtime(tf):
 
     except Exception as e:
         connection.rollback()
-        print(f"[ETH-{tf}] 資料庫寫入錯誤: {e}")
+        print(f"[ETH-{tf}] 即時寫入錯誤: {e}")
     finally:
         connection.close()
 
-def run_realtime_sync_loop():
-    """ 使用 ThreadPoolExecutor 平行高頻同步 5m, 15m, 1h, 4h 四個週期 """
+def run_sync_task(task_func):
+    """ 使用 ThreadPoolExecutor 平行執行 5m, 15m, 1h, 4h 四個週期 """
     timeframes = ['5m', '15m', '1h', '4h']
     
     with ThreadPoolExecutor(max_workers=len(timeframes)) as executor:
-        futures = [executor.submit(fetch_single_timeframe_realtime, tf) for tf in timeframes]
+        futures = [executor.submit(task_func, tf) for tf in timeframes]
         for future in as_completed(futures):
             try:
                 future.result()
@@ -79,21 +165,25 @@ def run_realtime_sync_loop():
 
 if __name__ == "__main__":
     print("==========================================")
-    print(" ETH 多週期【高頻即時】數據同步控制台 (Supabase)")
+    print(" ETH 多週期【啟動補齊 + 高頻即時】同步控制台")
     print("==========================================")
-    print("【狀態】已啟動高頻監控，一有新價格將立即寫入資料庫...")
 
-    # 主迴圈：以極短間隔（例如每 2 秒）持續向 OKX 抓取最新價格並寫入 Supabase
+    # 1. 【第一步】程式重新啟動時，先自動把上次中斷到最新的歷史資料全數補齊
+    print("【狀態】正在檢查並補齊歷史數據...")
+    run_sync_task(catch_up_historical_data)
+    print("【狀態】歷史數據補齊完畢！正式進入高頻即時監控...")
+
+    # 2. 【第二步】進入常駐的高頻即時迴圈，每 3 秒更新一次最新價格與 K 棒
     try:
         while True:
             start_time = time.time()
             
             # 執行一輪多執行緒即時同步
-            run_realtime_sync_loop()
+            run_sync_task(fetch_single_timeframe_realtime)
             
-            # 計算執行耗費的時間，控制頻率（例如每 3 秒跑一次，兼顧 API 頻率限制與即時性）
+            # 控制頻率：維持大約 3 秒一輪，兼顧效能與 API 限制
             elapsed = time.time() - start_time
-            sleep_time = max(1.0, 3.0 - elapsed)  # 至少休眠 1 秒，目標維持 3 秒一輪
+            sleep_time = max(1.0, 3.0 - elapsed)
             time.sleep(sleep_time)
             
     except KeyboardInterrupt:
