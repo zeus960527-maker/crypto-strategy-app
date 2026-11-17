@@ -11,7 +11,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 # 頁面基本設定
-st.set_page_config(page_title="加密貨幣動態趨勢線突破策略分析", layout="wide")
+st.set_page_config(page_title="加密貨幣策略分析", layout="wide")
 
 # 注入 OKX 專業暗色系樣式、介面微調與十字游標設定
 st.markdown("""
@@ -40,7 +40,7 @@ if "last_notified_times" not in st.session_state:
     st.session_state.last_notified_times = {}  # 記錄各幣種、週期與多空方向上次推送到 Discord 的時間
 
 # ==================== 1. 頂部標題與搜尋表單 ====================
-st.title("加密貨幣分析 - 動態趨勢線突破 + RSI + ATR 智慧風控系統 (Supabase 雲端版)")
+st.title("加密貨幣分析)")
 
 with st.form(key="search_form"):
     col1, col2 = st.columns([4, 1])
