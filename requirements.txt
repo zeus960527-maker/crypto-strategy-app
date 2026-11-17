@@ -1,5 +1,5 @@
 streamlit
-CCXT
+ccxt
 pandas
 numpy
 sqlalchemy
