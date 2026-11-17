@@ -11,7 +11,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 SUPABASE_DB_URL = "postgresql://postgres.ygzeqvcyqtvhvjrxhzdv:%4010233960527Ken@aws-0-ap-northeast-1.pooler.supabase.com:6543/postgres"
 
 # 📌 請務必填入你的 Discord Webhook URL
-DISCORD_WEBHOOK_URL = "你的_DISCORD_WEBHOOK_URL_貼在這邊"
+DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/1571457845772165170/MZt_7HpNi9VD_peLI8ttwP_EXlAD5gAePTNSPff65whlJ-IMdv9qbPRnVy22npwjftI7"
 
 # 記錄上一次發送過信號的時間戳，避免同一根 K 棒重複推播
 last_notified_timestamps = {}
