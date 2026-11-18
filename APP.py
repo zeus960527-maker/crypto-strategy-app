@@ -310,7 +310,7 @@ if st.session_state.is_searched:
             latest_rsi = latest['RSI'] if not pd.isna(latest['RSI']) else 50.0
             latest_ai_prob = latest['AI_Prob'] * 100
 
-            # 建立雙區塊圖表 (固定比例: 主圖 0.75, 副圖 0.25)
+            # 建立雙區塊圖表
             fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.015, row_heights=[0.75, 0.25])
             
             # 1. K線圖主體
@@ -372,7 +372,7 @@ if st.session_state.is_searched:
                 row=1, col=1
             )
 
-            # 🛠️ K線圖左上角顯示策略與技術指標（強制靠左對齊）
+            # 🛠️ K線圖左上角顯示策略與技術指標
             mode_desc = "⚡ AI小波段閃電模式" if tf in ['5m', '15m'] else "🌊 AI大波段趨勢模式"
             ohlc_text = (
                 f"<div style='text-align: left;'>"
@@ -388,11 +388,14 @@ if st.session_state.is_searched:
                 showarrow=False, font=dict(size=11, color="#848e9c")
             )
 
+            # 🛠️ 確保 hovermode 設為 "x unified" 或 "closest" 並開啟座標捕捉，才能順利渲染十字虛線
             fig.update_layout(
                 template="plotly_dark", 
                 paper_bgcolor="#0b0e11", 
                 plot_bgcolor="#0b0e11", 
-                hovermode=False, 
+                hovermode="x unified",  
+                hoverdistance=100,
+                spikedistance=1000,
                 xaxis_rangeslider_visible=False, 
                 dragmode='pan', 
                 height=820, 
@@ -402,22 +405,22 @@ if st.session_state.is_searched:
                 uirevision="constant_lock_state"
             )
             
-            # 預設自動跟隨最新 K 線範圍
             fig.update_layout(xaxis=dict(range=[start_time, end_time], autorange=False))
 
+            # 🛠️ 完整設定 X 軸與 Y 軸的 spike（十字虛線）樣式
             fig.update_xaxes(
                 showticklabels=True, gridcolor="#1e2329", zeroline=False, linecolor="#2b313a",
-                showspikes=True, spikemode='across', spikesnap='cursor', spikethickness=1, spikedash='dash', spikecolor='#787f8b'
+                showspikes=True, spikemode='across', spikesnap='cursor', spikethickness=1, spikedash='dash', spikecolor='#a0a6b2'
             )
             fig.update_yaxes(
                 side="right", gridcolor="#1e2329", zeroline=False, linecolor="#2b313a", tickformat=",.2f", 
-                showspikes=True, spikemode='across', spikesnap='cursor', spikethickness=1, spikedash='dash', spikecolor='#787f8b',
+                showspikes=True, spikemode='across', spikesnap='cursor', spikethickness=1, spikedash='dash', spikecolor='#a0a6b2',
                 showline=True,
                 row=1, col=1, range=y_range
             )
             fig.update_yaxes(
                 side="right", gridcolor="#1e2329", zeroline=False, linecolor="#2b313a", tickformat=",.2f", 
-                showspikes=True, spikemode='across', spikesnap='cursor', spikethickness=1, spikedash='dash', spikecolor='#787f8b',
+                showspikes=True, spikemode='across', spikesnap='cursor', spikethickness=1, spikedash='dash', spikecolor='#a0a6b2',
                 row=2, col=1
             )
             
