@@ -7,7 +7,7 @@ from plotly.subplots import make_subplots
 import lightgbm as lgb
 
 # 頁面基本設定
-st.set_page_config(page_title="加密貨幣雙軌策略 AI 看盤系統", layout="wide")
+st.set_page_config(page_title="加密貨幣AI策略", layout="wide")
 
 # 注入專業暗色系樣式、強制取消所有畫面變淡與載入遮罩
 st.markdown("""
@@ -52,7 +52,7 @@ if "ai_models" not in st.session_state:
     st.session_state.ai_models = {}
 
 # ==================== 1. 頂部標題與搜尋表單 ====================
-st.title("加密貨幣分析 - 雙軌策略 AI 智能看盤系統（小波段 5m/15m + 大波段 1h/4h）")
+st.title("加密貨幣AI策略")
 
 with st.form(key="search_form"):
     col_f1, col_f2 = st.columns([4, 1])
