@@ -303,31 +303,34 @@ if st.session_state.is_searched:
             latest_rsi = latest['RSI'] if not pd.isna(latest['RSI']) else 50.0
             latest_ai_prob = latest['AI_Prob'] * 100
 
-            # 準備傳遞給前端 Lightweight Charts 的 K 線資料
+            # 整理並過濾乾淨時間戳資料給前端圖表
+            df_tf = df_tf.dropna(subset=['open_time', 'open_price', 'high_price', 'low_price', 'close_price'])
             chart_data = []
             for _, row in df_tf.iterrows():
-                time_val = int(row['open_time'].timestamp())
-                chart_data.append({
-                    'time': time_val,
-                    'open': float(row['open_price']),
-                    'high': float(row['high_price']),
-                    'low': float(row['low_price']),
-                    'close': float(row['close_price'])
-                })
+                try:
+                    t_val = int(row['open_time'].timestamp())
+                    chart_data.append({
+                        'time': t_val,
+                        'open': float(row['open_price']),
+                        'high': float(row['high_price']),
+                        'low': float(row['low_price']),
+                        'close': float(row['close_price'])
+                    })
+                except Exception:
+                    continue
 
             chart_json = json.dumps(chart_data)
 
-            # 嵌入 TradingView 輕量圖表 (Lightweight Charts)
+            # 修復後的 TradingView 輕量圖表前端模板
             tv_html = f"""
             <!DOCTYPE html>
             <html>
             <head>
-                <script type="text/javascript" src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
+                <script type="text/javascript" src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
                 <style>
                     body, html {{ margin: 0; padding: 0; width: 100%; height: 100%; background-color: #0b0e11; overflow: hidden; font-family: sans-serif; }}
                     #chart-container {{ width: 100%; height: 820px; position: relative; }}
                     
-                    /* 右上角策略指標按鈕 */
                     #strategy-legend {{
                         position: absolute;
                         top: 10px;
@@ -345,7 +348,6 @@ if st.session_state.is_searched:
                     }}
                     #strategy-legend:hover {{ border-color: #f0b90b; }}
                     
-                    /* 參數設定彈跳視窗 */
                     #modal-overlay {{
                         display: none;
                         position: absolute;
@@ -400,15 +402,10 @@ if st.session_state.is_searched:
 
                 <script>
                     const chartData = {chart_json};
-                    const latestClose = {latest_close};
-                    const statusColor = "{status_color}";
-
                     const container = document.getElementById('chart-container');
-                    // 保底寬度計算，確保圖表正常渲染
-                    const chartWidth = container.clientWidth > 0 ? container.clientWidth : (window.innerWidth - 350);
-
+                    
                     const chart = LightweightCharts.createChart(container, {{
-                        width: chartWidth,
+                        width: container.clientWidth || window.innerWidth * 0.7,
                         height: 820,
                         layout: {{
                             background: {{ type: 'solid', color: '#0b0e11' }},
@@ -430,7 +427,7 @@ if st.session_state.is_searched:
                                 color: '#787f8b',
                                 width: 1,
                                 style: LightweightCharts.LineStyle.Dashed,
-                                labelBackgroundColor: statusColor,
+                                labelBackgroundColor: '{status_color}',
                             }},
                         }},
                         rightPriceScale: {{
@@ -452,10 +449,11 @@ if st.session_state.is_searched:
                         wickDownColor: '#F6465D',
                     }});
 
-                    candlestickSeries.setData(chartData);
-                    chart.timeScale().fitContent();
+                    if (chartData && chartData.length > 0) {{
+                        candlestickSeries.setData(chartData);
+                        chart.timeScale().fitContent();
+                    }}
 
-                    // 雙擊右上角策略指標開啟參數視窗
                     const legend = document.getElementById('strategy-legend');
                     const modal = document.getElementById('modal-overlay');
                     const closeModal = document.getElementById('close-modal');
@@ -470,10 +468,11 @@ if st.session_state.is_searched:
                         if (e.target === modal) modal.style.display = 'none';
                     }});
 
-                    // 視窗縮放適應
                     window.addEventListener('resize', () => {{
-                        const newWidth = container.clientWidth > 0 ? container.clientWidth : (window.innerWidth - 350);
-                        chart.applyOptions({{ width: newWidth, height: 820 }});
+                        chart.applyOptions({{ 
+                            width: container.clientWidth || window.innerWidth * 0.7, 
+                            height: 820 
+                        }});
                     }});
                 </script>
             </body>
