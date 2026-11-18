@@ -7,57 +7,97 @@ from plotly.subplots import make_subplots
 import lightgbm as lgb
 import os
 from PIL import Image
+import base64
 
-# 🛠️ 自動抓取 GitHub 專案根目錄下的駭客去背圖示設定網頁分頁 Logo
+# ==================== 載入圖片 ====================
 current_dir = os.path.dirname(os.path.abspath(__file__))
-icon_path = os.path.join(current_dir, "hacker_icon.png")
 
-try:
-    icon_img = Image.open(icon_path)
-except Exception:
-    icon_img = None
+def load_image_safe(filename):
+    path = os.path.join(current_dir, filename)
+    try:
+        return Image.open(path)
+    except Exception:
+        return None
+
+def get_base64_image(filename):
+    path = os.path.join(current_dir, filename)
+    try:
+        with open(path, "rb") as f:
+            data = f.read()
+        return base64.b64encode(data).decode()
+    except Exception:
+        return None
+
+icon_img = load_image_safe("hacker_icon.png")
+bg_base64 = get_base64_image("background.png")
 
 # 頁面基本設定
-st.set_page_config(page_title="加密貨幣AI策略系統", page_icon=icon_img if icon_img else "💻", layout="wide")
+st.set_page_config(
+    page_title="加密貨幣AI策略系統",
+    page_icon=icon_img if icon_img else "💻",
+    layout="wide"
+)
 
-# 注入專業暗色系樣式、強制取消所有畫面變淡與載入遮罩，並修復搜尋框點擊變灰的問題
-st.markdown("""
-<style>
-    .block-container { padding-top: 1.2rem; padding-bottom: 1rem; }
-    div[data-testid="stRadio"] > div { flex-direction: row; gap: 12px; }
+# ==================== 注入背景圖 + 暗色樣式 ====================
+bg_css = ""
+if bg_base64:
+    bg_css = f"""
+    .stApp {{
+        background-image: url("data:image/png;base64,{bg_base64}");
+        background-size: cover;
+        background-position: center;
+        background-repeat: no-repeat;
+        background-attachment: fixed;
+    }}
     
-    /* 搜尋框預設與點擊聚焦（Focus）樣式，防止點擊時變成灰色 */
-    .stTextInput input { 
+    /* 讓主要內容區域半透明，背景圖能透出來 */
+    [data-testid="stAppViewContainer"] > .main {{
+        background-color: rgba(11, 14, 17, 0.82);
+    }}
+    
+    .block-container {{
+        background-color: transparent !important;
+    }}
+    """
+
+st.markdown(f"""
+<style>
+    {bg_css}
+    
+    .block-container {{ padding-top: 1.2rem; padding-bottom: 1rem; }}
+    div[data-testid="stRadio"] > div {{ flex-direction: row; gap: 12px; }}
+    
+    /* 搜尋框樣式 */
+    .stTextInput input {{ 
         background-color: #1e2329 !important; 
         color: #eaecef !important; 
         border: 1px solid #2b313a !important; 
-    }
-    .stTextInput input:focus { 
+    }}
+    .stTextInput input:focus {{ 
         background-color: #1e2329 !important;
         color: #eaecef !important;
         border: 1px solid #f0b90b !important; 
         box-shadow: none !important;
-    }
+    }}
     
-    /* 絕對禁止任何畫面變淡、閃爍與 Loading 遮罩 */
-    .stApp, .element-container, iframe, div[data-testid="stVerticalBlock"], div[data-testid="stFragment"] {
+    /* 禁止畫面變淡與 Loading 遮罩 */
+    .stApp, .element-container, iframe, div[data-testid="stVerticalBlock"], div[data-testid="stFragment"] {{
         opacity: 1 !important;
         transition: none !important;
         animation: none !important;
-    }
+    }}
     
-    /* 隱藏右上角的載入轉圈動畫 */
-    [data-testid="stStatusWidget"] {
+    [data-testid="stStatusWidget"] {{
         visibility: hidden;
         display: none;
-    }
+    }}
 
-    /* 將 Plotly 圖表區域滑鼠游標強制改為十字 */
+    /* Plotly 十字游標 */
     .js-plotly-plot .plotly .nsewdrag, 
     .js-plotly-plot .plotly .draglayer,
-    .js-plotly-plot .plotly .plot-container {
+    .js-plotly-plot .plotly .plot-container {{
         cursor: crosshair !important;
-    }
+    }}
 </style>
 """, unsafe_allow_html=True)
 
@@ -67,7 +107,6 @@ if "is_searched" not in st.session_state:
 if "search_query" not in st.session_state:
     st.session_state.search_query = ""
 
-# 全域 AI 模型快取
 if "ai_models" not in st.session_state:
     st.session_state.ai_models = {}
 
@@ -92,7 +131,7 @@ if submitted:
 
 st.markdown("---")
 
-# ==================== 2. 建立帶快取的 SQLAlchemy Engine 連線 ====================
+# ==================== 2. 資料庫連線 ====================
 DB_USER = "postgres.ygzeqvcyqtvhvjrxhzdv"
 DB_PASSWORD = "%4010233960527Ken"
 DB_HOST = "aws-0-ap-northeast-1.pooler.supabase.com"
@@ -199,7 +238,7 @@ def train_or_get_ai_model(df_tf, key):
     except Exception:
         return None
 
-# ==================== 3. 主畫面與即時局部刷新區塊 ====================
+# ==================== 3. 主畫面 ====================
 if st.session_state.is_searched:
     query_str = st.session_state.search_query.upper()
     
@@ -321,10 +360,8 @@ if st.session_state.is_searched:
             latest_rsi = latest['RSI'] if not pd.isna(latest['RSI']) else 50.0
             latest_ai_prob = latest['AI_Prob'] * 100
 
-            # 建立雙區塊圖表
             fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.015, row_heights=[0.75, 0.25])
             
-            # 1. K線圖主體
             fig.add_trace(go.Candlestick(
                 x=df_tf['open_time'], open=df_tf['open_price'], high=df_tf['high_price'], low=df_tf['low_price'], close=df_tf['close_price'],
                 name=sym, line=dict(width=1.5), 
@@ -333,7 +370,6 @@ if st.session_state.is_searched:
                 hoverinfo="none"
             ), row=1, col=1)
             
-            # 2. 技術指標與策略線
             fig.add_trace(go.Scatter(x=df_tf['open_time'], y=df_tf['EMA_21'], mode='lines', name='EMA21', line=dict(color='#2962FF', width=1.2), hoverinfo="none"), row=1, col=1)
             fig.add_trace(go.Scatter(x=df_tf['open_time'], y=df_tf['EMA_50'], mode='lines', name='EMA50', line=dict(color='#FFFFFF', width=1.2), hoverinfo="none"), row=1, col=1)
             fig.add_trace(go.Scatter(x=df_tf['open_time'], y=df_tf['EMA_100'], mode='lines', name='EMA100', line=dict(color='#FF5252', width=1.4), hoverinfo="none"), row=1, col=1)
@@ -341,7 +377,6 @@ if st.session_state.is_searched:
             fig.add_trace(go.Scatter(x=df_tf['open_time'], y=df_tf['Trend_Resistance'], mode='lines', name='壓力趨勢線', line=dict(color='rgba(246, 70, 93, 0.7)', width=1.5, dash='dash'), hoverinfo="none"), row=1, col=1)
             fig.add_trace(go.Scatter(x=df_tf['open_time'], y=df_tf['Trend_Support'], mode='lines', name='支撐趨勢線', line=dict(color='rgba(14, 203, 129, 0.7)', width=1.5, dash='dash'), fill='tonexty', fillcolor='rgba(126, 87, 194, 0.02)', hoverinfo="none"), row=1, col=1)
 
-            # 3. AI 買賣點標記
             long_df = df_tf[df_tf['Long_Signal']]
             if not long_df.empty:
                 fig.add_trace(go.Scatter(
@@ -364,13 +399,11 @@ if st.session_state.is_searched:
                     hoverinfo="none"
                 ), row=1, col=1)
 
-            # 4. 獨立副圖：成交量 (VOL)
             vol_colors = ['rgba(14, 203, 129, 0.5)' if c >= o else 'rgba(246, 70, 93, 0.5)' for c, o in zip(df_tf['close_price'], df_tf['open_price'])]
             fig.add_trace(go.Bar(x=df_tf['open_time'], y=df_tf['volume'], name='VOL', marker_color=vol_colors, hoverinfo="none"), row=2, col=1)
 
             latest_close = latest['close_price']
             
-            # 右側價格軸最新價標籤方格
             fig.add_hline(
                 y=latest_close, line_dash="dot", line_width=1, line_color=status_color, 
                 annotation_text=f" {latest_close:,.2f} ", 
@@ -383,7 +416,6 @@ if st.session_state.is_searched:
                 row=1, col=1
             )
 
-            # 🛠️ 標題文字置於左上角頂端
             mode_desc = "⚡ AI小波段閃電模式" if tf in ['5m', '15m'] else "🌊 AI大波段趨勢模式"
             ohlc_text = (
                 f"<b>{pair} · {tf} ({mode_desc})</b><br>"
@@ -397,11 +429,10 @@ if st.session_state.is_searched:
                 showarrow=False, align="left", font=dict(size=11, color="#848e9c")
             )
 
-            # 🛠️ 設定 hovermode="x" 讓十字虛線與滑鼠完全同步移動，並移除黑色彈出框
             fig.update_layout(
                 template="plotly_dark", 
-                paper_bgcolor="#0b0e11", 
-                plot_bgcolor="#0b0e11", 
+                paper_bgcolor="rgba(11,14,17,0.6)",   # 讓圖表也稍微透出背景
+                plot_bgcolor="rgba(11,14,17,0.6)", 
                 hovermode="x",  
                 hoverdistance=100,
                 spikedistance=1000,
@@ -416,7 +447,6 @@ if st.session_state.is_searched:
             
             fig.update_layout(xaxis=dict(range=[start_time, end_time], autorange=False))
 
-            # 🛠️ 強制 X 軸與 Y 軸的 spike 緊貼滑鼠游標同步移動
             fig.update_xaxes(
                 showticklabels=True, gridcolor="#1e2329", zeroline=False, linecolor="#2b313a",
                 showspikes=True, spikemode='across', spikesnap='cursor', spikethickness=1, spikedash='dash', spikecolor='#a0a6b2'
@@ -442,7 +472,7 @@ if st.session_state.is_searched:
             with panel_col:
                 st.markdown("### 🎯 AI 即時操作建議")
                 st.markdown(f"""
-                <div style="background-color: #1e2329; border: 1px solid #2b313a; padding: 10px; border-radius: 6px; margin-bottom: 10px;">
+                <div style="background-color: rgba(30, 35, 41, 0.9); border: 1px solid #2b313a; padding: 10px; border-radius: 6px; margin-bottom: 10px;">
                     <div style="font-size: 13px; color: #848e9c;">當前 AI 模型信心評分</div>
                     <div style="font-size: 20px; font-weight: bold; color: #f0b90b;">{latest_ai_prob:.1f}%</div>
                 </div>
@@ -450,21 +480,21 @@ if st.session_state.is_searched:
 
                 if df_tf.iloc[-1]['Long_Signal']:
                     st.markdown(f"""
-                    <div style="background-color: #1e2329; border: 1px solid #0ECB81; padding: 12px; border-radius: 6px; border-left: 5px solid #0ECB81;">
+                    <div style="background-color: rgba(30, 35, 41, 0.9); border: 1px solid #0ECB81; padding: 12px; border-radius: 6px; border-left: 5px solid #0ECB81;">
                         <div style="color: #0ECB81; font-weight: bold;">🟢 AI 智能多單 (LONG)</div>
                         <div style="font-size: 12px;">进场: {latest_close:,.2f}</div>
                     </div>
                     """, unsafe_allow_html=True)
                 elif df_tf.iloc[-1]['Short_Signal']:
                     st.markdown(f"""
-                    <div style="background-color: #1e2329; border: 1px solid #F6465D; padding: 12px; border-radius: 6px; border-left: 5px solid #F6465D;">
+                    <div style="background-color: rgba(30, 35, 41, 0.9); border: 1px solid #F6465D; padding: 12px; border-radius: 6px; border-left: 5px solid #F6465D;">
                         <div style="color: #F6465D; font-weight: bold;">🔴 AI 智能空單 (SHORT)</div>
                         <div style="font-size: 12px;">进场: {latest_close:,.2f}</div>
                     </div>
                     """, unsafe_allow_html=True)
                 else:
                     st.markdown("""
-                    <div style="background-color: #1e2329; border: 1px solid #2b313a; padding: 15px; border-radius: 6px; text-align: center; border-left: 5px solid #f0b90b;">
+                    <div style="background-color: rgba(30, 35, 41, 0.9); border: 1px solid #2b313a; padding: 15px; border-radius: 6px; text-align: center; border-left: 5px solid #f0b90b;">
                         <div style="color: #f0b90b; font-weight: bold;">⏳ AI 觀望中 (WAIT)</div>
                         <div style="font-size: 11px; color: #848e9c; margin-top: 4px;">等待高勝率變盤契機</div>
                     </div>
@@ -475,6 +505,4 @@ if st.session_state.is_searched:
     render_live_kline_chart(target_table, symbol_name, pair_name, selected_tf)
 
 elif st.session_state.search_query != "":
-    st.warning(f"找不到與「{st.session_state.search_query}」相關的圖表，請嘗試輸入 **BTC** 或 **ETH**。")
-else:
-    st.info("💡 請在上方查詢欄輸入 **BTC** 或 **ETH** 並按下 **Enter** 顯示圖表。")
+    st.warning(f"找不到與「
