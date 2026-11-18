@@ -10,3 +10,4 @@ requests
 supabase
 lightgbm
 streamlit_lightweight_charts
+scikit-learn
