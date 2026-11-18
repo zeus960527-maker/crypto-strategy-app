@@ -306,7 +306,6 @@ if st.session_state.is_searched:
             # 準備傳遞給前端 Lightweight Charts 的 K 線資料
             chart_data = []
             for _, row in df_tf.iterrows():
-                # 將時間轉換為 Unix timestamp (秒)
                 time_val = int(row['open_time'].timestamp())
                 chart_data.append({
                     'time': time_val,
@@ -318,8 +317,7 @@ if st.session_state.is_searched:
 
             chart_json = json.dumps(chart_data)
 
-            # 使用 TradingView 專用前端高效能圖表組件 (方案二)
-            # 實現：滑鼠游標價格方格、僅顯示游標與最新價、右上角策略指標且雙擊顯示參數
+            # 嵌入 TradingView 輕量圖表 (Lightweight Charts)
             tv_html = f"""
             <!DOCTYPE html>
             <html>
@@ -329,7 +327,7 @@ if st.session_state.is_searched:
                     body, html {{ margin: 0; padding: 0; width: 100%; height: 100%; background-color: #0b0e11; overflow: hidden; font-family: sans-serif; }}
                     #chart-container {{ width: 100%; height: 820px; position: relative; }}
                     
-                    /* 策略指標浮動視窗 (右上角) */
+                    /* 右上角策略指標按鈕 */
                     #strategy-legend {{
                         position: absolute;
                         top: 10px;
@@ -406,8 +404,11 @@ if st.session_state.is_searched:
                     const statusColor = "{status_color}";
 
                     const container = document.getElementById('chart-container');
+                    // 保底寬度計算，確保圖表正常渲染
+                    const chartWidth = container.clientWidth > 0 ? container.clientWidth : (window.innerWidth - 350);
+
                     const chart = LightweightCharts.createChart(container, {{
-                        width: container.clientWidth,
+                        width: chartWidth,
                         height: 820,
                         layout: {{
                             background: {{ type: 'solid', color: '#0b0e11' }},
@@ -434,7 +435,6 @@ if st.session_state.is_searched:
                         }},
                         rightPriceScale: {{
                             borderColor: '#2b313a',
-                            // 關鍵設定：確保右側價格軸僅顯示游標價格與最新價格，其餘刻度保持乾淨
                             scaleMargins: {{ top: 0.1, bottom: 0.1 }},
                         }},
                         timeScale: {{
@@ -472,7 +472,8 @@ if st.session_state.is_searched:
 
                     // 視窗縮放適應
                     window.addEventListener('resize', () => {{
-                        chart.applyOptions({{ width: container.clientWidth, height: 820 }});
+                        const newWidth = container.clientWidth > 0 ? container.clientWidth : (window.innerWidth - 350);
+                        chart.applyOptions({{ width: newWidth, height: 820 }});
                     }});
                 </script>
             </body>
