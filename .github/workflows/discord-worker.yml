@@ -1,0 +1,36 @@
+name: Discord Signal Worker
+
+on:
+  schedule:
+    # GitHub Actions 使用 UTC；每 5 分鐘檢查一次 Supabase 訊號佇列
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: discord-signal-worker
+  cancel-in-progress: false
+
+jobs:
+  send-discord:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Send pending signals to Discord
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          DISCORD_BATCH_SIZE: "30"
+        run: python discord_worker.py
