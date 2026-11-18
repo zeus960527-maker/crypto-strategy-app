@@ -7,7 +7,7 @@ from plotly.subplots import make_subplots
 import lightgbm as lgb
 
 # 頁面基本設定
-st.set_page_config(page_title="加密貨幣雙軌策略 AI 看盤系統", layout="wide")
+st.set_page_config(page_title="加密貨幣AI策略系統", layout="wide")
 
 # 注入專業暗色系樣式、強制取消所有畫面變淡與載入遮罩，並修復搜尋框點擊變灰的問題
 st.markdown("""
@@ -63,7 +63,7 @@ if "ai_models" not in st.session_state:
     st.session_state.ai_models = {}
 
 # ==================== 1. 頂部標題與搜尋表單 ====================
-st.title("加密貨幣分析 - 雙軌策略 AI 智能看盤系統（小波段 5m/15m + 大波段 1h/4h）")
+st.title("加密貨幣AI策略系統")
 
 with st.form(key="search_form"):
     col_f1, col_f2 = st.columns([4, 1])
@@ -400,11 +400,14 @@ if st.session_state.is_searched:
                 fig.add_hline(y=active_tp, line_dash="dash", line_color="#0ECB81", annotation_text=f" ATR止盈: {active_tp:,.2f} ", annotation_position="left", row=1, col=1)
 
             mode_desc = "⚡ AI小波段閃電模式" if tf in ['5m', '15m'] else "🌊 AI大波段趨勢模式"
+            
+            # 🛠️ 在頂端資訊列中加入即時滑鼠跟隨提示與數值展示區
             ohlc_text = (
                 f"<b>{pair} · {tf} ({mode_desc})</b> &nbsp;&nbsp; <b>RSI:</b> {latest_rsi:.1f} | <b>🤖 AI勝率:</b> <span style='color:#f0b90b'>{latest_ai_prob:.1f}%</span><br>"
-                f"收: <span style='color:{status_color}'>{latest['close_price']:,.2f} ({change_pct:+.2f}%)</span>"
+                f"收: <span style='color:{status_color}'>{latest['close_price']:,.2f} ({change_pct:+.2f}%)</span> &nbsp;|&nbsp; "
+                f"<span style='color:#848e9c; font-size:11px;'>💡 提示：移動十字線可對應右側最新價方格與價格軸刻度</span>"
             )
-            fig.add_annotation(text=ohlc_text, xref="paper", yref="paper", x=0.01, y=0.98, xanchor="left", yanchor="top", showarrow=False, font=dict(size=11, color="#848e9c"))
+            fig.add_annotation(text=ohlc_text, xref="paper", yref="paper", x=0.01, y=0.98, xanchor="left", yanchor="top", showarrow=False, font=dict(size=11, color="#eaecef"))
 
             fig.update_layout(
                 template="plotly_dark", 
