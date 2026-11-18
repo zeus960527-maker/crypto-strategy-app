@@ -7,7 +7,7 @@ from plotly.subplots import make_subplots
 import lightgbm as lgb
 
 # 頁面基本設定
-st.set_page_config(page_title="加密貨幣雙軌策略 AI 看盤系統", layout="wide")
+st.set_page_config(page_title="加密貨幣AI策略", layout="wide")
 
 # 注入專業暗色系樣式、強制取消所有畫面變淡與載入遮罩
 st.markdown("""
@@ -52,7 +52,7 @@ if "ai_models" not in st.session_state:
     st.session_state.ai_models = {}
 
 # ==================== 1. 頂部標題與搜尋表單 ====================
-st.title("加密貨幣分析 - 雙軌策略 AI 智能看盤系統（小波段 5m/15m + 大波段 1h/4h）")
+st.title("加密貨幣分析")
 
 with st.form(key="search_form"):
     col_f1, col_f2 = st.columns([4, 1])
@@ -340,9 +340,9 @@ if st.session_state.is_searched:
                 fig.add_trace(go.Scatter(
                     x=long_df['open_time'], y=long_df['low_price'] * 0.995, 
                     mode='markers+text', name='AI 多點', 
-                    marker=dict(symbol='triangle-up', size=16, color='#0ECB81', line=dict(width=1, color='white')), 
+                    marker=dict(symbol='triangle-up', size=10, color='#0ECB81', line=dict(width=1, color='white')),  # 這裡已將 size 從 16 改為 10
                     text=["🟢 AI多" for _ in range(len(long_df))], textposition="bottom center",
-                    textfont=dict(color='#0ECB81', size=12, family="Arial Black")
+                    textfont=dict(color='#0ECB81', size=11, family="Arial Black")
                 ), row=1, col=1)
 
             short_df = df_tf[df_tf['Short_Signal']]
@@ -350,9 +350,9 @@ if st.session_state.is_searched:
                 fig.add_trace(go.Scatter(
                     x=short_df['open_time'], y=short_df['high_price'] * 1.005, 
                     mode='markers+text', name='AI 空點', 
-                    marker=dict(symbol='triangle-down', size=16, color='#F6465D', line=dict(width=1, color='white')), 
+                    marker=dict(symbol='triangle-down', size=10, color='#F6465D', line=dict(width=1, color='white')),  # 這裡已將 size 從 16 改為 10
                     text=["🔴 AI空" for _ in range(len(short_df))], textposition="top center",
-                    textfont=dict(color='#F6465D', size=12, family="Arial Black")
+                    textfont=dict(color='#F6465D', size=11, family="Arial Black")
                 ), row=1, col=1)
 
             vol_colors = ['rgba(14, 203, 129, 0.5)' if c >= o else 'rgba(246, 70, 93, 0.5)' for c, o in zip(df_tf['close_price'], df_tf['open_price'])]
