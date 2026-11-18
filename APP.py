@@ -340,7 +340,7 @@ if st.session_state.is_searched:
                 fig.add_trace(go.Scatter(
                     x=long_df['open_time'], y=long_df['low_price'] * 0.995, 
                     mode='markers+text', name='AI 多點', 
-                    marker=dict(symbol='triangle-up', size=10, color='#0ECB81', line=dict(width=1, color='white')),  # 這裡已將 size 從 16 改為 10
+                    marker=dict(symbol='triangle-up', size=10, color='#0ECB81', line=dict(width=1, color='white')), 
                     text=["🟢 AI多" for _ in range(len(long_df))], textposition="bottom center",
                     textfont=dict(color='#0ECB81', size=11, family="Arial Black")
                 ), row=1, col=1)
@@ -350,7 +350,7 @@ if st.session_state.is_searched:
                 fig.add_trace(go.Scatter(
                     x=short_df['open_time'], y=short_df['high_price'] * 1.005, 
                     mode='markers+text', name='AI 空點', 
-                    marker=dict(symbol='triangle-down', size=10, color='#F6465D', line=dict(width=1, color='white')),  # 這裡已將 size 從 16 改為 10
+                    marker=dict(symbol='triangle-down', size=10, color='#F6465D', line=dict(width=1, color='white')), 
                     text=["🔴 AI空" for _ in range(len(short_df))], textposition="top center",
                     textfont=dict(color='#F6465D', size=11, family="Arial Black")
                 ), row=1, col=1)
@@ -391,9 +391,21 @@ if st.session_state.is_searched:
             if follow_latest:
                 fig.update_layout(xaxis=dict(range=[start_time, end_time], autorange=False))
 
-            fig.update_xaxes(showticklabels=True, gridcolor="#1e2329", zeroline=False, linecolor="#2b313a")
-            fig.update_yaxes(side="right", gridcolor="#1e2329", zeroline=False, linecolor="#2b313a", tickformat=",.2f", showspikes=True, row=1, col=1, range=y_range)
-            fig.update_yaxes(side="right", gridcolor="#1e2329", zeroline=False, linecolor="#2b313a", tickformat=",.2f", row=2, col=1)
+            # 🛠️ 調整十字光標 (Spikes)：橫軸與縱軸同時開啟、使用細虛線且延伸至邊界
+            fig.update_xaxes(
+                showticklabels=True, gridcolor="#1e2329", zeroline=False, linecolor="#2b313a",
+                showspikes=True, spikemode='across', spikesnap='cursor', spikethickness=1, spikedash='dash', spikecolor='#787f8b'
+            )
+            fig.update_yaxes(
+                side="right", gridcolor="#1e2329", zeroline=False, linecolor="#2b313a", tickformat=",.2f", 
+                showspikes=True, spikemode='across', spikesnap='cursor', spikethickness=1, spikedash='dash', spikecolor='#787f8b',
+                row=1, col=1, range=y_range
+            )
+            fig.update_yaxes(
+                side="right", gridcolor="#1e2329", zeroline=False, linecolor="#2b313a", tickformat=",.2f", 
+                showspikes=True, spikemode='across', spikesnap='cursor', spikethickness=1, spikedash='dash', spikecolor='#787f8b',
+                row=2, col=1
+            )
             
             chart_config = {'scrollZoom': True, 'displayModeBar': True, 'displaylogo': False}
             
