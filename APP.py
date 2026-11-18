@@ -155,7 +155,6 @@ if st.session_state.is_searched:
         symbol_name = 'BTC'
         pair_name = 'BTC-USDT-SWAP'
         
-    # ⚡ 效能優化：不再於外面重複載入整張表，直接透過 UI 互動元件非同步呈現
     c1, c2, c3 = st.columns([2.5, 2, 1.5])
     with c1:
         selected_tf = st.radio("時間週期 (小波段/大波段)", ['5m', '15m', '1h', '4h'], horizontal=True, key="timeframe_select")
@@ -168,7 +167,6 @@ if st.session_state.is_searched:
     
     volume_ratio = 1.0 - kline_ratio
     
-    # ⚡ 使用 st.fragment(run_every=1) 達成每 1 秒局部背景刷新，畫面秒開且絕不閃爍
     @st.fragment(run_every=1)
     def render_live_kline_chart(tbl, sym, pair, tf, k_ratio, v_ratio, follow_latest):
         df = load_historical_data(tbl, sym)
@@ -178,6 +176,7 @@ if st.session_state.is_searched:
             df_tf['EMA_10'] = df_tf['close_price'].ewm(span=10, adjust=False).mean()
             df_tf['EMA_21'] = df_tf['close_price'].ewm(span=21, adjust=False).mean()
             df_tf['EMA_50'] = df_tf['close_price'].ewm(span=50, adjust=False).mean()
+            df_tf['EMA_100'] = df_tf['close_price'].ewm(span=100, adjust=False).mean()
 
             win = 20 if tf in ['5m', '15m'] else 40
             dev = 1.6 if tf in ['5m', '15m'] else 2.1
@@ -244,9 +243,11 @@ if st.session_state.is_searched:
                 decreasing_line_color='#F6465D', decreasing_fillcolor='#F6465D'
             ), row=1, col=1)
             
+            # EMA 線條繪製 (EMA21 藍色, EMA50 白色, EMA100 紅色)
             fig.add_trace(go.Scatter(x=df_tf['open_time'], y=df_tf['EMA_10'], mode='lines', name='EMA10', line=dict(color='#00E676', width=1)), row=1, col=1)
             fig.add_trace(go.Scatter(x=df_tf['open_time'], y=df_tf['EMA_21'], mode='lines', name='EMA21', line=dict(color='#2962FF', width=1.2)), row=1, col=1)
-            fig.add_trace(go.Scatter(x=df_tf['open_time'], y=df_tf['EMA_50'], mode='lines', name='EMA50', line=dict(color='#FFB300', width=1.2)), row=1, col=1)
+            fig.add_trace(go.Scatter(x=df_tf['open_time'], y=df_tf['EMA_50'], mode='lines', name='EMA50', line=dict(color='#FFFFFF', width=1.2)), row=1, col=1)
+            fig.add_trace(go.Scatter(x=df_tf['open_time'], y=df_tf['EMA_100'], mode='lines', name='EMA100', line=dict(color='#FF5252', width=1.4)), row=1, col=1)
 
             fig.add_trace(go.Scatter(x=df_tf['open_time'], y=df_tf['Trend_Resistance'], mode='lines', name='壓力趨勢線', line=dict(color='rgba(246, 70, 93, 0.7)', width=1.5, dash='dash')), row=1, col=1)
             fig.add_trace(go.Scatter(x=df_tf['open_time'], y=df_tf['Trend_Support'], mode='lines', name='支撐趨勢線', line=dict(color='rgba(14, 203, 129, 0.7)', width=1.5, dash='dash'), fill='tonexty', fillcolor='rgba(126, 87, 194, 0.02)'), row=1, col=1)
@@ -342,7 +343,6 @@ if st.session_state.is_searched:
         else:
             st.warning("此週期目前尚無資料。")
 
-    # 呼叫局部即時刷新函數
     render_live_kline_chart(target_table, symbol_name, pair_name, selected_tf, kline_ratio, volume_ratio, auto_scroll)
 
 elif st.session_state.search_query != "":
