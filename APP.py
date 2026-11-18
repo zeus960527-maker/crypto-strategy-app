@@ -186,12 +186,22 @@ def load_historical_data(table_name, symbol_name):
 
     try:
         engine = get_db_engine()
+        # 每個時間週期各取最新 300 根，避免 5m/15m/1h/4h 混在一起
+        # 共用 LIMIT 300，導致 ETH 個別週期的 K 線數量不足。
         sql = text(f"""
             SELECT timeframe, open_time, open_price, high_price,
                    low_price, close_price, volume
-            FROM {table_name}
-            ORDER BY open_time DESC
-            LIMIT 300
+            FROM (
+                SELECT timeframe, open_time, open_price, high_price,
+                       low_price, close_price, volume,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY timeframe
+                           ORDER BY open_time DESC
+                       ) AS row_num
+                FROM {table_name}
+            ) AS ranked
+            WHERE row_num <= 300
+            ORDER BY open_time ASC
         """)
         with engine.connect() as conn:
             df = pd.read_sql(sql, con=conn)
@@ -534,6 +544,32 @@ def render_live_kline_chart(table, symbol, pair, tf):
     model = train_or_get_ai_model(df_tf, f"{symbol}_{tf}")
     df_tf = add_trade_signals(df_tf, tf, model)
 
+    # 訊號診斷：清楚顯示訊號是否成立，以及未成立的原因。
+    with st.expander("🔍 查看策略訊號診斷（ETH 沒有標記時請展開）", expanded=False):
+        st.write(f"幣種：**{symbol}**　｜　時間週期：**{tf}**")
+        st.write(f"此週期 K 線數量：**{len(df_tf)}**")
+        st.write(f"AI 模型訓練狀態：**{'成功' if model is not None else '未建立（使用原程式預設 70% 分數）'}**")
+        st.write(f"基本多單條件成立：**{int(df_tf['Base_Long'].sum())}** 根")
+        st.write(f"基本空單條件成立：**{int(df_tf['Base_Short'].sum())}** 根")
+        st.write(f"最終多單標記：**{int(df_tf['Long_Signal'].sum())}** 根")
+        st.write(f"最終空單標記：**{int(df_tf['Short_Signal'].sum())}** 根")
+        last_diag = df_tf.iloc[-1]
+        st.write(
+            "最新 K 線：",
+            f"收盤 {last_diag['close_price']:,.4f}｜"
+            f"RSI {last_diag['RSI']:.2f}｜"
+            f"量比 {(last_diag['volume'] / last_diag['Vol_SMA20']):.2f}"
+            if pd.notna(last_diag['Vol_SMA20']) and last_diag['Vol_SMA20'] > 0
+            else "最新 K 線的成交量均線尚未就緒。"
+        )
+        st.write(f"最新 AI 模型分數：**{last_diag['AI_Prob'] * 100:.1f}%**（顯示門檻 58%）")
+        if not bool(last_diag['Base_Long']) and not bool(last_diag['Base_Short']):
+            st.info("最新一根 K 線未通過基本進場條件。請查看 RSI、成交量、趨勢通道及實體比例。")
+        elif not bool(last_diag['Long_Signal']) and not bool(last_diag['Short_Signal']):
+            st.info("基本條件可能成立，但 AI 分數未達標，或目前沒有可用模型。")
+        else:
+            st.success("最新一根 K 線已符合訊號條件。")
+
     display_count = 90 if symbol == "ETH" else 120
     view_df = df_tf.tail(display_count)
     if view_df.empty:
@@ -557,8 +593,18 @@ def render_live_kline_chart(table, symbol, pair, tf):
         view_df["high_price"].max(),
         resistances.max() if not resistances.empty else view_df["high_price"].max()
     )
+    # 把多空標記的實際 Y 座標也納入座標軸範圍，避免三角形被圖表裁切。
+    visible_longs = view_df[view_df["Long_Signal"]]
+    visible_shorts = view_df[view_df["Short_Signal"]]
+    marker_lows = (visible_longs["low_price"] * 0.995).tolist()
+    marker_highs = (visible_shorts["high_price"] * 1.005).tolist()
+    if marker_lows:
+        low = min(low, min(marker_lows))
+    if marker_highs:
+        high = max(high, max(marker_highs))
+
     span = max(high - low, abs(high) * 0.001, 1e-8)
-    y_range = [low - span * 0.03, high + span * 0.03]
+    y_range = [low - span * 0.05, high + span * 0.05]
 
     latest = df_tf.iloc[-1]
     latest_close = float(latest["close_price"])
@@ -731,6 +777,11 @@ def render_live_kline_chart(table, symbol, pair, tf):
 
     chart_col, panel_col = st.columns([3.6, 1.2])
     with chart_col:
+        st.caption(
+            f"{symbol} {tf}｜目前載入 {len(df_tf)} 根 K 線｜"
+            f"可見區間內多單 {int(view_df['Long_Signal'].sum())} 個、"
+            f"空單 {int(view_df['Short_Signal'].sum())} 個"
+        )
         st.plotly_chart(
             fig, use_container_width=True,
             config={"scrollZoom": True, "displayModeBar": True, "displaylogo": False},
