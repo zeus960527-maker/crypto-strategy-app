@@ -262,7 +262,6 @@ def enqueue_latest_closed_signal(conn, df_tf, symbol, timeframe):
 
     candle_open = pd.Timestamp(latest["open_time"])
     now_taipei = pd.Timestamp.now(tz="Asia/Taipei").tz_localize(None)
-    # 僅處理已收盤 K 棒
     if candle_open + timeframe_delta > now_taipei:
         return False
 
