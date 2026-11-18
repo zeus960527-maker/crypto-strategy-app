@@ -1,5 +1,7 @@
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import time
+import sys
 import ccxt
 import numpy as np
 import pandas as pd
@@ -34,10 +36,9 @@ def send_discord_alert(symbol, tf, signal_type, price, sl, tp):
   emoji = "🟢" if "LONG" in signal_type else "🔴"
   current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-  # 確保所有數值都確實轉換為字串，避免 Discord API 因為型態拒絕接收
   payload = {
       "embeds": [{
-          "title": f"{emoji} 【加密貨幣雙軌策略信號通知】",
+          "title": f"{emoji} 【加密貨幣雙軌策略信號通知 (精準過濾版)】",
           "color": color,
           "fields": [
               {
@@ -77,14 +78,13 @@ def send_discord_alert(symbol, tf, signal_type, price, sl, tp):
 
   try:
     response = requests.post(DISCORD_WEBHOOK_URL, json=payload, timeout=5)
-    # 如果 Discord 回傳錯誤，將錯誤內容印出以便排查
     if response.status_code not in [200, 204]:
       print(
           f"[Discord] 推送失敗，狀態碼: {response.status_code}, 回應:"
           f" {response.text}"
       )
     else:
-      print(f"[Discord] 成功推送 {symbol} {tf} 訊號！(包含方向、SL、TP、時間)")
+      print(f"[Discord] 成功推送 {symbol} {tf} 訊號！(精準過濾版)")
   except Exception as e:
     print(f"[Discord] 推送異常: {e}")
 
@@ -115,52 +115,76 @@ def calculate_trendline_channel(df, window=30, num_dev=1.8):
 
 
 def check_signal_and_notify(symbol, tf, df_tf):
-  """檢測多空信號，動態計算止盈止損並推送到 Discord"""
+  """檢測多空信號：加入量能放大、實體比例與均線排列過濾，大幅降低假突破機率"""
   global last_notified_timestamps
   if df_tf.empty or len(df_tf) < 50:
     return
 
-  # 計算技術指標
-  df_tf["EMA_10"] = df_tf["close_price"].ewm(span=10, adjust=False).mean()
+  # 計算均線 (移除EMA10，改看EMA21, EMA50, EMA100 確保趨勢扎實)
   df_tf["EMA_21"] = df_tf["close_price"].ewm(span=21, adjust=False).mean()
   df_tf["EMA_50"] = df_tf["close_price"].ewm(span=50, adjust=False).mean()
+  df_tf["EMA_100"] = df_tf["close_price"].ewm(span=100, adjust=False).mean()
 
   win = 20 if tf in ["5m", "15m"] else 40
   dev = 1.6 if tf in ["5m", "15m"] else 2.1
   df_tf = calculate_trendline_channel(df_tf, window=win, num_dev=dev)
 
+  # 計算 RSI
   delta = df_tf["close_price"].diff()
   gain = delta.where(delta > 0, 0).rolling(window=14).mean()
   loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
   rs = gain / loss
   df_tf["RSI"] = 100 - (100 / (1 + rs))
 
-  # 雙軌策略信號判斷
+  # 計算 ATR (用於動態止損)
+  high_low = df_tf["high_price"] - df_tf["low_price"]
+  high_close = (df_tf["high_price"] - df_tf["close_price"].shift()).abs()
+  low_close = (df_tf["low_price"] - df_tf["close_price"].shift()).abs()
+  tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+  df_tf["ATR"] = tr.rolling(window=14).mean()
+
+  # 【新增】成交量 20 周期均線 (過濾無量假突破)
+  df_tf["Vol_SMA20"] = df_tf["volume"].rolling(window=20).mean()
+
+  # 【新增】K 棒實體比例 (排除長上/下影線插針)
+  body_size = (df_tf["close_price"] - df_tf["open_price"]).abs()
+  candle_range = df_tf["high_price"] - df_tf["low_price"]
+  df_tf["Body_Ratio"] = body_size / candle_range.replace(0, 1)
+
+  # 雙軌策略進階過濾條件
   if tf in ["5m", "15m"]:
     long_cond = (
         (df_tf["close_price"] > df_tf["Trend_Resistance"])
-        & (df_tf["EMA_10"] > df_tf["EMA_21"])
-        & (df_tf["RSI"] >= 45)
-        & (df_tf["RSI"] <= 85)
+        & (df_tf["EMA_21"] > df_tf["EMA_50"])
+        & (df_tf["EMA_50"] > df_tf["EMA_100"])  # 多頭完美排列
+        & (df_tf["RSI"] >= 50)
+        & (df_tf["RSI"] <= 75)  # 避開過熱盲追區
+        & (df_tf["volume"] > df_tf["Vol_SMA20"] * 1.2)  # 量能必須放大 1.2 倍
+        & (df_tf["Body_Ratio"] > 0.4)  # K棒實體扎實
     )
     short_cond = (
         (df_tf["close_price"] < df_tf["Trend_Support"])
-        & (df_tf["EMA_10"] < df_tf["EMA_21"])
-        & (df_tf["RSI"] >= 15)
-        & (df_tf["RSI"] <= 55)
+        & (df_tf["EMA_21"] < df_tf["EMA_50"])
+        & (df_tf["EMA_50"] < df_tf["EMA_100"])  # 空頭完美排列
+        & (df_tf["RSI"] >= 25)
+        & (df_tf["RSI"] <= 50)  # 避開超賣過深區
+        & (df_tf["volume"] > df_tf["Vol_SMA20"] * 1.2)  # 量能必須放大 1.2 倍
+        & (df_tf["Body_Ratio"] > 0.4)  # K棒實體扎實
     )
   else:
     long_cond = (
         (df_tf["close_price"] > df_tf["Trend_Resistance"])
         & (df_tf["EMA_21"] > df_tf["EMA_50"])
-        & (df_tf["RSI"] >= 50)
-        & (df_tf["RSI"] <= 78)
+        & (df_tf["RSI"] >= 52)
+        & (df_tf["RSI"] <= 72)
+        & (df_tf["volume"] > df_tf["Vol_SMA20"] * 1.1)
     )
     short_cond = (
         (df_tf["close_price"] < df_tf["Trend_Support"])
         & (df_tf["EMA_21"] < df_tf["EMA_50"])
-        & (df_tf["RSI"] >= 22)
-        & (df_tf["RSI"] <= 50)
+        & (df_tf["RSI"] >= 28)
+        & (df_tf["RSI"] <= 48)
+        & (df_tf["volume"] > df_tf["Vol_SMA20"] * 1.1)
     )
 
   df_tf["Long_Signal"] = long_cond
@@ -169,36 +193,39 @@ def check_signal_and_notify(symbol, tf, df_tf):
   latest = df_tf.iloc[-1]
   latest_time = latest["open_time"]
   latest_close = float(latest["close_price"])
+  latest_atr = (
+      float(latest["ATR"])
+      if not pd.isna(latest["ATR"])
+      else latest_close * 0.015
+  )
 
   key = f"{symbol}_{tf}"
 
-  # 若觸發多單信號且尚未通知過該根 K 棒
+  # 觸發做多信號
   if latest["Long_Signal"] and last_notified_timestamps.get(key) != latest_time:
     last_notified_timestamps[key] = latest_time
 
-    support_val = float(
-        latest.get("Trend_Support", latest_close * 0.985)
-    )
-    sl = round(min(support_val, latest_close * 0.985), 2)
+    sl = round(latest_close - (latest_atr * 1.5), 2)
     risk = latest_close - sl
-    tp = round(latest_close + risk * 2, 2)
+    tp = round(
+        latest_close + (risk * 2.5), 2
+    )  # 盈虧比提升至 1:2.5，拉開利潤空間
 
-    send_discord_alert(symbol, tf, "LONG (做多)", latest_close, sl, tp)
+    send_discord_alert(symbol, tf, "LONG (做多-精準過濾版)", latest_close, sl, tp)
 
-  # 若觸發空單信號且尚未通知過該根 K 棒
+  # 觸發做空信號
   elif (
       latest["Short_Signal"] and last_notified_timestamps.get(key) != latest_time
   ):
     last_notified_timestamps[key] = latest_time
 
-    resistance_val = float(
-        latest.get("Trend_Resistance", latest_close * 1.015)
-    )
-    sl = round(max(resistance_val, latest_close * 1.015), 2)
+    sl = round(latest_close + (latest_atr * 1.5), 2)
     risk = sl - latest_close
-    tp = round(latest_close - risk * 2, 2)
+    tp = round(latest_close - (risk * 2.5), 2)
 
-    send_discord_alert(symbol, tf, "SHORT (做空)", latest_close, sl, tp)
+    send_discord_alert(
+        symbol, tf, "SHORT (做空-精準過濾版)", latest_close, sl, tp
+    )
 
 
 def fetch_and_process_symbol(symbol_name, table_name, tf):
@@ -289,9 +316,9 @@ def run_all_tasks():
 
 
 if __name__ == "__main__":
-  print("==================================================")
-  print(" BTC & ETH 雙軌策略【高頻數據收集 + Discord 即時推播】")
-  print("==================================================")
+  print("================================================================")
+  print(" BTC & ETH 雙軌策略【高頻數據收集 + 濾網優化版即時推播系統】")
+  print("================================================================")
 
   try:
     while True:
