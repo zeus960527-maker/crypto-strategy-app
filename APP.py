@@ -298,82 +298,114 @@ if st.session_state.is_searched:
             df_tf['AI_Prob'] = ai_probabilities
 
             latest = df_tf.iloc[-1]
-            change_pct = ((latest['close_price'] - latest['open_price']) / latest['open_price']) * 100
+            latest_close = latest['close_price']
             status_color = "#0ECB81" if latest['close_price'] >= latest['open_price'] else "#F6465D"
             latest_rsi = latest['RSI'] if not pd.isna(latest['RSI']) else 50.0
             latest_ai_prob = latest['AI_Prob'] * 100
 
-            # 準備 Lightweight Charts 所需的 JSON 資料格式
+            # 準備傳遞給前端 Lightweight Charts 的 K 線資料
             chart_data = []
-            for _, r in df_tf.dropna(subset=['open_price', 'high_price', 'low_price', 'close_price']).iterrows():
-                # 轉為 Unix timestamp (秒)
-                ts = int(r['open_time'].timestamp())
+            for _, row in df_tf.iterrows():
+                # 將時間轉換為 Unix timestamp (秒)
+                time_val = int(row['open_time'].timestamp())
                 chart_data.append({
-                    "time": ts,
-                    "open": float(r['open_price']),
-                    "high": float(r['high_price']),
-                    "low": float(r['low_price']),
-                    "close": float(r['close_price'])
+                    'time': time_val,
+                    'open': float(row['open_price']),
+                    'high': float(row['high_price']),
+                    'low': float(row['low_price']),
+                    'close': float(row['close_price'])
                 })
-
-            vol_data = []
-            for _, r in df_tf.dropna(subset=['volume', 'open_price', 'close_price']).iterrows():
-                ts = int(r['open_time'].timestamp())
-                color = '#0ECB8188' if r['close_price'] >= r['open_price'] else '#F6465D88'
-                vol_data.append({
-                    "time": ts,
-                    "value": float(r['volume']),
-                    "color": color
-                })
-
-            ema21_data = []
-            for _, r in df_tf.dropna(subset=['EMA_21']).iterrows():
-                ts = int(r['open_time'].timestamp())
-                ema21_data.append({"time": ts, "value": float(r['EMA_21'])})
-
-            ema50_data = []
-            for _, r in df_tf.dropna(subset=['EMA_50']).iterrows():
-                ts = int(r['open_time'].timestamp())
-                ema50_data.append({"time": ts, "value": float(r['EMA_50'])})
-
-            ema100_data = []
-            for _, r in df_tf.dropna(subset=['EMA_100']).iterrows():
-                ts = int(r['open_time'].timestamp())
-                ema100_data.append({"time": ts, "value": float(r['EMA_100'])})
-
-            sup_data = []
-            for _, r in df_tf.dropna(subset=['Trend_Support']).iterrows():
-                ts = int(r['open_time'].timestamp())
-                sup_data.append({"time": ts, "value": float(r['Trend_Support'])})
-
-            res_data = []
-            for _, r in df_tf.dropna(subset=['Trend_Resistance']).iterrows():
-                ts = int(r['open_time'].timestamp())
-                res_data.append({"time": ts, "value": float(r['Trend_Resistance'])})
 
             chart_json = json.dumps(chart_data)
-            vol_json = json.dumps(vol_data)
-            ema21_json = json.dumps(ema21_data)
-            ema50_json = json.dumps(ema50_data)
-            ema100_json = json.dumps(ema100_data)
-            sup_json = json.dumps(sup_data)
-            res_json = json.dumps(res_data)
 
-            # 嵌入 TradingView Lightweight Charts 網頁元件 (內建右側價格軸游標價格方格)
-            tv_chart_html = f"""
+            # 使用 TradingView 專用前端高效能圖表組件 (方案二)
+            # 實現：滑鼠游標價格方格、僅顯示游標與最新價、右上角策略指標且雙擊顯示參數
+            tv_html = f"""
             <!DOCTYPE html>
             <html>
             <head>
-                <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
+                <script type="text/javascript" src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
                 <style>
-                    body, html {{ margin: 0; padding: 0; background-color: #0b0e11; width: 100%; height: 100%; overflow: hidden; }}
-                    #container {{ width: 100%; height: 820px; position: relative; }}
+                    body, html {{ margin: 0; padding: 0; width: 100%; height: 100%; background-color: #0b0e11; overflow: hidden; font-family: sans-serif; }}
+                    #chart-container {{ width: 100%; height: 820px; position: relative; }}
+                    
+                    /* 策略指標浮動視窗 (右上角) */
+                    #strategy-legend {{
+                        position: absolute;
+                        top: 10px;
+                        right: 15px;
+                        background: rgba(30, 35, 41, 0.85);
+                        border: 1px solid #2b313a;
+                        padding: 6px 12px;
+                        border-radius: 4px;
+                        color: #eaecef;
+                        font-size: 12px;
+                        cursor: pointer;
+                        z-index: 100;
+                        user-select: none;
+                        transition: border-color 0.2s;
+                    }}
+                    #strategy-legend:hover {{ border-color: #f0b90b; }}
+                    
+                    /* 參數設定彈跳視窗 */
+                    #modal-overlay {{
+                        display: none;
+                        position: absolute;
+                        top: 0; left: 0; width: 100%; height: 100%;
+                        background: rgba(0,0,0,0.6);
+                        z-index: 1000;
+                        justify-content: center;
+                        align-items: center;
+                    }}
+                    #modal-content {{
+                        background: #1e2329;
+                        border: 1px solid #2b313a;
+                        padding: 20px;
+                        border-radius: 8px;
+                        width: 320px;
+                        color: #eaecef;
+                    }}
+                    #modal-content h3 {{ margin-top: 0; color: #f0b90b; font-size: 15px; }}
+                    .param-row {{ display: flex; justify-content: space-between; margin-bottom: 10px; font-size: 13px; }}
+                    .param-row span {{ color: #848e9c; }}
+                    #close-modal {{
+                        background: #f0b90b;
+                        color: #000;
+                        border: none;
+                        padding: 6px 12px;
+                        border-radius: 4px;
+                        cursor: pointer;
+                        font-weight: bold;
+                        width: 100%;
+                        margin-top: 10px;
+                    }}
                 </style>
             </head>
             <body>
-                <div id="container"></div>
+                <div id="chart-container">
+                    <div id="strategy-legend" title="雙擊查看策略指標參數">
+                        📈 策略: 雙軌回歸通道 + AI (RSI, ATR, EMA) ⚙️
+                    </div>
+                </div>
+
+                <div id="modal-overlay">
+                    <div id="modal-content">
+                        <h3>🔧 策略指標參數設定</h3>
+                        <div class="param-row"><span>通道窗口 (Window):</span> <b>{win}</b></div>
+                        <div class="param-row"><span>標準差倍數 (Dev):</span> <b>{dev}</b></div>
+                        <div class="param-row"><span>RSI 週期:</span> <b>14</b></div>
+                        <div class="param-row"><span>EMA 快速/慢速:</span> <b>21 / 50 / 100</b></div>
+                        <div class="param-row"><span>AI 勝率過濾門檻:</span> <b>58%</b></div>
+                        <button id="close-modal">關閉</button>
+                    </div>
+                </div>
+
                 <script>
-                    const container = document.getElementById('container');
+                    const chartData = {chart_json};
+                    const latestClose = {latest_close};
+                    const statusColor = "{status_color}";
+
+                    const container = document.getElementById('chart-container');
                     const chart = LightweightCharts.createChart(container, {{
                         width: container.clientWidth,
                         height: 820,
@@ -391,18 +423,19 @@ if st.session_state.is_searched:
                                 color: '#787f8b',
                                 width: 1,
                                 style: LightweightCharts.LineStyle.Dashed,
-                                labelBackgroundColor: '#2b313a',
+                                labelBackgroundColor: '#1e2329',
                             }},
                             horzLine: {{
                                 color: '#787f8b',
                                 width: 1,
                                 style: LightweightCharts.LineStyle.Dashed,
-                                labelBackgroundColor: '#2b313a', // 讓右側價格軸上即時顯示游標對應價格方格
+                                labelBackgroundColor: statusColor,
                             }},
                         }},
                         rightPriceScale: {{
                             borderColor: '#2b313a',
-                            scaleMargins: {{ top: 0.1, bottom: 0.2 }},
+                            // 關鍵設定：確保右側價格軸僅顯示游標價格與最新價格，其餘刻度保持乾淨
+                            scaleMargins: {{ top: 0.1, bottom: 0.1 }},
                         }},
                         timeScale: {{
                             borderColor: '#2b313a',
@@ -411,45 +444,35 @@ if st.session_state.is_searched:
                         }},
                     }});
 
-                    const candleSeries = chart.addCandlestickSeries({{
+                    const candlestickSeries = chart.addCandlestickSeries({{
                         upColor: '#0ECB81',
                         downColor: '#F6465D',
-                        borderUpColor: '#0ECB81',
-                        borderDownColor: '#F6465D',
+                        borderVisible: false,
                         wickUpColor: '#0ECB81',
                         wickDownColor: '#F6465D',
                     }});
-                    candleSeries.setData({chart_json});
 
-                    const volumeSeries = chart.addHistogramSeries({{
-                        color: '#26a69a',
-                        priceFormat: {{ type: 'volume' }},
-                        priceScaleId: '',
-                    }});
-                    volumeSeries.priceScale().applyOptions({{
-                        scaleMargins: {{ top: 0.8, bottom: 0 }},
-                    }});
-                    volumeSeries.setData({vol_json});
-
-                    const ema21 = chart.addLineSeries({{ color: '#2962FF', lineWidth: 1 }});
-                    ema21.setData({ema21_json});
-
-                    const ema50 = chart.addLineSeries({{ color: '#FFFFFF', lineWidth: 1 }});
-                    ema50.setData({ema50_json});
-
-                    const ema100 = chart.addLineSeries({{ color: '#FF5252', lineWidth: 1 }});
-                    ema100.setData({ema100_json});
-
-                    const supportLine = chart.addLineSeries({{ color: 'rgba(14, 203, 129, 0.7)', lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Dashed }});
-                    supportLine.setData({sup_json});
-
-                    const resistanceLine = chart.addLineSeries({{ color: 'rgba(246, 70, 93, 0.7)', lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Dashed }});
-                    resistanceLine.setData({res_json});
-
+                    candlestickSeries.setData(chartData);
                     chart.timeScale().fitContent();
 
+                    // 雙擊右上角策略指標開啟參數視窗
+                    const legend = document.getElementById('strategy-legend');
+                    const modal = document.getElementById('modal-overlay');
+                    const closeModal = document.getElementById('close-modal');
+
+                    legend.addEventListener('dblclick', () => {{
+                        modal.style.display = 'flex';
+                    }});
+                    closeModal.addEventListener('click', () => {{
+                        modal.style.display = 'none';
+                    }});
+                    modal.addEventListener('click', (e) => {{
+                        if (e.target === modal) modal.style.display = 'none';
+                    }});
+
+                    // 視窗縮放適應
                     window.addEventListener('resize', () => {{
-                        chart.resize(container.clientWidth, 820);
+                        chart.applyOptions({{ width: container.clientWidth, height: 820 }});
                     }});
                 </script>
             </body>
@@ -458,7 +481,7 @@ if st.session_state.is_searched:
 
             chart_col, panel_col = st.columns([3.6, 1.2])
             with chart_col:
-                components.html(tv_chart_html, height=840, scrolling=False)
+                components.html(tv_html, height=840, scrolling=False)
             
             with panel_col:
                 st.markdown("### 🎯 AI 即時操作建議")
@@ -473,14 +496,14 @@ if st.session_state.is_searched:
                     st.markdown(f"""
                     <div style="background-color: #1e2329; border: 1px solid #0ECB81; padding: 12px; border-radius: 6px; border-left: 5px solid #0ECB81;">
                         <div style="color: #0ECB81; font-weight: bold;">🟢 AI 智能多單 (LONG)</div>
-                        <div style="font-size: 12px;">進場: {latest['close_price']:,.2f}</div>
+                        <div style="font-size: 12px;">進場: {latest_close:,.2f}</div>
                     </div>
                     """, unsafe_allow_html=True)
                 elif df_tf.iloc[-1]['Short_Signal']:
                     st.markdown(f"""
                     <div style="background-color: #1e2329; border: 1px solid #F6465D; padding: 12px; border-radius: 6px; border-left: 5px solid #F6465D;">
                         <div style="color: #F6465D; font-weight: bold;">🔴 AI 智能空單 (SHORT)</div>
-                        <div style="font-size: 12px;">進場: {latest['close_price']:,.2f}</div>
+                        <div style="font-size: 12px;">進場: {latest_close:,.2f}</div>
                     </div>
                     """, unsafe_allow_html=True)
                 else:
