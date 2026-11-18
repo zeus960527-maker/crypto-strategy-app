@@ -25,7 +25,7 @@ def get_db_connection():
 
 
 def send_discord_alert(symbol, tf, signal_type, price, sl, tp):
-  """發送 Discord Webhook 即時通知，包含方向、進場點、止損、止盈與目前時間"""
+  """發送 Discord Webhook 即時通知，確保包含方向、進場點、止損、止盈與目前時間"""
   if not DISCORD_WEBHOOK_URL or "你的_DISCORD_WEBHOOK_URL" in DISCORD_WEBHOOK_URL:
     print("[警告] 未設定 Discord Webhook URL，無法發送通知！")
     return
@@ -74,6 +74,8 @@ def send_discord_alert(symbol, tf, signal_type, price, sl, tp):
     response = requests.post(DISCORD_WEBHOOK_URL, json=payload, timeout=5)
     if response.status_code not in [200, 204]:
       print(f"[Discord] 推送失敗，狀態碼: {response.status_code}")
+    else:
+      print(f"[Discord] 成功推播 {symbol} {tf} 訊號！")
   except Exception as e:
     print(f"[Discord] 推送異常: {e}")
 
@@ -152,7 +154,7 @@ def check_signal_and_notify(symbol, tf, df_tf):
         & (df_tf["RSI"] <= 50)
     )
 
-    df_tf["Long_Signal"] = long_cond
+  df_tf["Long_Signal"] = long_cond
   df_tf["Short_Signal"] = short_cond
 
   latest = df_tf.iloc[-1]
@@ -161,37 +163,31 @@ def check_signal_and_notify(symbol, tf, df_tf):
 
   key = f"{symbol}_{tf}"
 
-  # 若觸發多單信號
+  # 若觸發多單信號且尚未通知過該根 K 棒
   if latest["Long_Signal"] and last_notified_timestamps.get(key) != latest_time:
     last_notified_timestamps[key] = latest_time
 
-    # 動態計算止損與止盈 (盈虧比預設 1:2，以 Trend Support 或 1.5% 作為止損基準)
+    # 計算多單止損 (Trend Support 或 1.5% 止損) 與止盈 (1:2 盈虧比)
     support_val = latest.get("Trend_Support", latest_close * 0.985)
     sl = round(min(support_val, latest_close * 0.985), 2)
     risk = latest_close - sl
     tp = round(latest_close + risk * 2, 2)
 
-    send_discord_alert(
-        symbol, tf, "LONG (做多)", latest_close, sl, tp
-    )
-    print(f"[{symbol}-{tf}] 發現多單信號，已即時推送到 Discord！")
+    send_discord_alert(symbol, tf, "LONG (做多)", latest_close, sl, tp)
 
-  # 若觸發空單信號
+  # 若觸發空單信號且尚未通知過該根 K 棒
   elif (
       latest["Short_Signal"] and last_notified_timestamps.get(key) != latest_time
   ):
     last_notified_timestamps[key] = latest_time
 
-    # 動態計算止損與止盈 (盈虧比預設 1:2，以 Trend Resistance 或 1.5% 作為止損基準)
+    # 計算空單止損 (Trend Resistance 或 1.5% 止損) 與止盈 (1:2 盈虧比)
     resistance_val = latest.get("Trend_Resistance", latest_close * 1.015)
     sl = round(max(resistance_val, latest_close * 1.015), 2)
     risk = sl - latest_close
     tp = round(latest_close - risk * 2, 2)
 
-    send_discord_alert(
-        symbol, tf, "SHORT (做空)", latest_close, sl, tp
-    )
-    print(f"[{symbol}-{tf}] 發現空單信號，已即時推送到 Discord！")
+    send_discord_alert(symbol, tf, "SHORT (做空)", latest_close, sl, tp)
 
 
 def fetch_and_process_symbol(symbol_name, table_name, tf):
@@ -273,7 +269,7 @@ def run_all_tasks():
   with ThreadPoolExecutor(max_workers=8) as executor:
     futures = [
         executor.submit(fetch_and_process_symbol, sym, tbl, tf)
-        for sm, tbl, tf in tasks
+        for sym, tbl, tf in tasks
     ]
     for future in as_completed(futures):
       try:
