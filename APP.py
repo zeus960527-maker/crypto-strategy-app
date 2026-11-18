@@ -5,15 +5,19 @@ from sqlalchemy import create_engine
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import lightgbm as lgb
+import os
 from PIL import Image
 
-# 🛠️ 載入去背圖示並設定為網頁分頁 Logo 圖標
+# 🛠️ 自動抓取 GitHub 專案根目錄下的駭客去背圖示設定網頁分頁 Logo
+current_dir = os.path.dirname(os.path.abspath(__file__))
+icon_path = os.path.join(current_dir, "hacker_icon.png")
+
 try:
-    icon_img = Image.open("hacker_icon.png")
+    icon_img = Image.open(icon_path)
 except Exception:
     icon_img = None
 
-# 頁面基本設定（將 icon 帶入 page_icon）
+# 頁面基本設定
 st.set_page_config(page_title="加密貨幣AI策略系統", page_icon=icon_img if icon_img else "💻", layout="wide")
 
 # 注入專業暗色系樣式、強制取消所有畫面變淡與載入遮罩，並修復搜尋框點擊變灰的問題
@@ -393,7 +397,7 @@ if st.session_state.is_searched:
                 showarrow=False, align="left", font=dict(size=11, color="#848e9c")
             )
 
-            # 🛠️ 維持 hovermode="x" 與滑鼠同步移動十字虛線，無黑色方框
+            # 🛠️ 設定 hovermode="x" 讓十字虛線與滑鼠完全同步移動，並移除黑色彈出框
             fig.update_layout(
                 template="plotly_dark", 
                 paper_bgcolor="#0b0e11", 
@@ -448,14 +452,14 @@ if st.session_state.is_searched:
                     st.markdown(f"""
                     <div style="background-color: #1e2329; border: 1px solid #0ECB81; padding: 12px; border-radius: 6px; border-left: 5px solid #0ECB81;">
                         <div style="color: #0ECB81; font-weight: bold;">🟢 AI 智能多單 (LONG)</div>
-                        <div style="font-size: 12px;">進場: {latest_close:,.2f}</div>
+                        <div style="font-size: 12px;">进场: {latest_close:,.2f}</div>
                     </div>
                     """, unsafe_allow_html=True)
                 elif df_tf.iloc[-1]['Short_Signal']:
                     st.markdown(f"""
                     <div style="background-color: #1e2329; border: 1px solid #F6465D; padding: 12px; border-radius: 6px; border-left: 5px solid #F6465D;">
                         <div style="color: #F6465D; font-weight: bold;">🔴 AI 智能空單 (SHORT)</div>
-                        <div style="font-size: 12px;">進場: {latest_close:,.2f}</div>
+                        <div style="font-size: 12px;">进场: {latest_close:,.2f}</div>
                     </div>
                     """, unsafe_allow_html=True)
                 else:
