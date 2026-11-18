@@ -505,4 +505,6 @@ if st.session_state.is_searched:
     render_live_kline_chart(target_table, symbol_name, pair_name, selected_tf)
 
 elif st.session_state.search_query != "":
-    st.warning(f"找不到與「
+    st.warning(f"找不到與「{st.session_state.search_query}」相關的圖表，請嘗試輸入 **BTC** 或 **ETH**。")
+else:
+    st.info("💡 請在上方查詢欄輸入 **BTC** 或 **ETH** 並按下 **Enter** 顯示圖表。")
