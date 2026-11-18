@@ -10,6 +10,11 @@ from PIL import Image
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import lightgbm as lgb
+from zoneinfo import ZoneInfo
+
+TAIWAN_TZ = ZoneInfo('Asia/Taipei')
+ATR_STOP_MULTIPLIER = 1.5
+RISK_REWARD_RATIO = 2.5
 
 
 # ============================================================
@@ -179,6 +184,131 @@ def get_db_engine():
         pool_recycle=1800,
         connect_args={"connect_timeout": 10},
     )
+
+
+def ensure_signal_outbox_table():
+    """建立訊號佇列表；以唯一鍵避免 Streamlit 每 5 秒重跑造成重複通知。"""
+    engine = get_db_engine()
+    with engine.begin() as conn:
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS strategy_signal_outbox (
+                id BIGSERIAL PRIMARY KEY,
+                symbol TEXT NOT NULL,
+                timeframe TEXT NOT NULL,
+                direction TEXT NOT NULL CHECK (direction IN ('LONG', 'SHORT')),
+                candle_open_time TIMESTAMPTZ NOT NULL,
+                signal_time_taipei TEXT NOT NULL,
+                entry_price DOUBLE PRECISION NOT NULL,
+                stop_loss DOUBLE PRECISION NOT NULL,
+                take_profit DOUBLE PRECISION NOT NULL,
+                atr DOUBLE PRECISION,
+                ai_probability DOUBLE PRECISION,
+                status TEXT NOT NULL DEFAULT 'pending'
+                    CHECK (status IN ('pending', 'processing', 'sent')),
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                sent_at TIMESTAMPTZ,
+                error_message TEXT,
+                UNIQUE(symbol, timeframe, candle_open_time, direction)
+            )
+        """))
+        conn.execute(text("""
+            CREATE INDEX IF NOT EXISTS idx_strategy_signal_outbox_pending
+            ON strategy_signal_outbox(status, created_at)
+        """))
+
+
+def publish_latest_signal_to_outbox(df_tf, symbol, timeframe):
+    """只將最新一根已載入 K 棒的有效進場訊號放入佇列，不回補舊歷史訊號。"""
+    if df_tf.empty:
+        return
+
+    latest = df_tf.iloc[-1]
+
+    # 僅處理已收盤 K 棒，避免盤中訊號短暫成立後又消失。
+    timeframe_delta = {
+        "5m": pd.Timedelta(minutes=5),
+        "15m": pd.Timedelta(minutes=15),
+        "1h": pd.Timedelta(hours=1),
+        "4h": pd.Timedelta(hours=4),
+    }.get(timeframe)
+    if timeframe_delta is None:
+        return
+
+    candle_open = pd.Timestamp(latest["open_time"])
+    now_taipei = pd.Timestamp.now(tz="Asia/Taipei").tz_localize(None)
+    if candle_open + timeframe_delta > now_taipei:
+        return
+
+    is_long = bool(latest.get("Long_Signal", False))
+    is_short = bool(latest.get("Short_Signal", False))
+
+    if not (is_long or is_short):
+        return
+
+    # 避免同一根 K 棒同時產生多空兩種訊號
+    if is_long and is_short:
+        return
+
+    entry = float(latest["close_price"])
+    atr = float(latest["ATR"]) if pd.notna(latest["ATR"]) else 0.0
+    if entry <= 0 or atr <= 0:
+        return
+
+    direction = "LONG" if is_long else "SHORT"
+    if direction == "LONG":
+        stop_loss = entry - atr * ATR_STOP_MULTIPLIER
+        take_profit = entry + (entry - stop_loss) * RISK_REWARD_RATIO
+    else:
+        stop_loss = entry + atr * ATR_STOP_MULTIPLIER
+        take_profit = entry - (stop_loss - entry) * RISK_REWARD_RATIO
+
+    # 此程式的 open_time 已轉為台灣時間 naive datetime，明確補上 UTC+8。
+    candle_time = pd.Timestamp(latest["open_time"]).to_pydatetime()
+    if candle_time.tzinfo is None:
+        candle_time = candle_time.replace(tzinfo=TAIWAN_TZ)
+    else:
+        candle_time = candle_time.astimezone(TAIWAN_TZ)
+
+    signal_time_text = candle_time.strftime("%Y-%m-%d %H:%M:%S")
+    ai_prob = latest.get("AI_Prob")
+    ai_prob = float(ai_prob) if pd.notna(ai_prob) else None
+
+    try:
+        ensure_signal_outbox_table()
+        engine = get_db_engine()
+        with engine.begin() as conn:
+            result = conn.execute(text("""
+                INSERT INTO strategy_signal_outbox (
+                    symbol, timeframe, direction, candle_open_time,
+                    signal_time_taipei, entry_price, stop_loss, take_profit,
+                    atr, ai_probability, status
+                )
+                VALUES (
+                    :symbol, :timeframe, :direction, :candle_open_time,
+                    :signal_time_taipei, :entry_price, :stop_loss, :take_profit,
+                    :atr, :ai_probability, 'pending'
+                )
+                ON CONFLICT (symbol, timeframe, candle_open_time, direction)
+                DO NOTHING
+            """), {
+                "symbol": symbol,
+                "timeframe": timeframe,
+                "direction": direction,
+                "candle_open_time": candle_time,
+                "signal_time_taipei": signal_time_text,
+                "entry_price": entry,
+                "stop_loss": stop_loss,
+                "take_profit": take_profit,
+                "atr": atr,
+                "ai_probability": ai_prob,
+            })
+
+        if result.rowcount:
+            st.success(
+                f"已將 {symbol} {timeframe} {direction} 訊號送入 Discord 通知佇列。"
+            )
+    except Exception as exc:
+        st.error(f"寫入 Discord 通知佇列失敗：{exc}")
 
 
 def load_historical_data(table_name, symbol_name):
@@ -575,6 +705,10 @@ def render_live_kline_chart(table, symbol, pair, tf):
         df_tf, f"{symbol}_{tf}"
     )
     df_tf = add_trade_signals(df_tf, model)
+
+    # 透過 Supabase outbox 將最新進場訊號交給雲端 Discord worker。
+    # 舊歷史訊號只用於圖表與模型訓練，不會被批次補發 Discord。
+    publish_latest_signal_to_outbox(df_tf, symbol, tf)
 
     display_count = 90 if symbol == "ETH" else 120
     view_df = df_tf.tail(display_count)
