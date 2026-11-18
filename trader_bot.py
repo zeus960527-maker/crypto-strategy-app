@@ -944,7 +944,7 @@ def run_all_tasks():
 
 def main():
     validate_config()
-
+    
     logging.info("====================================================")
     logging.info("BTC / ETH AI 智能交易訊號監控系統啟動")
     logging.info("時區：Asia/Taipei（台灣時間 UTC+8）")
