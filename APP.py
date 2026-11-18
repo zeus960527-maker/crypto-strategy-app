@@ -84,7 +84,6 @@ def load_historical_data(table_name, symbol_name):
     """從 Supabase (PostgreSQL) 快速讀取最新 K 線資料，並轉換為台灣時間 (UTC+8)"""
     try:
         engine = get_db_engine()
-        # 限制只抓取最近 300 筆最新資料，確保極速渲染與極低網路開銷
         query = f"SELECT timeframe, open_time, open_price, high_price, low_price, close_price, volume FROM {table_name} ORDER BY open_time DESC LIMIT 300"
         df = pd.read_sql(query, con=engine)
         if not df.empty:
@@ -173,7 +172,6 @@ if st.session_state.is_searched:
         df_tf = df[df['timeframe'] == tf].sort_values('open_time').copy()
         
         if not df_tf.empty:
-            # 已拿掉 EMA_10 計算
             df_tf['EMA_21'] = df_tf['close_price'].ewm(span=21, adjust=False).mean()
             df_tf['EMA_50'] = df_tf['close_price'].ewm(span=50, adjust=False).mean()
             df_tf['EMA_100'] = df_tf['close_price'].ewm(span=100, adjust=False).mean()
@@ -194,27 +192,42 @@ if st.session_state.is_searched:
             tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
             df_tf['ATR'] = tr.rolling(window=14).mean()
 
+            # 成交量均線與K棒實體過濾雜訊
+            df_tf['Vol_SMA20'] = df_tf['volume'].rolling(window=20).mean()
+            body_size = (df_tf['close_price'] - df_tf['open_price']).abs()
+            candle_range = df_tf['high_price'] - df_tf['low_price']
+            df_tf['Body_Ratio'] = body_size / candle_range.replace(0, 1)
+
+            # 🛠️ 【精準度升級】加入順勢均線過濾與量能條件，拒絕盲目逆勢開倉
             if tf in ['5m', '15m']:
                 df_tf['Long_Signal'] = (
                     (df_tf['close_price'] > df_tf['Trend_Resistance']) & 
-                    (df_tf['EMA_21'] > df_tf['EMA_50']) &  # 調整短期多頭條件改看 EMA21 > EMA50
-                    (df_tf['RSI'] >= 45) & (df_tf['RSI'] <= 85)
+                    (df_tf['EMA_21'] > df_tf['EMA_50']) & 
+                    (df_tf['EMA_50'] > df_tf['EMA_100']) &  # 嚴格多頭排列
+                    (df_tf['RSI'] >= 50) & (df_tf['RSI'] <= 75) &
+                    (df_tf['volume'] > df_tf['Vol_SMA20'] * 1.2) &  # 必須帶量突破
+                    (df_tf['Body_Ratio'] > 0.4)
                 )
                 df_tf['Short_Signal'] = (
                     (df_tf['close_price'] < df_tf['Trend_Support']) & 
-                    (df_tf['EMA_21'] < df_tf['EMA_50']) &  # 調整短期空頭條件改看 EMA21 < EMA50
-                    (df_tf['RSI'] >= 15) & (df_tf['RSI'] <= 55)
+                    (df_tf['EMA_21'] < df_tf['EMA_50']) & 
+                    (df_tf['EMA_50'] < df_tf['EMA_100']) &  # 嚴格空頭排列
+                    (df_tf['RSI'] >= 30) & (df_tf['RSI'] <= 50) &  # 避開超賣區亂追空
+                    (df_tf['volume'] > df_tf['Vol_SMA20'] * 1.2) &  # 必須帶量跌破
+                    (df_tf['Body_Ratio'] > 0.4)
                 )
             else:
                 df_tf['Long_Signal'] = (
                     (df_tf['close_price'] > df_tf['Trend_Resistance']) & 
-                    (df_tf['EMA_21'] > df_tf['EMA_50']) &
-                    (df_tf['RSI'] >= 50) & (df_tf['RSI'] <= 78)
+                    (df_tf['EMA_21'] > df_tf['EMA_50']) & 
+                    (df_tf['RSI'] >= 52) & (df_tf['RSI'] <= 72) &
+                    (df_tf['volume'] > df_tf['Vol_SMA20'] * 1.1)
                 )
                 df_tf['Short_Signal'] = (
                     (df_tf['close_price'] < df_tf['Trend_Support']) & 
-                    (df_tf['EMA_21'] < df_tf['EMA_50']) &
-                    (df_tf['RSI'] >= 22) & (df_tf['RSI'] <= 50)
+                    (df_tf['EMA_21'] < df_tf['EMA_50']) & 
+                    (df_tf['RSI'] >= 28) & (df_tf['RSI'] <= 48) &
+                    (df_tf['volume'] > df_tf['Vol_SMA20'] * 1.1)
                 )
 
             display_count = 90 if sym == 'ETH' else 120
@@ -243,7 +256,6 @@ if st.session_state.is_searched:
                 decreasing_line_color='#F6465D', decreasing_fillcolor='#F6465D'
             ), row=1, col=1)
             
-            # 已拿掉 EMA10 線條繪製（保留 EMA21 藍色, EMA50 白色, EMA100 紅色）
             fig.add_trace(go.Scatter(x=df_tf['open_time'], y=df_tf['EMA_21'], mode='lines', name='EMA21', line=dict(color='#2962FF', width=1.2)), row=1, col=1)
             fig.add_trace(go.Scatter(x=df_tf['open_time'], y=df_tf['EMA_50'], mode='lines', name='EMA50', line=dict(color='#FFFFFF', width=1.2)), row=1, col=1)
             fig.add_trace(go.Scatter(x=df_tf['open_time'], y=df_tf['EMA_100'], mode='lines', name='EMA100', line=dict(color='#FF5252', width=1.4)), row=1, col=1)
