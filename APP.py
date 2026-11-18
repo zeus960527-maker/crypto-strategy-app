@@ -173,7 +173,7 @@ if st.session_state.is_searched:
         df_tf = df[df['timeframe'] == tf].sort_values('open_time').copy()
         
         if not df_tf.empty:
-            df_tf['EMA_10'] = df_tf['close_price'].ewm(span=10, adjust=False).mean()
+            # 已拿掉 EMA_10 計算
             df_tf['EMA_21'] = df_tf['close_price'].ewm(span=21, adjust=False).mean()
             df_tf['EMA_50'] = df_tf['close_price'].ewm(span=50, adjust=False).mean()
             df_tf['EMA_100'] = df_tf['close_price'].ewm(span=100, adjust=False).mean()
@@ -197,12 +197,12 @@ if st.session_state.is_searched:
             if tf in ['5m', '15m']:
                 df_tf['Long_Signal'] = (
                     (df_tf['close_price'] > df_tf['Trend_Resistance']) & 
-                    (df_tf['EMA_10'] > df_tf['EMA_21']) &
+                    (df_tf['EMA_21'] > df_tf['EMA_50']) &  # 調整短期多頭條件改看 EMA21 > EMA50
                     (df_tf['RSI'] >= 45) & (df_tf['RSI'] <= 85)
                 )
                 df_tf['Short_Signal'] = (
                     (df_tf['close_price'] < df_tf['Trend_Support']) & 
-                    (df_tf['EMA_10'] < df_tf['EMA_21']) &
+                    (df_tf['EMA_21'] < df_tf['EMA_50']) &  # 調整短期空頭條件改看 EMA21 < EMA50
                     (df_tf['RSI'] >= 15) & (df_tf['RSI'] <= 55)
                 )
             else:
@@ -243,8 +243,7 @@ if st.session_state.is_searched:
                 decreasing_line_color='#F6465D', decreasing_fillcolor='#F6465D'
             ), row=1, col=1)
             
-            # EMA 線條繪製 (EMA21 藍色, EMA50 白色, EMA100 紅色)
-            fig.add_trace(go.Scatter(x=df_tf['open_time'], y=df_tf['EMA_10'], mode='lines', name='EMA10', line=dict(color='#00E676', width=1)), row=1, col=1)
+            # 已拿掉 EMA10 線條繪製（保留 EMA21 藍色, EMA50 白色, EMA100 紅色）
             fig.add_trace(go.Scatter(x=df_tf['open_time'], y=df_tf['EMA_21'], mode='lines', name='EMA21', line=dict(color='#2962FF', width=1.2)), row=1, col=1)
             fig.add_trace(go.Scatter(x=df_tf['open_time'], y=df_tf['EMA_50'], mode='lines', name='EMA50', line=dict(color='#FFFFFF', width=1.2)), row=1, col=1)
             fig.add_trace(go.Scatter(x=df_tf['open_time'], y=df_tf['EMA_100'], mode='lines', name='EMA100', line=dict(color='#FF5252', width=1.4)), row=1, col=1)
