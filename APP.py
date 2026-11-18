@@ -297,60 +297,8 @@ def calculate_indicators(df, tf):
 # ============================================================
 # 4. LightGBM 模型
 # ============================================================
-def train_or_get_ai_model(df_tf, key):
-    if key in st.session_state.ai_models:
-        return st.session_state.ai_models[key]
-
-    if len(df_tf) < 60:
-        return None
-
-    try:
-        df = df_tf.copy()
-
-        df["vol_ratio"] = (
-            df["volume"] / df["volume"].rolling(20).mean()
-        )
-        body = (df["close_price"] - df["open_price"]).abs()
-        candle_range = df["high_price"] - df["low_price"]
-        df["body_ratio"] = body / candle_range.replace(0, np.nan)
-        df["atr_ratio"] = df["ATR"] / df["close_price"]
-        df["ema_diff"] = (
-            (df["EMA_21"] - df["EMA_50"]) / df["close_price"]
-        )
-
-        # 沿用原策略：未來高點相對目前收盤價上漲超過 1.2%
-        future_max_gain = (
-            df["high_price"].shift(-3).rolling(3).max()
-            / df["close_price"] - 1
-        )
-        df["target"] = (future_max_gain > 0.012).astype(int)
-
-        features = ["RSI", "vol_ratio", "body_ratio", "atr_ratio", "ema_diff"]
-        train_df = df.dropna(subset=features + ["target"])
-
-        if len(train_df) < 30 or train_df["target"].nunique() < 2:
-            return None
-
-        model = lgb.LGBMClassifier(
-            n_estimators=40,
-            learning_rate=0.05,
-            max_depth=3,
-            verbose=-1,
-        )
-        model.fit(train_df[features], train_df["target"])
-
-        st.session_state.ai_models[key] = model
-        return model
-
-    except Exception as e:
-        st.warning(f"AI 模型訓練失敗：{e}")
-        return None
-
-
-# ============================================================
-# 5. 原策略訊號判斷
-# ============================================================
-def add_trade_signals(df, tf, model):
+def build_candidate_signals(df, tf):
+    """依照既有策略條件，找出歷史多單／空單候選進場 K 線。"""
     df = df.copy()
 
     if tf in ["5m", "15m"]:
@@ -378,49 +326,106 @@ def add_trade_signals(df, tf, model):
             & (df["volume"] > df["Vol_SMA20"])
         )
 
-    features = ["RSI", "vol_ratio", "body_ratio", "atr_ratio", "ema_diff"]
-    probabilities = []
-    longs = []
-    shorts = []
+    df["vol_ratio"] = df["volume"] / df["Vol_SMA20"].replace(0, np.nan)
+    df["body_ratio"] = df["Body_Ratio"]
+    df["atr_ratio"] = df["ATR"] / df["close_price"].replace(0, np.nan)
+    df["ema_diff"] = (
+        (df["EMA_21"] - df["EMA_50"])
+        / df["close_price"].replace(0, np.nan)
+    )
 
-    for _, row in df.iterrows():
-        is_long = bool(row["Base_Long"])
-        is_short = bool(row["Base_Short"])
-        prob = 0.70
+    # 以訊號 K 線收盤價作為回測參考進場價；3 根 K 線後收盤價作為評估價。
+    # 只使用已經走完未來 3 根 K 線的樣本訓練，避免把未來資料當成已知結果。
+    df["future_close_3"] = df["close_price"].shift(-3)
+    df["future_return_3"] = (
+        df["future_close_3"] / df["close_price"] - 1
+    )
 
-        if (is_long or is_short) and model is not None:
+    df["side"] = np.where(df["Base_Long"], 1, 0)
+    df["directional_return_3"] = df["future_return_3"] * np.where(df["side"] == 1, 1, -1)
+
+    df["Trade_Result"] = "非訊號"
+    candidate = df["Base_Long"] | df["Base_Short"]
+    matured = candidate & df["future_close_3"].notna()
+    pending = candidate & df["future_close_3"].isna()
+    df.loc[pending, "Trade_Result"] = "觀察中"
+
+    successful = matured & (df["directional_return_3"] > 0.003)
+    long_win = successful & df["Base_Long"]
+    short_win = successful & df["Base_Short"]
+    df.loc[long_win | short_win, "Trade_Result"] = "成功"
+    df.loc[matured & ~(long_win | short_win), "Trade_Result"] = "未達標"
+
+    return df
+
+
+def train_or_get_ai_model(df, key):
+    """使用歷史候選進場及其後續結果訓練模型。
+
+    標籤定義：進場後 3 根 K 線收盤，方向報酬超過 0.3% 為成功。
+    每次新資料進來會重新訓練；樣本不足時不假裝模型已學會。
+    """
+    feature_cols = [
+        "RSI", "vol_ratio", "body_ratio", "atr_ratio", "ema_diff", "side"
+    ]
+    candidates = df[df["Base_Long"] | df["Base_Short"]].copy()
+    train_df = candidates.dropna(
+        subset=feature_cols + ["future_return_3"]
+    ).copy()
+
+    if len(train_df) < 30 or train_df["Trade_Result"].nunique() < 2:
+        return None, len(train_df), int((train_df["Trade_Result"] == "成功").sum())
+
+    train_df["target"] = (train_df["Trade_Result"] == "成功").astype(int)
+    if train_df["target"].nunique() < 2:
+        return None, len(train_df), int(train_df["target"].sum())
+
+    try:
+        model = lgb.LGBMClassifier(
+            n_estimators=60,
+            learning_rate=0.04,
+            max_depth=3,
+            num_leaves=7,
+            class_weight="balanced",
+            random_state=42,
+            verbose=-1,
+        )
+        model.fit(train_df[feature_cols], train_df["target"])
+        return model, len(train_df), int(train_df["target"].sum())
+    except Exception as e:
+        st.warning(f"AI 模型訓練失敗：{e}")
+        return None, len(train_df), int((train_df["Trade_Result"] == "成功").sum())
+
+
+def add_trade_signals(df, model):
+    """替候選進場訊號計算模型分數；資料不足時以原策略訊號顯示。"""
+    df = df.copy()
+    df["AI_Prob"] = np.nan
+    candidates = df["Base_Long"] | df["Base_Short"]
+
+    if model is not None and candidates.any():
+        feature_cols = [
+            "RSI", "vol_ratio", "body_ratio", "atr_ratio", "ema_diff", "side"
+        ]
+        usable = df.loc[candidates, feature_cols].replace([np.inf, -np.inf], np.nan)
+        valid = usable.notna().all(axis=1)
+        if valid.any():
             try:
-                vol_sma = row["Vol_SMA20"]
-                close = row["close_price"]
+                probabilities = model.predict_proba(usable.loc[valid])[:, 1]
+                df.loc[usable.loc[valid].index, "AI_Prob"] = probabilities
+            except Exception as e:
+                st.warning(f"AI 預測失敗，暫時使用策略原始訊號：{e}")
 
-                feature_row = pd.DataFrame([{
-                    "RSI": row["RSI"],
-                    "vol_ratio": (
-                        row["volume"] / vol_sma
-                        if pd.notna(vol_sma) and vol_sma > 0 else 1.0
-                    ),
-                    "body_ratio": row["Body_Ratio"],
-                    "atr_ratio": (
-                        row["ATR"] / close
-                        if pd.notna(row["ATR"]) and close else 0.015
-                    ),
-                    "ema_diff": (
-                        (row["EMA_21"] - row["EMA_50"]) / close
-                        if close else 0
-                    ),
-                }], columns=features)
-
-                prob = float(model.predict_proba(feature_row)[0][1])
-            except Exception:
-                pass
-
-        probabilities.append(prob)
-        longs.append(is_long and prob >= 0.58)
-        shorts.append(is_short and prob >= 0.58)
-
-    df["AI_Prob"] = probabilities
-    df["Long_Signal"] = longs
-    df["Short_Signal"] = shorts
+    # 模型樣本不足時，不把 70% 假裝成模型預測；以原策略訊號作為回退。
+    if model is None:
+        df["AI_Prob"] = np.where(candidates, 0.70, np.nan)
+        df["Long_Signal"] = df["Base_Long"]
+        df["Short_Signal"] = df["Base_Short"]
+        df["AI_Mode"] = "策略回退（歷史樣本不足）"
+    else:
+        df["Long_Signal"] = df["Base_Long"] & (df["AI_Prob"] >= 0.58)
+        df["Short_Signal"] = df["Base_Short"] & (df["AI_Prob"] >= 0.58)
+        df["AI_Mode"] = "歷史結果訓練模型"
 
     return df
 
@@ -529,7 +534,7 @@ def render_homepage():
         - 空單：收盤價低於趨勢通道下軌、RSI 20～55、
           成交量大於 20 根均量。
 
-        **AI 條件：** 模型分數達到 58% 才顯示訊號。
+        **AI 條件：** 模型分數達到 58% 才顯示訊號。模型使用歷史策略候選進場點，並以進場後 3 根 K 線的方向報酬建立成功／未達標標籤；歷史樣本不足時會退回原策略訊號。
         """)
 
     st.warning("""
@@ -565,8 +570,11 @@ def render_live_kline_chart(table, symbol, pair, tf):
         return
 
     df_tf, win, dev = calculate_indicators(df_tf, tf)
-    model = train_or_get_ai_model(df_tf, f"{symbol}_{tf}")
-    df_tf = add_trade_signals(df_tf, tf, model)
+    df_tf = build_candidate_signals(df_tf, tf)
+    model, training_count, winning_count = train_or_get_ai_model(
+        df_tf, f"{symbol}_{tf}"
+    )
+    df_tf = add_trade_signals(df_tf, model)
 
     display_count = 90 if symbol == "ETH" else 120
     view_df = df_tf.tail(display_count)
@@ -609,7 +617,10 @@ def render_live_kline_chart(table, symbol, pair, tf):
         else "#F6465D"
     )
     latest_rsi = float(latest["RSI"]) if pd.notna(latest["RSI"]) else 50.0
-    ai_score = float(latest["AI_Prob"]) * 100
+    ai_score = (
+        float(latest["AI_Prob"]) * 100
+        if pd.notna(latest["AI_Prob"]) else 0.0
+    )
 
     fig = make_subplots(
         rows=2,
@@ -696,12 +707,14 @@ def render_live_kline_chart(table, symbol, pair, tf):
                 size=10,
                 family="Arial Black",
             ),
-            customdata=long_df[["close_price", "AI_Prob"]].to_numpy(),
+            customdata=long_df[["close_price", "AI_Prob", "Trade_Result", "directional_return_3"]].to_numpy(),
             hovertemplate=(
-                "🟢 LONG 多單進場<br>"
+                "🟢 LONG 多單歷史進場<br>"
                 "時間：%{x}<br>"
                 "參考進場價：%{customdata[0]:,.2f}<br>"
-                "AI 分數：%{customdata[1]:.1%}"
+                "AI 分數：%{customdata[1]:.1%}<br>"
+                "3 根 K 線後結果：%{customdata[2]}<br>"
+                "方向報酬：%{customdata[3]:.2%}"
                 "<extra></extra>"
             ),
         ), row=1, col=1)
@@ -733,12 +746,14 @@ def render_live_kline_chart(table, symbol, pair, tf):
                 size=10,
                 family="Arial Black",
             ),
-            customdata=short_df[["close_price", "AI_Prob"]].to_numpy(),
+            customdata=short_df[["close_price", "AI_Prob", "Trade_Result", "directional_return_3"]].to_numpy(),
             hovertemplate=(
-                "🔴 SHORT 空單進場<br>"
+                "🔴 SHORT 空單歷史進場<br>"
                 "時間：%{x}<br>"
                 "參考進場價：%{customdata[0]:,.2f}<br>"
-                "AI 分數：%{customdata[1]:.1%}"
+                "AI 分數：%{customdata[1]:.1%}<br>"
+                "3 根 K 線後結果：%{customdata[2]}<br>"
+                "方向報酬：%{customdata[3]:.2%}"
                 "<extra></extra>"
             ),
         ), row=1, col=1)
@@ -904,9 +919,13 @@ def render_live_kline_chart(table, symbol, pair, tf):
     # ========================================================
     with panel_col:
         st.markdown("### 🎯 AI 即時操作建議")
+        st.caption(
+            f"歷史訓練樣本：{training_count} 筆｜"
+            f"成功標籤：{winning_count} 筆｜"
+            f"模型狀態：{'已使用歷史結果訓練' if model is not None else '樣本不足，使用原策略'}"
+        )
 
-        st.markdown(f"""
-        <div style="background:rgba(30,35,41,.9);border:1px solid #2b313a;
+        st.markdown(f""")        <div style="background:rgba(30,35,41,.9);border:1px solid #2b313a;
                     padding:10px;border-radius:6px;margin-bottom:10px;">
             <div style="font-size:13px;color:#848e9c;">當前 AI 模型信心分數</div>
             <div style="font-size:20px;font-weight:bold;color:#f0b90b;">
@@ -961,6 +980,25 @@ def render_live_kline_chart(table, symbol, pair, tf):
 
         st.caption("進場價格為訊號 K 線收盤價參考值，不代表實際成交價。")
         st.caption("AI 模型分數不是實際交易勝率。")
+        st.caption("歷史結果標籤：進場後 3 根 K 線收盤，方向報酬超過 0.3% 算成功；未達標不代表一定虧損。")
+
+        st.markdown("#### 🧠 歷史訊號學習紀錄")
+        history = df_tf[df_tf["Base_Long"] | df_tf["Base_Short"]].tail(12).copy()
+        if history.empty:
+            st.caption("目前載入的 K 線中尚無歷史候選進場點。")
+        else:
+            history["方向"] = np.where(history["Base_Long"], "LONG", "SHORT")
+            history["時間"] = history["open_time"].dt.strftime("%m/%d %H:%M")
+            history["進場參考價"] = history["close_price"].map(lambda x: f"{x:,.2f}")
+            history["AI 分數"] = history["AI_Prob"].map(
+                lambda x: f"{x:.1%}" if pd.notna(x) else "—"
+            )
+            st.dataframe(
+                history[["時間", "方向", "進場參考價", "Trade_Result", "AI 分數"]]
+                .rename(columns={"Trade_Result": "3 根 K 線後結果"}),
+                use_container_width=True,
+                hide_index=True,
+            )
 
 
 # ============================================================
