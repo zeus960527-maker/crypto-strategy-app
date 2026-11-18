@@ -5,9 +5,16 @@ from sqlalchemy import create_engine
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import lightgbm as lgb
+from PIL import Image
+
+# 🛠️ 載入去背圖示並設定為網頁分頁 Logo 圖標
+try:
+    icon_img = Image.open("hacker_icon.png")
+except Exception:
+    icon_img = None
 
 # 頁面基本設定
-st.set_page_config(page_title="加密貨幣AI策略系統", layout="wide")
+st.set_page_config(page_title="加密貨幣AI策略系統", page_icon=icon_img if icon_img else "💻", layout="wide")
 
 # 注入專業暗色系樣式、強制取消所有畫面變淡與載入遮罩，並修復搜尋框點擊變灰的問題
 st.markdown("""
@@ -60,8 +67,15 @@ if "search_query" not in st.session_state:
 if "ai_models" not in st.session_state:
     st.session_state.ai_models = {}
 
-# ==================== 1. 頂部標題與搜尋表單 ====================
-st.title("加密貨幣AI策略系統")
+# ==================== 1. 頂部標題與裝飾圖案 ====================
+col_title1, col_title2 = st.columns([0.08, 0.92])
+with col_title1:
+    if icon_img:
+        st.image(icon_img, width=55)
+    else:
+        st.markdown("💻")
+with col_title2:
+    st.title("加密貨幣AI策略系統")
 
 with st.form(key="search_form"):
     col_f1, col_f2 = st.columns([4, 1])
@@ -386,7 +400,6 @@ if st.session_state.is_searched:
                 showarrow=False, align="left", font=dict(size=11, color="#848e9c")
             )
 
-            # 🛠️ 關鍵修正：hovermode 設為 "x"，讓十字虛線與滑鼠完全同步跟隨移動
             fig.update_layout(
                 template="plotly_dark", 
                 paper_bgcolor="#0b0e11", 
@@ -405,7 +418,6 @@ if st.session_state.is_searched:
             
             fig.update_layout(xaxis=dict(range=[start_time, end_time], autorange=False))
 
-            # 🛠️ 強制 X 軸與 Y 軸的 spike 緊貼滑鼠游標 (spikesnap='cursor')
             fig.update_xaxes(
                 showticklabels=True, gridcolor="#1e2329", zeroline=False, linecolor="#2b313a",
                 showspikes=True, spikemode='across', spikesnap='cursor', spikethickness=1, spikedash='dash', spikecolor='#a0a6b2'
@@ -429,7 +441,16 @@ if st.session_state.is_searched:
                 st.plotly_chart(fig, use_container_width=True, config=chart_config, key=f"{sym.lower()}_supabase_live_chart")
             
             with panel_col:
-                st.markdown("### 🎯 AI 即時操作建議")
+                # 🛠️ 在 AI 即時操作建議上方加入駭客裝飾小圖示與美化標題
+                header_col1, header_col2 = st.columns([0.18, 0.82])
+                with header_col1:
+                    if icon_img:
+                        st.image(icon_img, width=32)
+                    else:
+                        st.markdown("🎯")
+                with header_col2:
+                    st.markdown("### AI 即時操作建議")
+
                 st.markdown(f"""
                 <div style="background-color: #1e2329; border: 1px solid #2b313a; padding: 10px; border-radius: 6px; margin-bottom: 10px;">
                     <div style="font-size: 13px; color: #848e9c;">當前 AI 模型信心評分</div>
