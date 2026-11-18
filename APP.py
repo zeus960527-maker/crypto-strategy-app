@@ -401,7 +401,7 @@ if st.session_state.is_searched:
                 template="plotly_dark", 
                 paper_bgcolor="#0b0e11", 
                 plot_bgcolor="#0b0e11", 
-                hovermode="x unified",  
+                hovermode=False,  # 🛠️ 這裡已成功拿掉黑色懸停提示方框
                 xaxis_rangeslider_visible=False, 
                 dragmode='pan', 
                 height=820, 
