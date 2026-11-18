@@ -153,10 +153,10 @@ st.markdown("---")
 # 不要將資料庫密碼直接寫入程式。
 # ============================================================
 def get_database_url():
-    url = os.getenv("postgresql://postgres.ygzeqvcyqtvhvjrxhzdv:%4010233960527Ken@aws-0-ap-northeast-1.pooler.supabase.com:5432/postgres", "").strip()
+    url = os.getenv("SUPABASE_DB_URL", "").strip()
     if not url:
         try:
-            url = str(st.secrets.get("postgresql://postgres.ygzeqvcyqtvhvjrxhzdv:[YOUR-DATABASE-PASSWORD]@aws-0-ap-northeast-1.pooler.supabase.com:5432/postgres", "")).strip()
+            url = str(st.secrets.get("SUPABASE_DB_URL", "")).strip()
         except Exception:
             url = ""
     if url.startswith("postgres://"):
