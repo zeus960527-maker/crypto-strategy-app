@@ -446,9 +446,9 @@ if st.session_state.is_searched:
                 template="plotly_dark", 
                 paper_bgcolor="rgba(11,14,17,0.6)",
                 plot_bgcolor="rgba(11,14,17,0.6)", 
-                hovermode="x",
+                hovermode="x",  
                 hoverdistance=100,
-                spikedistance=-1,                # 強制顯示 spike
+                spikedistance=1000,
                 xaxis_rangeslider_visible=False, 
                 dragmode='pan', 
                 height=820, 
@@ -469,11 +469,10 @@ if st.session_state.is_searched:
             # X 軸
             fig.update_xaxes(
                 showticklabels=True, gridcolor="#1e2329", zeroline=False, linecolor="#2b313a",
-                showspikes=True, spikemode='across', spikesnap='cursor', 
-                spikethickness=1, spikedash='dash', spikecolor='#a0a6b2'
+                showspikes=True, spikemode='across', spikesnap='cursor', spikethickness=1, spikedash='dash', spikecolor='#a0a6b2'
             )
             
-            # ===== 主圖 Y 軸（只有這裡顯示滑鼠即時價格）=====
+            # ===== 主圖 Y 軸（只有這裡會顯示滑鼠價格）=====
             fig.update_yaxes(
                 side="right",
                 gridcolor="#1e2329",
@@ -481,11 +480,11 @@ if st.session_state.is_searched:
                 linecolor="#2b313a",
                 tickformat=",.2f",
                 showspikes=True,
-                spikemode="toaxis+across",     # 較穩定的設定
+                spikemode="across+toaxis",      # 關鍵：顯示價格在軸上
                 spikesnap="cursor",
-                spikethickness=1.5,
-                spikedash="solid",             # 實線
-                spikecolor="#f0b90b",          # 黃色，容易辨識
+                spikethickness=1,
+                spikedash="dash",
+                spikecolor="#a0a6b2",
                 showline=True,
                 row=1, col=1,
                 range=y_range
