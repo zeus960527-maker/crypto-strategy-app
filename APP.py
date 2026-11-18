@@ -9,13 +9,24 @@ import lightgbm as lgb
 # 頁面基本設定
 st.set_page_config(page_title="加密貨幣AI策略系統", layout="wide")
 
-# 注入專業暗色系樣式、強制取消所有畫面變淡與載入遮罩
+# 注入專業暗色系樣式、強制取消所有畫面變淡與載入遮罩，並修復搜尋框點擊變灰的問題
 st.markdown("""
 <style>
     .block-container { padding-top: 1.2rem; padding-bottom: 1rem; }
     div[data-testid="stRadio"] > div { flex-direction: row; gap: 12px; }
-    .stTextInput input { background-color: #1e2329; color: #eaecef; border: 1px solid #2b313a; }
-    .stTextInput input:focus { border-color: #f0b90b; }
+    
+    /* 搜尋框預設與點擊聚焦（Focus）樣式，防止點擊時變成灰色 */
+    .stTextInput input { 
+        background-color: #1e2329 !important; 
+        color: #eaecef !important; 
+        border: 1px solid #2b313a !important; 
+    }
+    .stTextInput input:focus { 
+        background-color: #1e2329 !important;
+        color: #eaecef !important;
+        border: 1px solid #f0b90b !important; 
+        box-shadow: none !important;
+    }
     
     /* 絕對禁止任何畫面變淡、閃爍與 Loading 遮罩 */
     .stApp, .element-container, iframe, div[data-testid="stVerticalBlock"], div[data-testid="stFragment"] {
@@ -413,7 +424,6 @@ if st.session_state.is_searched:
             fig.update_yaxes(
                 side="right", gridcolor="#1e2329", zeroline=False, linecolor="#2b313a", tickformat=",.2f", 
                 showspikes=True, spikemode='across', spikesnap='cursor', spikethickness=1, spikedash='dash', spikecolor='#787f8b',
-                spikeplacement="data", 
                 showline=True,
                 row=1, col=1, range=y_range
             )
