@@ -50,9 +50,8 @@ if bg_base64:
         background-attachment: fixed;
     }}
     
-    /* 讓主要內容區域半透明，背景圖能透出來 */
     [data-testid="stAppViewContainer"] > .main {{
-        background-color: rgba(11, 14, 17, 0.82);
+        background-color: rgba(11, 14, 17, 0.78);
     }}
     
     .block-container {{
@@ -66,6 +65,16 @@ st.markdown(f"""
     
     .block-container {{ padding-top: 1.2rem; padding-bottom: 1rem; }}
     div[data-testid="stRadio"] > div {{ flex-direction: row; gap: 12px; }}
+    
+    /* 標題文字強化，防止被背景擋住 */
+    h1 {{
+        color: #ffffff !important;
+        text-shadow: 
+            0 0 8px rgba(0,0,0,0.9),
+            0 0 16px rgba(0,0,0,0.7),
+            0 2px 4px rgba(0,0,0,0.8) !important;
+        font-weight: 700 !important;
+    }}
     
     /* 搜尋框樣式 */
     .stTextInput input {{ 
@@ -362,6 +371,7 @@ if st.session_state.is_searched:
 
             fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.015, row_heights=[0.75, 0.25])
             
+            # K線
             fig.add_trace(go.Candlestick(
                 x=df_tf['open_time'], open=df_tf['open_price'], high=df_tf['high_price'], low=df_tf['low_price'], close=df_tf['close_price'],
                 name=sym, line=dict(width=1.5), 
@@ -370,6 +380,7 @@ if st.session_state.is_searched:
                 hoverinfo="none"
             ), row=1, col=1)
             
+            # 技術指標
             fig.add_trace(go.Scatter(x=df_tf['open_time'], y=df_tf['EMA_21'], mode='lines', name='EMA21', line=dict(color='#2962FF', width=1.2), hoverinfo="none"), row=1, col=1)
             fig.add_trace(go.Scatter(x=df_tf['open_time'], y=df_tf['EMA_50'], mode='lines', name='EMA50', line=dict(color='#FFFFFF', width=1.2), hoverinfo="none"), row=1, col=1)
             fig.add_trace(go.Scatter(x=df_tf['open_time'], y=df_tf['EMA_100'], mode='lines', name='EMA100', line=dict(color='#FF5252', width=1.4), hoverinfo="none"), row=1, col=1)
@@ -377,6 +388,7 @@ if st.session_state.is_searched:
             fig.add_trace(go.Scatter(x=df_tf['open_time'], y=df_tf['Trend_Resistance'], mode='lines', name='壓力趨勢線', line=dict(color='rgba(246, 70, 93, 0.7)', width=1.5, dash='dash'), hoverinfo="none"), row=1, col=1)
             fig.add_trace(go.Scatter(x=df_tf['open_time'], y=df_tf['Trend_Support'], mode='lines', name='支撐趨勢線', line=dict(color='rgba(14, 203, 129, 0.7)', width=1.5, dash='dash'), fill='tonexty', fillcolor='rgba(126, 87, 194, 0.02)', hoverinfo="none"), row=1, col=1)
 
+            # AI 訊號
             long_df = df_tf[df_tf['Long_Signal']]
             if not long_df.empty:
                 fig.add_trace(go.Scatter(
@@ -399,6 +411,7 @@ if st.session_state.is_searched:
                     hoverinfo="none"
                 ), row=1, col=1)
 
+            # 成交量
             vol_colors = ['rgba(14, 203, 129, 0.5)' if c >= o else 'rgba(246, 70, 93, 0.5)' for c, o in zip(df_tf['close_price'], df_tf['open_price'])]
             fig.add_trace(go.Bar(x=df_tf['open_time'], y=df_tf['volume'], name='VOL', marker_color=vol_colors, hoverinfo="none"), row=2, col=1)
 
@@ -431,7 +444,7 @@ if st.session_state.is_searched:
 
             fig.update_layout(
                 template="plotly_dark", 
-                paper_bgcolor="rgba(11,14,17,0.6)",   # 讓圖表也稍微透出背景
+                paper_bgcolor="rgba(11,14,17,0.6)",
                 plot_bgcolor="rgba(11,14,17,0.6)", 
                 hovermode="x",  
                 hoverdistance=100,
@@ -442,24 +455,54 @@ if st.session_state.is_searched:
                 bargap=0.15, 
                 showlegend=False,
                 margin=dict(l=10, r=85, t=25, b=30), 
-                uirevision="constant_lock_state"
+                uirevision="constant_lock_state",
+                hoverlabel=dict(
+                    bgcolor="rgba(30, 35, 41, 0.95)",
+                    font_size=12,
+                    font_color="white",
+                    bordercolor="#f0b90b"
+                )
             )
             
             fig.update_layout(xaxis=dict(range=[start_time, end_time], autorange=False))
 
+            # X 軸
             fig.update_xaxes(
                 showticklabels=True, gridcolor="#1e2329", zeroline=False, linecolor="#2b313a",
                 showspikes=True, spikemode='across', spikesnap='cursor', spikethickness=1, spikedash='dash', spikecolor='#a0a6b2'
             )
+            
+            # ===== 主圖 Y 軸（只有這裡會顯示滑鼠價格）=====
             fig.update_yaxes(
-                side="right", gridcolor="#1e2329", zeroline=False, linecolor="#2b313a", tickformat=",.2f", 
-                showspikes=True, spikemode='across', spikesnap='cursor', spikethickness=1, spikedash='dash', spikecolor='#a0a6b2',
+                side="right",
+                gridcolor="#1e2329",
+                zeroline=False,
+                linecolor="#2b313a",
+                tickformat=",.2f",
+                showspikes=True,
+                spikemode="across+toaxis",      # 關鍵：顯示價格在軸上
+                spikesnap="cursor",
+                spikethickness=1,
+                spikedash="dash",
+                spikecolor="#a0a6b2",
                 showline=True,
-                row=1, col=1, range=y_range
+                row=1, col=1,
+                range=y_range
             )
+            
+            # 成交量副圖 Y 軸（不顯示價格）
             fig.update_yaxes(
-                side="right", gridcolor="#1e2329", zeroline=False, linecolor="#2b313a", tickformat=",.2f", 
-                showspikes=True, spikemode='across', spikesnap='cursor', spikethickness=1, spikedash='dash', spikecolor='#a0a6b2',
+                side="right",
+                gridcolor="#1e2329",
+                zeroline=False,
+                linecolor="#2b313a",
+                tickformat=",.2f",
+                showspikes=True,
+                spikemode="across",
+                spikesnap="cursor",
+                spikethickness=1,
+                spikedash="dash",
+                spikecolor="#a0a6b2",
                 row=2, col=1
             )
             
