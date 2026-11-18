@@ -318,17 +318,16 @@ if st.session_state.is_searched:
                 x=df_tf['open_time'], open=df_tf['open_price'], high=df_tf['high_price'], low=df_tf['low_price'], close=df_tf['close_price'],
                 name=sym, line=dict(width=1.5), 
                 increasing_line_color='#0ECB81', increasing_fillcolor='#0ECB81',
-                decreasing_line_color='#F6465D', decreasing_fillcolor='#F6465D',
-                hoverinfo="skip"
+                decreasing_line_color='#F6465D', decreasing_fillcolor='#F6465D'
             ), row=1, col=1)
             
             # 2. 技術指標與策略線
-            fig.add_trace(go.Scatter(x=df_tf['open_time'], y=df_tf['EMA_21'], mode='lines', name='EMA21', line=dict(color='#2962FF', width=1.2), hoverinfo="skip"), row=1, col=1)
-            fig.add_trace(go.Scatter(x=df_tf['open_time'], y=df_tf['EMA_50'], mode='lines', name='EMA50', line=dict(color='#FFFFFF', width=1.2), hoverinfo="skip"), row=1, col=1)
-            fig.add_trace(go.Scatter(x=df_tf['open_time'], y=df_tf['EMA_100'], mode='lines', name='EMA100', line=dict(color='#FF5252', width=1.4), hoverinfo="skip"), row=1, col=1)
+            fig.add_trace(go.Scatter(x=df_tf['open_time'], y=df_tf['EMA_21'], mode='lines', name='EMA21', line=dict(color='#2962FF', width=1.2)), row=1, col=1)
+            fig.add_trace(go.Scatter(x=df_tf['open_time'], y=df_tf['EMA_50'], mode='lines', name='EMA50', line=dict(color='#FFFFFF', width=1.2)), row=1, col=1)
+            fig.add_trace(go.Scatter(x=df_tf['open_time'], y=df_tf['EMA_100'], mode='lines', name='EMA100', line=dict(color='#FF5252', width=1.4)), row=1, col=1)
 
-            fig.add_trace(go.Scatter(x=df_tf['open_time'], y=df_tf['Trend_Resistance'], mode='lines', name='壓力趨勢線', line=dict(color='rgba(246, 70, 93, 0.7)', width=1.5, dash='dash'), hoverinfo="skip"), row=1, col=1)
-            fig.add_trace(go.Scatter(x=df_tf['open_time'], y=df_tf['Trend_Support'], mode='lines', name='支撐趨勢線', line=dict(color='rgba(14, 203, 129, 0.7)', width=1.5, dash='dash'), fill='tonexty', fillcolor='rgba(126, 87, 194, 0.02)', hoverinfo="skip"), row=1, col=1)
+            fig.add_trace(go.Scatter(x=df_tf['open_time'], y=df_tf['Trend_Resistance'], mode='lines', name='壓力趨勢線', line=dict(color='rgba(246, 70, 93, 0.7)', width=1.5, dash='dash')), row=1, col=1)
+            fig.add_trace(go.Scatter(x=df_tf['open_time'], y=df_tf['Trend_Support'], mode='lines', name='支撐趨勢線', line=dict(color='rgba(14, 203, 129, 0.7)', width=1.5, dash='dash'), fill='tonexty', fillcolor='rgba(126, 87, 194, 0.02)'), row=1, col=1)
 
             # 3. AI 買賣點標記
             long_df = df_tf[df_tf['Long_Signal']]
@@ -338,8 +337,7 @@ if st.session_state.is_searched:
                     mode='markers+text', name='AI 多點', 
                     marker=dict(symbol='triangle-up', size=10, color='#0ECB81', line=dict(width=1, color='white')), 
                     text=["🟢 AI多" for _ in range(len(long_df))], textposition="bottom center",
-                    textfont=dict(color='#0ECB81', size=11, family="Arial Black"),
-                    hoverinfo="skip"
+                    textfont=dict(color='#0ECB81', size=11, family="Arial Black")
                 ), row=1, col=1)
 
             short_df = df_tf[df_tf['Short_Signal']]
@@ -349,13 +347,12 @@ if st.session_state.is_searched:
                     mode='markers+text', name='AI 空點', 
                     marker=dict(symbol='triangle-down', size=10, color='#F6465D', line=dict(width=1, color='white')), 
                     text=["🔴 AI空" for _ in range(len(short_df))], textposition="top center",
-                    textfont=dict(color='#F6465D', size=11, family="Arial Black"),
-                    hoverinfo="skip"
+                    textfont=dict(color='#F6465D', size=11, family="Arial Black")
                 ), row=1, col=1)
 
             # 4. 獨立副圖：成交量 (VOL)
             vol_colors = ['rgba(14, 203, 129, 0.5)' if c >= o else 'rgba(246, 70, 93, 0.5)' for c, o in zip(df_tf['close_price'], df_tf['open_price'])]
-            fig.add_trace(go.Bar(x=df_tf['open_time'], y=df_tf['volume'], name='VOL', marker_color=vol_colors, hoverinfo="skip"), row=2, col=1)
+            fig.add_trace(go.Bar(x=df_tf['open_time'], y=df_tf['volume'], name='VOL', marker_color=vol_colors), row=2, col=1)
 
             latest_close = latest['close_price']
             
@@ -372,23 +369,21 @@ if st.session_state.is_searched:
                 row=1, col=1
             )
 
-            # 🛠️ K線圖左上角顯示策略與技術指標
+            # 🛠️ 修復：使用純 HTML 換行與靠左對齊，並放置於左上角
             mode_desc = "⚡ AI小波段閃電模式" if tf in ['5m', '15m'] else "🌊 AI大波段趨勢模式"
             ohlc_text = (
-                f"<div style='text-align: left;'>"
                 f"<b>{pair} · {tf} ({mode_desc})</b><br>"
                 f"<b>🛠️ 策略與技術指標:</b> 雙軌通道 (Window: {win}, Dev: {dev}) | EMA (21, 50, 100) | RSI (14) | ATR (14)<br>"
                 f"<b>RSI:</b> {latest_rsi:.1f} | <b>🤖 AI勝率:</b> <span style='color:#f0b90b'>{latest_ai_prob:.1f}%</span> | "
                 f"收: <span style='color:{status_color}'>{latest['close_price']:,.2f} ({change_pct:+.2f}%)</span>"
-                f"</div>"
             )
             fig.add_annotation(
                 text=ohlc_text, xref="paper", yref="paper", 
                 x=0.01, y=0.98, xanchor="left", yanchor="top", 
-                showarrow=False, font=dict(size=11, color="#848e9c")
+                showarrow=False, align="left", font=dict(size=11, color="#848e9c")
             )
 
-            # 🛠️ 確保 hovermode 設為 "x unified" 或 "closest" 並開啟座標捕捉，才能順利渲染十字虛線
+            # 🛠️ 確保 hovermode 為 "x unified" 並啟用十字虛線
             fig.update_layout(
                 template="plotly_dark", 
                 paper_bgcolor="#0b0e11", 
@@ -407,7 +402,7 @@ if st.session_state.is_searched:
             
             fig.update_layout(xaxis=dict(range=[start_time, end_time], autorange=False))
 
-            # 🛠️ 完整設定 X 軸與 Y 軸的 spike（十字虛線）樣式
+            # 🛠️ 強制開啟 X 軸與 Y 軸的十字虛線（spikes）
             fig.update_xaxes(
                 showticklabels=True, gridcolor="#1e2329", zeroline=False, linecolor="#2b313a",
                 showspikes=True, spikemode='across', spikesnap='cursor', spikethickness=1, spikedash='dash', spikecolor='#a0a6b2'
