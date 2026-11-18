@@ -4,9 +4,10 @@ import numpy as np
 from sqlalchemy import create_engine
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+import lightgbm as lgb
 
 # 頁面基本設定
-st.set_page_config(page_title="加密貨幣雙軌策略看盤系統", layout="wide")
+st.set_page_config(page_title="加密貨幣雙軌策略 AI 看盤系統", layout="wide")
 
 # 注入專業暗色系樣式、強制取消所有畫面變淡與載入遮罩
 st.markdown("""
@@ -46,8 +47,12 @@ if "search_query" not in st.session_state:
 if "auto_scroll" not in st.session_state:
     st.session_state.auto_scroll = True
 
+# 全域 AI 模型快取
+if "ai_models" not in st.session_state:
+    st.session_state.ai_models = {}
+
 # ==================== 1. 頂部標題與搜尋表單 ====================
-st.title("加密貨幣分析 - 雙軌策略看盤系統（小波段 5m/15m + 大波段 1h/4h）")
+st.title("加密貨幣分析 - 雙軌策略 AI 智能看盤系統（小波段 5m/15m + 大波段 1h/4h）")
 
 with st.form(key="search_form"):
     col_f1, col_f2 = st.columns([4, 1])
@@ -141,6 +146,44 @@ def calculate_trendline_channel(df, window=30, num_dev=1.8):
     df['Trend_Support'] = lower     
     return df
 
+def train_or_get_ai_model(df_tf, key):
+    """即時機器學習訓練：根據當前 K 線特徵訓練 LightGBM 模型以預測勝率"""
+    if key in st.session_state.ai_models:
+        return st.session_state.ai_models[key]
+    
+    if len(df_tf) < 60:
+        return None
+    
+    try:
+        df = df_tf.copy()
+        df['vol_ratio'] = df['volume'] / df['volume'].rolling(20).mean()
+        body_size = (df['close_price'] - df['open_price']).abs()
+        candle_range = df['high_price'] - df['low_price']
+        df['body_ratio'] = body_size / candle_range.replace(0, 1)
+        df['atr_ratio'] = df['ATR'] / df['close_price']
+        df['ema_diff'] = (df['EMA_21'] - df['EMA_50']) / df['close_price']
+        
+        # 建立歷史目標標籤：未來 3 根 K 棒最高價漲幅超過 1.2% 為成功 (1)
+        future_max_gain = df['high_price'].shift(-3).rolling(3).max() / df['close_price'] - 1
+        df['target'] = (future_max_gain > 0.012).astype(int)
+        
+        feature_cols = ['RSI', 'vol_ratio', 'body_ratio', 'atr_ratio', 'ema_diff']
+        train_df = df.dropna(subset=feature_cols + ['target'])
+        
+        if len(train_df) < 30 or len(train_df['target'].unique()) < 2:
+            return None
+            
+        X = train_df[feature_cols]
+        y = train_df['target']
+        
+        model = lgb.LGBMClassifier(n_estimators=40, learning_rate=0.05, max_depth=3, verbose=-1)
+        model.fit(X, y)
+        
+        st.session_state.ai_models[key] = model
+        return model
+    except Exception:
+        return None
+
 # ==================== 3. 主畫面與即時局部刷新區塊 ====================
 if st.session_state.is_searched:
     query_str = st.session_state.search_query.upper()
@@ -177,7 +220,7 @@ if st.session_state.is_searched:
             df_tf['EMA_100'] = df_tf['close_price'].ewm(span=100, adjust=False).mean()
 
             win = 20 if tf in ['5m', '15m'] else 40
-            dev = 1.6 if tf in ['5m', '15m'] else 2.1
+            dev = 1.5 if tf in ['5m', '15m'] else 2.0
             df_tf = calculate_trendline_channel(df_tf, window=win, num_dev=dev)
             
             delta = df_tf['close_price'].diff()
@@ -192,41 +235,71 @@ if st.session_state.is_searched:
             tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
             df_tf['ATR'] = tr.rolling(window=14).mean()
 
-            # 成交量均線與 K 棒實體比例（確保有量、拒絕插針雜訊）
             df_tf['Vol_SMA20'] = df_tf['volume'].rolling(window=20).mean()
             body_size = (df_tf['close_price'] - df_tf['open_price']).abs()
             candle_range = df_tf['high_price'] - df_tf['low_price']
             df_tf['Body_Ratio'] = body_size / candle_range.replace(0, 1)
 
-            # ⚡ 【全機會捕捉模式】放寬條件：多空通吃、大行情小波動兼顧
+            # 基礎策略條件 (大小通吃、多空全抓)
             if tf in ['5m', '15m']:
-                df_tf['Long_Signal'] = (
+                df_tf['Base_Long'] = (
                     (df_tf['close_price'] > df_tf['Trend_Resistance']) & 
-                    (df_tf['EMA_21'] >= df_tf['EMA_50']) &  # 只要短期均線向上交叉或持平即允許
-                    (df_tf['RSI'] >= 40) & (df_tf['RSI'] <= 85) &
-                    (df_tf['volume'] > df_tf['Vol_SMA20'] * 1.05) &  # 稍微帶量即可，不錯過小波動
+                    (df_tf['RSI'] >= 42) & (df_tf['RSI'] <= 85) &
+                    (df_tf['volume'] > df_tf['Vol_SMA20'] * 1.05) &
                     (df_tf['Body_Ratio'] > 0.3)
                 )
-                df_tf['Short_Signal'] = (
+                df_tf['Base_Short'] = (
                     (df_tf['close_price'] < df_tf['Trend_Support']) & 
-                    (df_tf['EMA_21'] <= df_tf['EMA_50']) &  # 只要短期均線向下交叉或持平即允許
-                    (df_tf['RSI'] >= 15) & (df_tf['RSI'] <= 60) &
-                    (df_tf['volume'] > df_tf['Vol_SMA20'] * 1.05) &  # 稍微帶量即可
+                    (df_tf['RSI'] >= 15) & (df_tf['RSI'] <= 58) &
+                    (df_tf['volume'] > df_tf['Vol_SMA20'] * 1.05) &
                     (df_tf['Body_Ratio'] > 0.3)
                 )
             else:
-                df_tf['Long_Signal'] = (
+                df_tf['Base_Long'] = (
                     (df_tf['close_price'] > df_tf['Trend_Resistance']) & 
-                    (df_tf['EMA_21'] >= df_tf['EMA_50']) & 
                     (df_tf['RSI'] >= 45) & (df_tf['RSI'] <= 80) &
                     (df_tf['volume'] > df_tf['Vol_SMA20'] * 1.0)
                 )
-                df_tf['Short_Signal'] = (
+                df_tf['Base_Short'] = (
                     (df_tf['close_price'] < df_tf['Trend_Support']) & 
-                    (df_tf['EMA_21'] <= df_tf['EMA_50']) & 
                     (df_tf['RSI'] >= 20) & (df_tf['RSI'] <= 55) &
                     (df_tf['volume'] > df_tf['Vol_SMA20'] * 1.0)
                 )
+
+            # 🤖 結合 AI 模型評分進行過濾
+            model_key = f"{sym}_{tf}"
+            ai_model = train_or_get_ai_model(df_tf, model_key)
+            
+            long_signals = []
+            short_signals = []
+            ai_probabilities = []
+            
+            for idx, row in df_tf.iterrows():
+                is_l = row['Base_Long']
+                is_s = row['Base_Short']
+                prob = 0.70  # 預設保底分數
+                
+                if (is_l or is_s) and ai_model is not None:
+                    try:
+                        feat = pd.DataFrame([{
+                            'RSI': row['RSI'],
+                            'vol_ratio': row['volume'] / row['Vol_SMA20'] if row['Vol_SMA20'] > 0 else 1.0,
+                            'body_ratio': row['Body_Ratio'],
+                            'atr_ratio': row['ATR'] / row['close_price'] if not pd.isna(row['ATR']) else 0.015,
+                            'ema_diff': (row['EMA_21'] - row['EMA_50']) / row['close_price']
+                        }])
+                        prob = ai_model.predict_proba(feat)[0][1]
+                    except Exception:
+                        pass
+                
+                ai_probabilities.append(prob)
+                # AI 勝率門檻設為 58% 以上才確認發出訊號
+                long_signals.append(is_l and prob >= 0.58)
+                short_signals.append(is_s and prob >= 0.58)
+                
+            df_tf['Long_Signal'] = long_signals
+            df_tf['Short_Signal'] = short_signals
+            df_tf['AI_Prob'] = ai_probabilities
 
             display_count = 90 if sym == 'ETH' else 120
             default_view_df = df_tf.tail(display_count)
@@ -244,6 +317,7 @@ if st.session_state.is_searched:
             change_pct = ((latest['close_price'] - latest['open_price']) / latest['open_price']) * 100
             status_color = "#0ECB81" if latest['close_price'] >= latest['open_price'] else "#F6465D"
             latest_rsi = latest['RSI'] if not pd.isna(latest['RSI']) else 50.0
+            latest_ai_prob = latest['AI_Prob'] * 100
 
             fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.015, row_heights=[k_ratio, v_ratio])
             
@@ -265,9 +339,9 @@ if st.session_state.is_searched:
             if not long_df.empty:
                 fig.add_trace(go.Scatter(
                     x=long_df['open_time'], y=long_df['low_price'] * 0.995, 
-                    mode='markers+text', name='做多買點', 
+                    mode='markers+text', name='AI 多點', 
                     marker=dict(symbol='triangle-up', size=16, color='#0ECB81', line=dict(width=1, color='white')), 
-                    text=["🟢 多" for _ in range(len(long_df))], textposition="bottom center",
+                    text=["🟢 AI多" for _ in range(len(long_df))], textposition="bottom center",
                     textfont=dict(color='#0ECB81', size=12, family="Arial Black")
                 ), row=1, col=1)
 
@@ -275,9 +349,9 @@ if st.session_state.is_searched:
             if not short_df.empty:
                 fig.add_trace(go.Scatter(
                     x=short_df['open_time'], y=short_df['high_price'] * 1.005, 
-                    mode='markers+text', name='做空賣點', 
+                    mode='markers+text', name='AI 空點', 
                     marker=dict(symbol='triangle-down', size=16, color='#F6465D', line=dict(width=1, color='white')), 
-                    text=["🔴 空" for _ in range(len(short_df))], textposition="top center",
+                    text=["🔴 AI空" for _ in range(len(short_df))], textposition="top center",
                     textfont=dict(color='#F6465D', size=12, family="Arial Black")
                 ), row=1, col=1)
 
@@ -302,9 +376,9 @@ if st.session_state.is_searched:
                 fig.add_hline(y=active_sl, line_dash="dash", line_color="#F6465D", annotation_text=f" ATR止損: {active_sl:,.2f} ", annotation_position="left", row=1, col=1)
                 fig.add_hline(y=active_tp, line_dash="dash", line_color="#0ECB81", annotation_text=f" ATR止盈: {active_tp:,.2f} ", annotation_position="left", row=1, col=1)
 
-            mode_desc = "⚡ 小波段閃電模式 (5m/15m)" if tf in ['5m', '15m'] else "🌊 大波段趨勢模式 (1h/4h)"
+            mode_desc = "⚡ AI小波段閃電模式" if tf in ['5m', '15m'] else "🌊 AI大波段趨勢模式"
             ohlc_text = (
-                f"<b>{pair} · {tf} ({mode_desc})</b> &nbsp;&nbsp; <b>RSI(14):</b> {latest_rsi:.1f}<br>"
+                f"<b>{pair} · {tf} ({mode_desc})</b> &nbsp;&nbsp; <b>RSI:</b> {latest_rsi:.1f} | <b>🤖 AI勝率:</b> <span style='color:#f0b90b'>{latest_ai_prob:.1f}%</span><br>"
                 f"收: <span style='color:{status_color}'>{latest['close_price']:,.2f} ({change_pct:+.2f}%)</span>"
             )
             fig.add_annotation(text=ohlc_text, xref="paper", yref="paper", x=0.01, y=0.98, xanchor="left", yanchor="top", showarrow=False, font=dict(size=11, color="#848e9c"))
@@ -328,25 +402,33 @@ if st.session_state.is_searched:
                 st.plotly_chart(fig, use_container_width=True, config=chart_config, key=f"{sym.lower()}_supabase_live_chart")
             
             with panel_col:
-                st.markdown("### 🎯 即時操作建議")
+                st.markdown("### 🎯 AI 即時操作建議")
+                st.markdown(f"""
+                <div style="background-color: #1e2329; border: 1px solid #2b313a; padding: 10px; border-radius: 6px; margin-bottom: 10px;">
+                    <div style="font-size: 13px; color: #848e9c;">當前 AI 模型信心評分</div>
+                    <div style="font-size: 20px; font-weight: bold; color: #f0b90b;">{latest_ai_prob:.1f}%</div>
+                </div>
+                """, unsafe_allow_html=True)
+
                 if df_tf.iloc[-1]['Long_Signal']:
                     st.markdown(f"""
                     <div style="background-color: #1e2329; border: 1px solid #0ECB81; padding: 12px; border-radius: 6px; border-left: 5px solid #0ECB81;">
-                        <div style="color: #0ECB81; font-weight: bold;">🟢 做多 (LONG)</div>
+                        <div style="color: #0ECB81; font-weight: bold;">🟢 AI 智能多單 (LONG)</div>
                         <div style="font-size: 12px;">進場: {latest_close:,.2f}</div>
                     </div>
                     """, unsafe_allow_html=True)
                 elif df_tf.iloc[-1]['Short_Signal']:
                     st.markdown(f"""
                     <div style="background-color: #1e2329; border: 1px solid #F6465D; padding: 12px; border-radius: 6px; border-left: 5px solid #F6465D;">
-                        <div style="color: #F6465D; font-weight: bold;">🔴 做空 (SHORT)</div>
+                        <div style="color: #F6465D; font-weight: bold;">🔴 AI 智能空單 (SHORT)</div>
                         <div style="font-size: 12px;">進場: {latest_close:,.2f}</div>
                     </div>
                     """, unsafe_allow_html=True)
                 else:
                     st.markdown("""
                     <div style="background-color: #1e2329; border: 1px solid #2b313a; padding: 15px; border-radius: 6px; text-align: center; border-left: 5px solid #f0b90b;">
-                        <div style="color: #f0b90b; font-weight: bold;">⏳ 場外觀望 (WAIT)</div>
+                        <div style="color: #f0b90b; font-weight: bold;">⏳ AI 觀望中 (WAIT)</div>
+                        <div style="font-size: 11px; color: #848e9c; margin-top: 4px;">等待高勝率變盤契機</div>
                     </div>
                     """, unsafe_allow_html=True)
         else:
