@@ -372,7 +372,7 @@ if st.session_state.is_searched:
                 row=1, col=1
             )
 
-            # 🛠️ 調整 y 從 0.98 改為 0.93，讓文字標題下移，避免緊貼頂部
+            # 🛠️ 調整 y=0.99 並且上方保留小邊距 (t=25)，讓文字回到最左上角頂端
             mode_desc = "⚡ AI小波段閃電模式" if tf in ['5m', '15m'] else "🌊 AI大波段趨勢模式"
             ohlc_text = (
                 f"<b>{pair} · {tf} ({mode_desc})</b><br>"
@@ -382,7 +382,7 @@ if st.session_state.is_searched:
             )
             fig.add_annotation(
                 text=ohlc_text, xref="paper", yref="paper", 
-                x=0.01, y=0.93, xanchor="left", yanchor="top", 
+                x=0.01, y=0.99, xanchor="left", yanchor="top", 
                 showarrow=False, align="left", font=dict(size=11, color="#848e9c")
             )
 
@@ -398,13 +398,13 @@ if st.session_state.is_searched:
                 height=820, 
                 bargap=0.15, 
                 showlegend=False,
-                margin=dict(l=10, r=85, t=35, b=30),  # 稍微增加上方邊距 (t=35)
+                margin=dict(l=10, r=85, t=25, b=30),  # 調整回 t=25 保持緊湊頂部
                 uirevision="constant_lock_state"
             )
             
             fig.update_layout(xaxis=dict(range=[start_time, end_time], autorange=False))
 
-            # 🛠️ 強制開啟 X 軸與 Y 軸的十字虛線（spikes）同步跟隨滑鼠
+            # 🛠️ 保持十字虛線同步跟隨滑鼠
             fig.update_xaxes(
                 showticklabels=True, gridcolor="#1e2329", zeroline=False, linecolor="#2b313a",
                 showspikes=True, spikemode='across', spikesnap='cursor', spikethickness=1, spikedash='dash', spikecolor='#a0a6b2'
