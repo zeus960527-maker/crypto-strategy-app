@@ -5,6 +5,7 @@ BTC / ETH AI 交易訊號監控
 - Supabase PostgreSQL 儲存
 - Discord Webhook 通知
 - 台灣時間（Asia/Taipei）顯示通知與程式日誌
+- 使用 Streamlit 儀表板相同的趨勢通道、RSI、成交量、K 棒實體比例與 AI 門檻
 - 只用已收盤 K 棒判斷訊號
 
 安全提醒：
@@ -144,6 +145,51 @@ def get_db_connection():
         options="-c statement_timeout=15000",
         sslmode="require",
     )
+
+
+def initialize_notification_table():
+    """建立跨 GitHub Actions 執行保留的推播去重紀錄。"""
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS signal_notification_log (
+                    symbol TEXT NOT NULL,
+                    timeframe TEXT NOT NULL,
+                    candle_open_time TIMESTAMPTZ NOT NULL,
+                    direction TEXT NOT NULL,
+                    notified_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (symbol, timeframe, candle_open_time, direction)
+                )
+            """)
+        conn.commit()
+    logging.info("Supabase 推播去重資料表已就緒")
+
+
+def was_signal_notified(symbol, timeframe, candle_time, direction):
+    """查詢這根已收盤 K 棒的同方向訊號是否曾成功推播。"""
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT 1 FROM signal_notification_log
+                WHERE symbol = %s AND timeframe = %s
+                  AND candle_open_time = %s AND direction = %s
+                LIMIT 1
+            """, (symbol, timeframe, candle_time, direction))
+            return cur.fetchone() is not None
+
+
+def record_signal_notified(symbol, timeframe, candle_time, direction):
+    """Discord 推播成功後才寫入去重紀錄。"""
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO signal_notification_log
+                    (symbol, timeframe, candle_open_time, direction)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (symbol, timeframe, candle_open_time, direction)
+                DO NOTHING
+            """, (symbol, timeframe, candle_time, direction))
+        conn.commit()
 
 
 def create_exchange():
@@ -384,7 +430,7 @@ def calculate_trendline_channel(df, window=30, num_dev=1.8):
     x = np.arange(window, dtype=float)
 
     for i in range(count):
-        if i < window - 1:
+        if i < window:
             upper[i] = close[i]
             lower[i] = close[i]
             continue
@@ -490,7 +536,7 @@ def calculate_indicators(df, timeframe):
 
 
 # ============================================================
-# 7. AI 模型：多單、空單分開訓練
+# 7. AI 模型：完全沿用儀表板的單一 AI 判斷方式
 # ============================================================
 
 FEATURE_COLUMNS = [
@@ -502,125 +548,77 @@ FEATURE_COLUMNS = [
 ]
 
 
-def get_positive_class_probability(model, features):
-    probabilities = model.predict_proba(features)[0]
-    class_list = list(model.classes_)
+def train_or_get_ai_model(df, key):
+    """依照儀表板邏輯訓練單一模型：預測未來三根 K 棒最高價是否上漲超過 1.2%。
 
-    if 1 not in class_list:
-        return 0.0
-
-    return float(probabilities[class_list.index(1)])
-
-
-def train_or_get_ai_models(df, key):
+    注意：這是上漲目標模型，儀表板原始程式會將同一個 AI 分數用於多單與空單，
+    這裡為了保持判斷方式一致，也採用相同做法；它不是空單獨立勝率。
     """
-    分開訓練：
-    - long_model：未來三根 K 棒最高價是否上漲超過門檻
-    - short_model：未來三根 K 棒最低價是否下跌超過門檻
-
-    預測最新一根已收盤 K 棒時，不把該根 K 棒拿來訓練。
-    """
-
     now = time.time()
 
     with ai_lock:
         cached = ai_models.get(key)
-
         if cached and now - cached["trained_at"] < AI_MODEL_REFRESH_SECONDS:
-            return cached["long_model"], cached["short_model"]
+            return cached["model"]
 
-    if len(df) < 100:
-        return None, None
+    if len(df) < 60:
+        logging.info("[%s] AI 訓練資料不足：%s 根", key, len(df))
+        return None
 
     try:
         work = df.copy()
 
-        future_high = pd.concat(
-            [
-                work["high_price"].shift(-i)
-                for i in range(1, AI_FUTURE_CANDLES + 1)
-            ],
-            axis=1,
-        ).max(axis=1, skipna=False)
+        # 與儀表板相同：未來三根 K 棒最高價相對目前收盤價上漲 > 1.2%
+        future_max_gain = (
+            work["high_price"].shift(-3).rolling(3).max()
+            / work["close_price"] - 1
+        )
+        work["target"] = (future_max_gain > 0.012).astype(int)
 
-        future_low = pd.concat(
-            [
-                work["low_price"].shift(-i)
-                for i in range(1, AI_FUTURE_CANDLES + 1)
-            ],
-            axis=1,
-        ).min(axis=1, skipna=False)
-
-        work["long_target"] = (
-            future_high / work["close_price"] - 1
-            > AI_MOVE_THRESHOLD
-        ).astype(int)
-
-        work["short_target"] = (
-            future_low / work["close_price"] - 1
-            < -AI_MOVE_THRESHOLD
-        ).astype(int)
-
-        target_valid = future_high.notna() & future_low.notna()
-
-        # 最新一根是目前要預測的 K 棒，不可放入訓練資料
-        training = work.iloc[:-1].copy()
-        target_valid = target_valid.iloc[:-1]
-
-        usable = (
-            target_valid
-            & training[FEATURE_COLUMNS].notna().all(axis=1)
+        # 排除沒有完整未來三根 K 棒的尾端資料，避免將未知結果誤標為 0。
+        valid_future = future_max_gain.notna()
+        train_df = work.loc[valid_future].dropna(
+            subset=FEATURE_COLUMNS + ["target"]
         )
 
-        training = training.loc[usable]
-
-        if len(training) < 60:
-            logging.info("[%s] AI 訓練資料不足：%s 筆", key, len(training))
-            return None, None
-
-        def fit_binary_model(target_column):
-            y = training[target_column].astype(int)
-
-            if y.nunique() < 2 or y.value_counts().min() < 5:
-                return None
-
-            model = lgb.LGBMClassifier(
-                n_estimators=80,
-                learning_rate=0.04,
-                max_depth=3,
-                num_leaves=7,
-                min_child_samples=8,
-                class_weight="balanced",
-                verbosity=-1,
-                n_jobs=1,
-                random_state=42,
+        if len(train_df) < 30 or train_df["target"].nunique() < 2:
+            logging.info(
+                "[%s] AI 模型暫不可訓練：有效資料=%s，類別數=%s",
+                key, len(train_df), train_df["target"].nunique()
             )
+            return None
 
-            model.fit(training[FEATURE_COLUMNS], y)
-            return model
-
-        long_model = fit_binary_model("long_target")
-        short_model = fit_binary_model("short_target")
+        model = lgb.LGBMClassifier(
+            n_estimators=40,
+            learning_rate=0.05,
+            max_depth=3,
+            verbosity=-1,
+            n_jobs=1,
+            random_state=42,
+        )
+        model.fit(train_df[FEATURE_COLUMNS], train_df["target"].astype(int))
 
         with ai_lock:
-            ai_models[key] = {
-                "long_model": long_model,
-                "short_model": short_model,
-                "trained_at": now,
-            }
+            ai_models[key] = {"model": model, "trained_at": now}
 
-        logging.info(
-            "[%s] AI 模型更新完成；多單模型=%s，空單模型=%s",
-            key,
-            long_model is not None,
-            short_model is not None,
-        )
-
-        return long_model, short_model
+        logging.info("[%s] 儀表板相同邏輯的 AI 模型訓練完成，樣本=%s", key, len(train_df))
+        return model
 
     except Exception:
         logging.exception("[%s] AI 模型訓練失敗", key)
-        return None, None
+        return None
+
+
+def predict_dashboard_ai_probability(model, feature_row):
+    """重現儀表板的預設分數 0.70 與 predict_proba()[0][1] 行為。"""
+    probability = 0.70
+    if model is not None:
+        try:
+            feature_frame = pd.DataFrame([feature_row], columns=FEATURE_COLUMNS)
+            probability = float(model.predict_proba(feature_frame)[0][1])
+        except Exception:
+            logging.exception("AI 機率預測失敗，沿用儀表板預設分數 70%%")
+    return probability
 
 
 # ============================================================
@@ -628,152 +626,128 @@ def train_or_get_ai_models(df, key):
 # ============================================================
 
 def check_signal_and_notify(symbol, timeframe, df):
+    """使用上傳的 Streamlit 儀表板同一套 Base_Long/Base_Short + AI 門檻。"""
     if df.empty or len(df) < 100:
-        logging.info("[%s %s] K 線資料不足", symbol, timeframe)
+        logging.info("[%s %s] K 線資料不足：%s", symbol, timeframe, len(df))
         return
 
     df = calculate_indicators(df, timeframe)
-
     if df.empty:
         return
 
     latest = df.iloc[-1]
-
     required_values = [
-        latest["RSI"],
-        latest["ATR"],
-        latest["Trend_Resistance"],
-        latest["Trend_Support"],
-        latest["Vol_SMA20"],
-        latest["Body_Ratio"],
+        latest["RSI"], latest["ATR"], latest["Trend_Resistance"],
+        latest["Trend_Support"], latest["Vol_SMA20"],
+        latest["Body_Ratio"], latest["vol_ratio"], latest["atr_ratio"],
+        latest["ema_diff"],
     ]
-
     if any(pd.isna(value) for value in required_values):
         logging.info("[%s %s] 指標尚未準備完成", symbol, timeframe)
         return
 
     close_price = float(latest["close_price"])
     atr = float(latest["ATR"])
+    rsi = float(latest["RSI"])
+    volume = float(latest["volume"])
+    volume_sma = float(latest["Vol_SMA20"])
+    body_ratio = float(latest["Body_Ratio"])
+    resistance = float(latest["Trend_Resistance"])
+    support = float(latest["Trend_Support"])
 
-    if close_price <= 0 or atr <= 0:
+    if close_price <= 0 or atr <= 0 or volume_sma <= 0:
+        logging.info("[%s %s] 價格、ATR 或成交量均線無效", symbol, timeframe)
         return
 
+    # 以下門檻逐項對應上傳的 Streamlit 程式。
     if timeframe in ("5m", "15m"):
-        long_condition = (
-            (latest["close_price"] > latest["Trend_Resistance"])
-            and (42 <= latest["RSI"] <= 85)
-            and (latest["volume"] > latest["Vol_SMA20"] * 1.05)
-            and (latest["Body_Ratio"] > 0.3)
+        base_long = (
+            close_price > resistance
+            and 42 <= rsi <= 85
+            and volume > volume_sma * 1.05
+            and body_ratio > 0.3
+        )
+        base_short = (
+            close_price < support
+            and 15 <= rsi <= 58
+            and volume > volume_sma * 1.05
+            and body_ratio > 0.3
+        )
+    else:  # 1h / 4h
+        base_long = (
+            close_price > resistance
+            and 45 <= rsi <= 80
+            and volume > volume_sma * 1.0
+        )
+        base_short = (
+            close_price < support
+            and 20 <= rsi <= 55
+            and volume > volume_sma * 1.0
         )
 
-        short_condition = (
-            (latest["close_price"] < latest["Trend_Support"])
-            and (15 <= latest["RSI"] <= 58)
-            and (latest["volume"] > latest["Vol_SMA20"] * 1.05)
-            and (latest["Body_Ratio"] > 0.3)
+    if not base_long and not base_short:
+        logging.info(
+            "[%s %s] WAIT｜收盤=%0.4f 上軌=%0.4f 下軌=%0.4f RSI=%.1f 量比=%.2f 實體比=%.2f",
+            symbol, timeframe, close_price, resistance, support,
+            rsi, volume / volume_sma, body_ratio,
         )
-
-    else:
-        long_condition = (
-            (latest["close_price"] > latest["Trend_Resistance"])
-            and (45 <= latest["RSI"] <= 80)
-            and (latest["volume"] > latest["Vol_SMA20"])
-        )
-
-        short_condition = (
-            (latest["close_price"] < latest["Trend_Support"])
-            and (20 <= latest["RSI"] <= 55)
-            and (latest["volume"] > latest["Vol_SMA20"])
-        )
-
-    if not long_condition and not short_condition:
         return
 
     key = f"{symbol}_{timeframe}"
     latest_time = latest["open_time"]
 
-    with state_lock:
-        if last_notified_timestamps.get(key) == latest_time:
-            return
-
-    long_model, short_model = train_or_get_ai_models(df, key)
-
-    features = pd.DataFrame([{
-        "RSI": float(latest["RSI"]),
+    model = train_or_get_ai_model(df, key)
+    feature_row = {
+        "RSI": rsi,
         "vol_ratio": float(latest["vol_ratio"]),
-        "Body_Ratio": float(latest["Body_Ratio"]),
+        "Body_Ratio": body_ratio,
         "atr_ratio": float(latest["atr_ratio"]),
         "ema_diff": float(latest["ema_diff"]),
-    }])
+    }
+    ai_probability = predict_dashboard_ai_probability(model, feature_row)
 
-    ai_probability = None
-
-    if long_condition:
-        if long_model is not None:
-            ai_probability = get_positive_class_probability(
-                long_model, features
-            )
-
-        signal_type = "LONG (AI 智能多單)"
-
-    else:
-        if short_model is not None:
-            ai_probability = get_positive_class_probability(
-                short_model, features
-            )
-
-        signal_type = "SHORT (AI 智能空單)"
-
-    if REQUIRE_AI_MODEL and ai_probability is None:
-        logging.info("[%s] AI 模型尚未就緒，依設定不推播", key)
-        return
-
-    if ai_probability is not None and ai_probability < AI_THRESHOLD:
+    # 儀表板原始程式：多、空訊號都使用同一個 AI 分數，門檻 >= 0.58。
+    if ai_probability < AI_THRESHOLD:
         logging.info(
-            "[%s] 訊號被 AI 過濾，模型評分 %.1f%%",
-            key,
-            ai_probability * 100,
+            "[%s %s] Base 條件成立，但 AI 過濾：%.1f%% < %.1f%%",
+            symbol, timeframe, ai_probability * 100, AI_THRESHOLD * 100,
         )
         return
 
-    if ai_probability is None:
-        logging.warning(
-            "[%s] AI 模型尚未就緒，依技術條件推播；不顯示虛構 AI 勝率",
-            key,
-        )
+    if base_long and base_short:
+        logging.warning("[%s %s] 多空條件同時成立，為避免矛盾訊號，本根不推播", symbol, timeframe)
+        return
 
-    if signal_type.startswith("LONG"):
-        stop_loss = round(
-            close_price - atr * ATR_STOP_MULTIPLIER,
-            4,
-        )
+    direction = "LONG" if base_long else "SHORT"
+    signal_type = "LONG (AI 智能多單)" if base_long else "SHORT (AI 智能空單)"
+
+    with state_lock:
+        if last_notified_timestamps.get(key) == latest_time:
+            logging.info("[%s %s] 本次執行已推播過，略過", symbol, timeframe)
+            return
+
+    try:
+        if was_signal_notified(symbol, timeframe, latest_time, direction):
+            logging.info("[%s %s] 此 K 棒訊號已在先前執行推播，略過", symbol, timeframe)
+            return
+    except Exception:
+        logging.exception("[%s %s] 查詢推播去重紀錄失敗，為避免重複推播，本次略過", symbol, timeframe)
+        return
+
+    if base_long:
+        stop_loss = round(close_price - atr * ATR_STOP_MULTIPLIER, 4)
         risk = close_price - stop_loss
-        take_profit = round(
-            close_price + risk * RISK_REWARD_RATIO,
-            4,
-        )
+        take_profit = round(close_price + risk * RISK_REWARD_RATIO, 4)
     else:
-        stop_loss = round(
-            close_price + atr * ATR_STOP_MULTIPLIER,
-            4,
-        )
+        stop_loss = round(close_price + atr * ATR_STOP_MULTIPLIER, 4)
         risk = stop_loss - close_price
-        take_profit = round(
-            close_price - risk * RISK_REWARD_RATIO,
-            4,
-        )
+        take_profit = round(close_price - risk * RISK_REWARD_RATIO, 4)
 
-    candle_time_taiwan = latest_time.astimezone(TAIWAN_TZ).strftime(
-        "%Y-%m-%d %H:%M:%S"
-    )
-
+    candle_time_taiwan = latest_time.astimezone(TAIWAN_TZ).strftime("%Y-%m-%d %H:%M:%S")
     logging.info(
-        "[訊號候選] %s %s %s，K棒台灣時間=%s，收盤價=%.4f",
-        symbol,
-        timeframe,
-        signal_type,
-        candle_time_taiwan,
-        close_price,
+        "[訊號成立] %s %s %s｜K棒台灣時間=%s｜收盤=%.4f｜RSI=%.1f｜量比=%.2f｜AI分數=%.1f%%",
+        symbol, timeframe, signal_type, candle_time_taiwan,
+        close_price, rsi, volume / volume_sma, ai_probability * 100,
     )
 
     success = send_discord_alert(
@@ -786,10 +760,14 @@ def check_signal_and_notify(symbol, timeframe, df):
         ai_probability=ai_probability,
     )
 
-    # 推播成功才標記，失敗時下一輪仍可重試
+    # 只有 Discord 確認成功才記錄，推播失敗可在下一輪重試。
     if success:
-        with state_lock:
-            last_notified_timestamps[key] = latest_time
+        try:
+            record_signal_notified(symbol, timeframe, latest_time, direction)
+            with state_lock:
+                last_notified_timestamps[key] = latest_time
+        except Exception:
+            logging.exception("[%s %s] Discord 已推播，但寫入去重紀錄失敗", symbol, timeframe)
 
 
 # ============================================================
@@ -944,36 +922,39 @@ def run_all_tasks():
 
 def main():
     validate_config()
-    
+
     logging.info("====================================================")
     logging.info("BTC / ETH AI 智能交易訊號監控系統啟動")
     logging.info("時區：Asia/Taipei（台灣時間 UTC+8）")
     logging.info("目前台灣時間：%s", taiwan_time_text())
     logging.info("監控週期：%s", ", ".join(TIMEFRAMES))
+    logging.info("策略：儀表板相同判斷；AI 門檻 %.0f%%", AI_THRESHOLD * 100)
+    logging.info("執行環境：%s", "GitHub Actions 單次排程" if os.getenv("GITHUB_ACTIONS") == "true" else "本機常駐")
     logging.info("====================================================")
 
-    # 啟動時先測試 Discord；測試失敗不終止行情監控，
-    # 但請查看錯誤訊息並修正 Webhook。
-    test_discord()
+    initialize_notification_table()
+
+    # GitHub Actions 每次啟動只執行一輪；避免單一工作長時間佔用 runner。
+    # 本機執行則維持原本常駐監控模式。
+    if os.getenv("GITHUB_ACTIONS", "").lower() == "true":
+        logging.info("開始本次排程監控，台灣時間：%s", taiwan_time_text())
+        run_all_tasks()
+        logging.info("本次排程完成，台灣時間：%s", taiwan_time_text())
+        return
+
+    # 本機才預設送出啟動測試，避免 Actions 每五分鐘洗版。
+    if os.getenv("DISCORD_STARTUP_TEST", "false").lower() == "true":
+        test_discord()
 
     try:
         while True:
             cycle_start = time.monotonic()
-
             logging.info("開始新一輪監控，台灣時間：%s", taiwan_time_text())
             run_all_tasks()
-
             elapsed = time.monotonic() - cycle_start
             sleep_seconds = max(1.0, LOOP_INTERVAL_SECONDS - elapsed)
-
-            logging.info(
-                "本輪完成，耗時 %.1f 秒；%.1f 秒後開始下一輪",
-                elapsed,
-                sleep_seconds,
-            )
-
+            logging.info("本輪完成，耗時 %.1f 秒；%.1f 秒後開始下一輪", elapsed, sleep_seconds)
             time.sleep(sleep_seconds)
-
     except KeyboardInterrupt:
         logging.info("收到手動停止指令，程式結束。")
         sys.exit(0)
