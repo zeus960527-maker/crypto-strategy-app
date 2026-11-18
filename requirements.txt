@@ -11,3 +11,5 @@ supabase
 lightgbm
 streamlit_lightweight_charts
 scikit-learn
+pillow
+plotly
