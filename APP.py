@@ -2,9 +2,8 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from sqlalchemy import create_engine
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 import lightgbm as lgb
+from streamlit_lightweight_charts import render_lightweight_charts
 
 # 頁面基本設定
 st.set_page_config(page_title="加密貨幣雙軌策略 AI 看盤系統", layout="wide")
@@ -39,13 +38,6 @@ st.markdown("""
     [data-testid="stStatusWidget"] {
         visibility: hidden;
         display: none;
-    }
-
-    /* 將 Plotly 圖表區域滑鼠游標強制改為十字 */
-    .js-plotly-plot .plotly .nsewdrag, 
-    .js-plotly-plot .plotly .draglayer,
-    .js-plotly-plot .plotly .plot-container {
-        cursor: crosshair !important;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -304,145 +296,92 @@ if st.session_state.is_searched:
             df_tf['Short_Signal'] = short_signals
             df_tf['AI_Prob'] = ai_probabilities
 
-            display_count = 90 if sym == 'ETH' else 120
-            default_view_df = df_tf.tail(display_count)
-            interval = default_view_df['open_time'].diff().median() if len(default_view_df) > 1 else pd.Timedelta(minutes=1)
-            
-            start_time = default_view_df['open_time'].iloc[0] - (interval * 5)
-            end_time = default_view_df['open_time'].iloc[-1] + (interval * 10)
-
-            vis_low = min(default_view_df['low_price'].min(), default_view_df['Trend_Support'].min() if not default_view_df['Trend_Support'].isna().all() else default_view_df['low_price'].min())
-            vis_high = max(default_view_df['high_price'].max(), default_view_df['Trend_Resistance'].max() if not default_view_df['Trend_Resistance'].isna().all() else default_view_df['high_price'].max())
-            y_span = vis_high - vis_low
-            y_range = [vis_low - y_span * 0.03, vis_high + y_span * 0.03]
-
             latest = df_tf.iloc[-1]
             change_pct = ((latest['close_price'] - latest['open_price']) / latest['open_price']) * 100
             status_color = "#0ECB81" if latest['close_price'] >= latest['open_price'] else "#F6465D"
             latest_rsi = latest['RSI'] if not pd.isna(latest['RSI']) else 50.0
             latest_ai_prob = latest['AI_Prob'] * 100
 
-            fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.015, row_heights=[k_ratio, v_ratio])
-            
-            fig.add_trace(go.Candlestick(
-                x=df_tf['open_time'], open=df_tf['open_price'], high=df_tf['high_price'], low=df_tf['low_price'], close=df_tf['close_price'],
-                name=sym, line=dict(width=1.5), 
-                increasing_line_color='#0ECB81', increasing_fillcolor='#0ECB81',
-                decreasing_line_color='#F6465D', decreasing_fillcolor='#F6465D'
-            ), row=1, col=1)
-            
-            fig.add_trace(go.Scatter(x=df_tf['open_time'], y=df_tf['EMA_21'], mode='lines', name='EMA21', line=dict(color='#2962FF', width=1.2)), row=1, col=1)
-            fig.add_trace(go.Scatter(x=df_tf['open_time'], y=df_tf['EMA_50'], mode='lines', name='EMA50', line=dict(color='#FFFFFF', width=1.2)), row=1, col=1)
-            fig.add_trace(go.Scatter(x=df_tf['open_time'], y=df_tf['EMA_100'], mode='lines', name='EMA100', line=dict(color='#FF5252', width=1.4)), row=1, col=1)
+            # 轉換為 TradingView Lightweight Charts 所需格式
+            candles = []
+            volumes = []
+            ema21_data = []
+            ema50_data = []
+            ema100_data = []
 
-            fig.add_trace(go.Scatter(x=df_tf['open_time'], y=df_tf['Trend_Resistance'], mode='lines', name='壓力趨勢線', line=dict(color='rgba(246, 70, 93, 0.7)', width=1.5, dash='dash')), row=1, col=1)
-            fig.add_trace(go.Scatter(x=df_tf['open_time'], y=df_tf['Trend_Support'], mode='lines', name='支撐趨勢線', line=dict(color='rgba(14, 203, 129, 0.7)', width=1.5, dash='dash'), fill='tonexty', fillcolor='rgba(126, 87, 194, 0.02)'), row=1, col=1)
+            for _, row in df_tf.iterrows():
+                time_str = int(row['open_time'].timestamp())
+                c_color = '#0ECB81' if row['close_price'] >= row['open_price'] else '#F6465D'
+                
+                candles.append({
+                    "time": time_str,
+                    "open": float(row['open_price']),
+                    "high": float(row['high_price']),
+                    "low": float(row['low_price']),
+                    "close": float(row['close_price'])
+                })
+                volumes.append({
+                    "time": time_str,
+                    "value": float(row['volume']),
+                    "color": 'rgba(14, 203, 129, 0.5)' if row['close_price'] >= row['open_price'] else 'rgba(246, 70, 93, 0.5)'
+                })
+                if not pd.isna(row['EMA_21']):
+                    ema21_data.append({"time": time_str, "value": float(row['EMA_21'])})
+                if not pd.isna(row['EMA_50']):
+                    ema50_data.append({"time": time_str, "value": float(row['EMA_50'])})
+                if not pd.isna(row['EMA_100']):
+                    ema100_data.append({"time": time_str, "value": float(row['EMA_100'])})
 
-            long_df = df_tf[df_tf['Long_Signal']]
-            if not long_df.empty:
-                fig.add_trace(go.Scatter(
-                    x=long_df['open_time'], y=long_df['low_price'] * 0.995, 
-                    mode='markers+text', name='AI 多點', 
-                    marker=dict(symbol='triangle-up', size=10, color='#0ECB81', line=dict(width=1, color='white')), 
-                    text=["🟢 AI多" for _ in range(len(long_df))], textposition="bottom center",
-                    textfont=dict(color='#0ECB81', size=11, family="Arial Black")
-                ), row=1, col=1)
+            # 建立 Lightweight Charts 設定
+            chart_options = {
+                "layout": {"background": {"type": "solid", "color": "#0b0e11"}, "textColor": "#d1d4dc"},
+                "grid": {"vertLines": {"color": "#1e2329"}, "horzLines": {"color": "#1e2329"}},
+                "crosshair": {"mode": 0},
+                "rightPriceScale": {"borderColor": "#2b313a"},
+                "timeScale": {"borderColor": "#2b313a", "timeVisible": True, "secondsVisible": False}
+            }
 
-            short_df = df_tf[df_tf['Short_Signal']]
-            if not short_df.empty:
-                fig.add_trace(go.Scatter(
-                    x=short_df['open_time'], y=short_df['high_price'] * 1.005, 
-                    mode='markers+text', name='AI 空點', 
-                    marker=dict(symbol='triangle-down', size=10, color='#F6465D', line=dict(width=1, color='white')), 
-                    text=["🔴 AI空" for _ in range(len(short_df))], textposition="top center",
-                    textfont=dict(color='#F6465D', size=11, family="Arial Black")
-                ), row=1, col=1)
-
-            vol_colors = ['rgba(14, 203, 129, 0.5)' if c >= o else 'rgba(246, 70, 93, 0.5)' for c, o in zip(df_tf['close_price'], df_tf['open_price'])]
-            fig.add_trace(go.Bar(x=df_tf['open_time'], y=df_tf['volume'], name='VOL', marker_color=vol_colors), row=2, col=1)
-
-            latest_close = latest['close_price']
-            
-            # 最新價標籤方格
-            fig.add_annotation(
-                x=1.0,
-                y=latest_close,
-                xref="paper",
-                yref="y",
-                text=f"<b>{latest_close:,.2f}</b>",
-                showarrow=False,
-                xanchor="left",
-                yanchor="middle",
-                font=dict(color="white", size=11, family="Arial Black"),
-                bgcolor=status_color,
-                bordercolor=status_color,
-                borderwidth=1,
-                borderpad=4
-            )
-
-            fig.add_hline(
-                y=latest_close, line_dash="dot", line_width=1, line_color=status_color, row=1, col=1
-            )
-
-            active_signal_type = 'None'
-            latest_atr = latest['ATR'] if not pd.isna(latest['ATR']) else latest_close * 0.015
-
-            if df_tf.iloc[-1]['Long_Signal']:
-                active_signal_type = 'LONG'
-                active_entry, active_sl, active_tp = latest_close, latest_close - (latest_atr * 1.5), latest_close + (latest_atr * 1.5 * 2.5)
-            elif df_tf.iloc[-1]['Short_Signal']:
-                active_signal_type = 'SHORT'
-                active_entry, active_sl, active_tp = latest_close, latest_close + (latest_atr * 1.5), latest_close - (latest_atr * 1.5 * 2.5)
-
-            if active_signal_type != 'None':
-                fig.add_hline(y=active_entry, line_dash="dash", line_color="#f0b90b", annotation_text=f" 進場: {active_entry:,.2f} ", annotation_position="left", row=1, col=1)
-                fig.add_hline(y=active_sl, line_dash="dash", line_color="#F6465D", annotation_text=f" ATR止損: {active_sl:,.2f} ", annotation_position="left", row=1, col=1)
-                fig.add_hline(y=active_tp, line_dash="dash", line_color="#0ECB81", annotation_text=f" ATR止盈: {active_tp:,.2f} ", annotation_position="left", row=1, col=1)
+            series_data = [
+                {
+                    "type": "Candlestick",
+                    "data": candles,
+                    "options": {"upColor": "#0ECB81", "downColor": "#F6465D", "borderVisible": False, "wickUpColor": "#0ECB81", "wickDownColor": "#F6465D"}
+                },
+                {
+                    "type": "Line",
+                    "data": ema21_data,
+                    "options": {"color": "#2962FF", "lineWidth": 1}
+                },
+                {
+                    "type": "Line",
+                    "data": ema50_data,
+                    "options": {"color": "#FFFFFF", "lineWidth": 1}
+                },
+                {
+                    "type": "Line",
+                    "data": ema100_data,
+                    "options": {"color": "#FF5252", "lineWidth": 1}
+                },
+                {
+                    "type": "Histogram",
+                    "data": volumes,
+                    "options": {"priceFormat": {"type": "volume"}, "priceScaleId": "volume"}
+                }
+            ]
 
             mode_desc = "⚡ AI小波段閃電模式" if tf in ['5m', '15m'] else "🌊 AI大波段趨勢模式"
-            ohlc_text = (
-                f"<b>{pair} · {tf} ({mode_desc})</b> &nbsp;&nbsp; <b>RSI:</b> {latest_rsi:.1f} | <b>🤖 AI勝率:</b> <span style='color:#f0b90b'>{latest_ai_prob:.1f}%</span><br>"
-                f"收: <span style='color:{status_color}'>{latest['close_price']:,.2f} ({change_pct:+.2f}%)</span>"
-            )
-            fig.add_annotation(text=ohlc_text, xref="paper", yref="paper", x=0.01, y=0.98, xanchor="left", yanchor="top", showarrow=False, font=dict(size=11, color="#848e9c"))
-
-            fig.update_layout(
-                template="plotly_dark", 
-                paper_bgcolor="#0b0e11", 
-                plot_bgcolor="#0b0e11", 
-                hovermode="closest",  
-                xaxis_rangeslider_visible=False, 
-                dragmode='pan', 
-                height=820, 
-                bargap=0.15, 
-                showlegend=False,
-                margin=dict(l=10, r=105, t=25, b=30), 
-                uirevision="constant_lock_state"
-            )
-            if follow_latest:
-                fig.update_layout(xaxis=dict(range=[start_time, end_time], autorange=False))
-
-            fig.update_xaxes(
-                showticklabels=True, gridcolor="#1e2329", zeroline=False, linecolor="#2b313a",
-                showspikes=True, spikemode='across', spikesnap='cursor', spikethickness=1, spikedash='dash', spikecolor='#787f8b'
-            )
-            fig.update_yaxes(
-                side="right", gridcolor="#1e2329", zeroline=False, linecolor="#2b313a", tickformat=",.2f", 
-                showspikes=True, spikemode='across', spikesnap='cursor', spikethickness=1, spikedash='dash', spikecolor='#787f8b',
-                showline=True,
-                row=1, col=1, range=y_range
-            )
-            fig.update_yaxes(
-                side="right", gridcolor="#1e2329", zeroline=False, linecolor="#2b313a", tickformat=",.2f", 
-                showspikes=True, spikemode='across', spikesnap='cursor', spikethickness=1, spikedash='dash', spikecolor='#787f8b',
-                row=2, col=1
-            )
-            
-            chart_config = {'scrollZoom': True, 'displayModeBar': True, 'displaylogo': False}
             
             chart_col, panel_col = st.columns([3.6, 1.2])
             with chart_col:
-                st.plotly_chart(fig, use_container_width=True, config=chart_config, key=f"{sym.lower()}_supabase_live_chart")
+                st.markdown(f"**{pair} · {tf} ({mode_desc})** &nbsp;&nbsp; <b>RSI:</b> {latest_rsi:.1f} | <b>🤖 AI勝率:</b> <span style='color:#f0b90b'>{latest_ai_prob:.1f}%</span>", unsafe_allow_html=True)
+                
+                # 渲染 TradingView 輕量化圖表（原生具備右側價格軸游標方格）
+                render_lightweight_charts([
+                    {
+                        "chart": chart_options,
+                        "series": series_data
+                    }
+                ], key=f"{sym.lower()}_lw_chart")
             
             with panel_col:
                 st.markdown("### 🎯 AI 即時操作建議")
@@ -453,6 +392,7 @@ if st.session_state.is_searched:
                 </div>
                 """, unsafe_allow_html=True)
 
+                latest_close = latest['close_price']
                 if df_tf.iloc[-1]['Long_Signal']:
                     st.markdown(f"""
                     <div style="background-color: #1e2329; border: 1px solid #0ECB81; padding: 12px; border-radius: 6px; border-left: 5px solid #0ECB81;">
