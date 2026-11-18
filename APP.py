@@ -367,17 +367,26 @@ if st.session_state.is_searched:
 
             latest_close = latest['close_price']
             
-            # 最新價格標籤方格（最新 K 棒上漲為綠色 #0ECB81，下跌為紅色 #F6465D）
+            # 🛠️ 確保最新價標籤精準顯示在右側價格軸上 (透過 xref='paper', x=1.0, annotation_position='middle right')
+            fig.add_annotation(
+                x=1.0,
+                y=latest_close,
+                xref="paper",
+                yref="y",
+                text=f"<b>{latest_close:,.2f}</b>",
+                showarrow=False,
+                xanchor="left",
+                yanchor="middle",
+                font=dict(color="white", size=11, family="Arial Black"),
+                bgcolor=status_color,
+                bordercolor=status_color,
+                borderwidth=1,
+                borderpad=4
+            )
+
+            # 同時保留一條淡化的虛線標記最新價水平位置
             fig.add_hline(
-                y=latest_close, line_dash="dot", line_width=1, line_color=status_color, 
-                annotation_text=f" {latest_close:,.2f} ", 
-                annotation_position="right", 
-                annotation_font=dict(color="white", size=11, family="Arial Black"),
-                annotation_bgcolor=status_color,
-                annotation_bordercolor=status_color,
-                annotation_borderwidth=1,
-                annotation_borderpad=3,
-                row=1, col=1
+                y=latest_close, line_dash="dot", line_width=1, line_color=status_color, row=1, col=1
             )
 
             active_signal_type = 'None'
@@ -412,7 +421,7 @@ if st.session_state.is_searched:
                 height=820, 
                 bargap=0.15, 
                 showlegend=False,
-                margin=dict(l=10, r=85, t=25, b=30), 
+                margin=dict(l=10, r=105, t=25, b=30),  # 稍微加寬右側 margin 預留空間給價格軸標籤方格
                 uirevision="constant_lock_state"
             )
             if follow_latest:
