@@ -27,7 +27,7 @@ def get_db_connection():
 
 
 def send_discord_alert(symbol, tf, signal_type, price, sl, tp):
-  """發送 Discord Webhook 即時通知，確保欄位型態正確並強制印出回應除錯"""
+  """發送 Discord Webhook 即時通知"""
   if not DISCORD_WEBHOOK_URL or "你的_DISCORD_WEBHOOK_URL" in DISCORD_WEBHOOK_URL:
     print("[警告] 未設定 Discord Webhook URL，無法發送通知！")
     return
@@ -38,7 +38,7 @@ def send_discord_alert(symbol, tf, signal_type, price, sl, tp):
 
   payload = {
       "embeds": [{
-          "title": f"{emoji} 【加密貨幣雙軌策略信號通知 (方向修正精準版)】",
+          "title": f"{emoji} 【雙軌策略信號通知 (大小通吃全捕捉版)】",
           "color": color,
           "fields": [
               {
@@ -84,7 +84,7 @@ def send_discord_alert(symbol, tf, signal_type, price, sl, tp):
           f" {response.text}"
       )
     else:
-      print(f"[Discord] 成功推送 {symbol} {tf} 訊號！(方向修正版)")
+      print(f"[Discord] 成功推送 {symbol} {tf} 訊號！")
   except Exception as e:
     print(f"[Discord] 推送異常: {e}")
 
@@ -115,21 +115,21 @@ def calculate_trendline_channel(df, window=30, num_dev=1.8):
 
 
 def check_signal_and_notify(symbol, tf, df_tf):
-  """檢測多空信號：修正突破方向邏輯，加入量能與實體比例過濾"""
+  """檢測多空信號：兼顧大小波動與多空雙向，全面捕捉變盤機會"""
   global last_notified_timestamps
   if df_tf.empty or len(df_tf) < 50:
     return
 
-  # 計算均線
+  # 計算均線 (保留 EMA21 與 EMA50 作為動態參考)
   df_tf["EMA_21"] = df_tf["close_price"].ewm(span=21, adjust=False).mean()
   df_tf["EMA_50"] = df_tf["close_price"].ewm(span=50, adjust=False).mean()
-  df_tf["EMA_100"] = df_tf["close_price"].ewm(span=100, adjust=False).mean()
 
+  # 針對不同週期動態調整通道參數 (5m/15m 靈敏抓小波段，1h/4h 穩健抓大行情)
   win = 20 if tf in ["5m", "15m"] else 40
-  dev = 1.6 if tf in ["5m", "15m"] else 2.1
+  dev = 1.5 if tf in ["5m", "15m"] else 2.0
   df_tf = calculate_trendline_channel(df_tf, window=win, num_dev=dev)
 
-  # 計算 RSI
+  # 計算 RSI (14)
   delta = df_tf["close_price"].diff()
   gain = delta.where(delta > 0, 0).rolling(window=14).mean()
   loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
@@ -143,50 +143,42 @@ def check_signal_and_notify(symbol, tf, df_tf):
   tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
   df_tf["ATR"] = tr.rolling(window=14).mean()
 
-  # 成交量 20 周期均線
+  # 成交量均線與實體比例
   df_tf["Vol_SMA20"] = df_tf["volume"].rolling(window=20).mean()
-
-  # K 棒實體比例
   body_size = (df_tf["close_price"] - df_tf["open_price"]).abs()
   candle_range = df_tf["high_price"] - df_tf["low_price"]
   df_tf["Body_Ratio"] = body_size / candle_range.replace(0, 1)
 
-  # ==================== 核心修正：雙軌策略進階過濾條件 ====================
+  # ==================== 全方位捕捉策略 (多空皆做、大小通吃) ====================
   if tf in ["5m", "15m"]:
-    # 🟢 做多：突破「壓力線 (Trend_Resistance)」向上突破
+    # 小波段閃電模式：只要突破上下軌，且伴隨基本量能與動能，立即雙向捕捉
     long_cond = (
         (df_tf["close_price"] > df_tf["Trend_Resistance"])
-        & (df_tf["EMA_21"] > df_tf["EMA_50"])
-        & (df_tf["EMA_50"] > df_tf["EMA_100"])
-        & (df_tf["RSI"] >= 50)
-        & (df_tf["RSI"] <= 78)
-        & (df_tf["volume"] > df_tf["Vol_SMA20"] * 1.2)
-        & (df_tf["Body_Ratio"] > 0.4)
+        & (df_tf["RSI"] >= 42)
+        & (df_tf["RSI"] <= 85)
+        & (df_tf["volume"] > df_tf["Vol_SMA20"] * 1.05)  # 稍微放寬量能，避免漏掉起漲
+        & (df_tf["Body_Ratio"] > 0.3)
     )
-    # 🔴 做空：跌破「支撐線 (Trend_Support)」向下跌破
     short_cond = (
         (df_tf["close_price"] < df_tf["Trend_Support"])
-        & (df_tf["EMA_21"] < df_tf["EMA_50"])
-        & (df_tf["EMA_50"] < df_tf["EMA_100"])
-        & (df_tf["RSI"] >= 22)
-        & (df_tf["RSI"] <= 50)
-        & (df_tf["volume"] > df_tf["Vol_SMA20"] * 1.2)
-        & (df_tf["Body_Ratio"] > 0.4)
+        & (df_tf["RSI"] >= 15)
+        & (df_tf["RSI"] <= 58)
+        & (df_tf["volume"] > df_tf["Vol_SMA20"] * 1.05)
+        & (df_tf["Body_Ratio"] > 0.3)
     )
   else:
+    # 大波段趨勢模式 (1h/4h)：捕捉大行情變盤
     long_cond = (
         (df_tf["close_price"] > df_tf["Trend_Resistance"])
-        & (df_tf["EMA_21"] > df_tf["EMA_50"])
-        & (df_tf["RSI"] >= 52)
-        & (df_tf["RSI"] <= 72)
-        & (df_tf["volume"] > df_tf["Vol_SMA20"] * 1.1)
+        & (df_tf["RSI"] >= 45)
+        & (df_tf["RSI"] <= 80)
+        & (df_tf["volume"] > df_tf["Vol_SMA20"] * 1.0)
     )
     short_cond = (
         (df_tf["close_price"] < df_tf["Trend_Support"])
-        & (df_tf["EMA_21"] < df_tf["EMA_50"])
-        & (df_tf["RSI"] >= 28)
-        & (df_tf["RSI"] <= 48)
-        & (df_tf["volume"] > df_tf["Vol_SMA20"] * 1.1)
+        & (df_tf["RSI"] >= 20)
+        & (df_tf["RSI"] <= 55)
+        & (df_tf["volume"] > df_tf["Vol_SMA20"] * 1.0)
     )
 
   df_tf["Long_Signal"] = long_cond
@@ -211,9 +203,7 @@ def check_signal_and_notify(symbol, tf, df_tf):
     risk = latest_close - sl
     tp = round(latest_close + (risk * 2.5), 2)
 
-    send_discord_alert(
-        symbol, tf, "LONG (做多-突破壓力線)", latest_close, sl, tp
-    )
+    send_discord_alert(symbol, tf, "LONG (做多-全面捕捉)", latest_close, sl, tp)
 
   # 觸發做空信號
   elif (
@@ -225,13 +215,11 @@ def check_signal_and_notify(symbol, tf, df_tf):
     risk = sl - latest_close
     tp = round(latest_close - (risk * 2.5), 2)
 
-    send_discord_alert(
-        symbol, tf, "SHORT (做空-跌破支撐線)", latest_close, sl, tp
-    )
+    send_discord_alert(symbol, tf, "SHORT (做空-全面捕捉)", latest_close, sl, tp)
 
 
 def fetch_and_process_symbol(symbol_name, table_name, tf):
-  """針對指定幣種與週期抓取資料、寫入 Supabase 並檢測信號"""
+  """抓取數據並執行監控"""
   exchange = ccxt.okx({"enableRateLimit": True})
 
   connection = get_db_connection()
@@ -319,7 +307,7 @@ def run_all_tasks():
 
 if __name__ == "__main__":
   print("================================================================")
-  print(" BTC & ETH 雙軌策略【方向修正 + 濾網優化版即時推播系統】")
+  print(" BTC & ETH 雙軌策略【大小通吃 + 多空全抓即時推播系統】")
   print("================================================================")
 
   try:
