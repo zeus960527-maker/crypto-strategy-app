@@ -1,8 +1,8 @@
-name: Discord Signal Worker
+name: BTC ETH AI Scanner and Discord Worker
 
 on:
   schedule:
-    # GitHub Actions 使用 UTC；每 5 分鐘檢查一次 Supabase 訊號佇列
+    # GitHub Actions 使用 UTC；每 5 分鐘掃描 BTC/ETH 四個週期並發送通知
     - cron: "*/1 * * * *"
   workflow_dispatch:
 
@@ -28,9 +28,15 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Scan OKX BTC and ETH signals
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          OKX_CANDLE_LIMIT: "300"
+        run: python okx_signal_scanner.py
+
       - name: Send pending signals to Discord
         env:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           DISCORD_BATCH_SIZE: "30"
-        run: python trader_bot.py
+        run: python discord_worker.py
