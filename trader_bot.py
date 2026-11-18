@@ -38,7 +38,7 @@ def send_discord_alert(symbol, tf, signal_type, price, sl, tp):
 
   payload = {
       "embeds": [{
-          "title": f"{emoji} 【加密貨幣雙軌策略信號通知 (精準過濾版)】",
+          "title": f"{emoji} 【加密貨幣雙軌策略信號通知 (方向修正精準版)】",
           "color": color,
           "fields": [
               {
@@ -84,7 +84,7 @@ def send_discord_alert(symbol, tf, signal_type, price, sl, tp):
           f" {response.text}"
       )
     else:
-      print(f"[Discord] 成功推送 {symbol} {tf} 訊號！(精準過濾版)")
+      print(f"[Discord] 成功推送 {symbol} {tf} 訊號！(方向修正版)")
   except Exception as e:
     print(f"[Discord] 推送異常: {e}")
 
@@ -115,12 +115,12 @@ def calculate_trendline_channel(df, window=30, num_dev=1.8):
 
 
 def check_signal_and_notify(symbol, tf, df_tf):
-  """檢測多空信號：加入量能放大、實體比例與均線排列過濾，大幅降低假突破機率"""
+  """檢測多空信號：修正突破方向邏輯，加入量能與實體比例過濾"""
   global last_notified_timestamps
   if df_tf.empty or len(df_tf) < 50:
     return
 
-  # 計算均線 (移除EMA10，改看EMA21, EMA50, EMA100 確保趨勢扎實)
+  # 計算均線
   df_tf["EMA_21"] = df_tf["close_price"].ewm(span=21, adjust=False).mean()
   df_tf["EMA_50"] = df_tf["close_price"].ewm(span=50, adjust=False).mean()
   df_tf["EMA_100"] = df_tf["close_price"].ewm(span=100, adjust=False).mean()
@@ -143,33 +143,35 @@ def check_signal_and_notify(symbol, tf, df_tf):
   tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
   df_tf["ATR"] = tr.rolling(window=14).mean()
 
-  # 【新增】成交量 20 周期均線 (過濾無量假突破)
+  # 成交量 20 周期均線
   df_tf["Vol_SMA20"] = df_tf["volume"].rolling(window=20).mean()
 
-  # 【新增】K 棒實體比例 (排除長上/下影線插針)
+  # K 棒實體比例
   body_size = (df_tf["close_price"] - df_tf["open_price"]).abs()
   candle_range = df_tf["high_price"] - df_tf["low_price"]
   df_tf["Body_Ratio"] = body_size / candle_range.replace(0, 1)
 
-  # 雙軌策略進階過濾條件
+  # ==================== 核心修正：雙軌策略進階過濾條件 ====================
   if tf in ["5m", "15m"]:
+    # 🟢 做多：突破「壓力線 (Trend_Resistance)」向上突破
     long_cond = (
         (df_tf["close_price"] > df_tf["Trend_Resistance"])
         & (df_tf["EMA_21"] > df_tf["EMA_50"])
-        & (df_tf["EMA_50"] > df_tf["EMA_100"])  # 多頭完美排列
+        & (df_tf["EMA_50"] > df_tf["EMA_100"])
         & (df_tf["RSI"] >= 50)
-        & (df_tf["RSI"] <= 75)  # 避開過熱盲追區
-        & (df_tf["volume"] > df_tf["Vol_SMA20"] * 1.2)  # 量能必須放大 1.2 倍
-        & (df_tf["Body_Ratio"] > 0.4)  # K棒實體扎實
+        & (df_tf["RSI"] <= 78)
+        & (df_tf["volume"] > df_tf["Vol_SMA20"] * 1.2)
+        & (df_tf["Body_Ratio"] > 0.4)
     )
+    # 🔴 做空：跌破「支撐線 (Trend_Support)」向下跌破
     short_cond = (
         (df_tf["close_price"] < df_tf["Trend_Support"])
         & (df_tf["EMA_21"] < df_tf["EMA_50"])
-        & (df_tf["EMA_50"] < df_tf["EMA_100"])  # 空頭完美排列
-        & (df_tf["RSI"] >= 25)
-        & (df_tf["RSI"] <= 50)  # 避開超賣過深區
-        & (df_tf["volume"] > df_tf["Vol_SMA20"] * 1.2)  # 量能必須放大 1.2 倍
-        & (df_tf["Body_Ratio"] > 0.4)  # K棒實體扎實
+        & (df_tf["EMA_50"] < df_tf["EMA_100"])
+        & (df_tf["RSI"] >= 22)
+        & (df_tf["RSI"] <= 50)
+        & (df_tf["volume"] > df_tf["Vol_SMA20"] * 1.2)
+        & (df_tf["Body_Ratio"] > 0.4)
     )
   else:
     long_cond = (
@@ -207,11 +209,11 @@ def check_signal_and_notify(symbol, tf, df_tf):
 
     sl = round(latest_close - (latest_atr * 1.5), 2)
     risk = latest_close - sl
-    tp = round(
-        latest_close + (risk * 2.5), 2
-    )  # 盈虧比提升至 1:2.5，拉開利潤空間
+    tp = round(latest_close + (risk * 2.5), 2)
 
-    send_discord_alert(symbol, tf, "LONG (做多-精準過濾版)", latest_close, sl, tp)
+    send_discord_alert(
+        symbol, tf, "LONG (做多-突破壓力線)", latest_close, sl, tp
+    )
 
   # 觸發做空信號
   elif (
@@ -224,7 +226,7 @@ def check_signal_and_notify(symbol, tf, df_tf):
     tp = round(latest_close - (risk * 2.5), 2)
 
     send_discord_alert(
-        symbol, tf, "SHORT (做空-精準過濾版)", latest_close, sl, tp
+        symbol, tf, "SHORT (做空-跌破支撐線)", latest_close, sl, tp
     )
 
 
@@ -317,7 +319,7 @@ def run_all_tasks():
 
 if __name__ == "__main__":
   print("================================================================")
-  print(" BTC & ETH 雙軌策略【高頻數據收集 + 濾網優化版即時推播系統】")
+  print(" BTC & ETH 雙軌策略【方向修正 + 濾網優化版即時推播系統】")
   print("================================================================")
 
   try:
