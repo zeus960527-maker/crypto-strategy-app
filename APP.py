@@ -381,15 +381,21 @@ if st.session_state.is_searched:
                 row=1, col=1
             )
 
-            # K線圖左上角動態顯示策略名稱與技術指標參數
+            # 🛠️ K線圖左上角顯示策略與技術指標（強制靠左對齊）
             mode_desc = "⚡ AI小波段閃電模式" if tf in ['5m', '15m'] else "🌊 AI大波段趨勢模式"
             ohlc_text = (
+                f"<div style='text-align: left;'>"
                 f"<b>{pair} · {tf} ({mode_desc})</b><br>"
-                f"<b>📈 策略指標:</b> 雙軌通道(Window:{win}, Dev:{dev}) | EMA(21/50/100) | RSI(14)<br>"
+                f"<b>🛠️ 策略與技術指標:</b> 雙軌通道 (Window: {win}, Dev: {dev}) | EMA (21, 50, 100) | RSI (14) | ATR (14)<br>"
                 f"<b>RSI:</b> {latest_rsi:.1f} | <b>🤖 AI勝率:</b> <span style='color:#f0b90b'>{latest_ai_prob:.1f}%</span> | "
                 f"收: <span style='color:{status_color}'>{latest['close_price']:,.2f} ({change_pct:+.2f}%)</span>"
+                f"</div>"
             )
-            fig.add_annotation(text=ohlc_text, xref="paper", yref="paper", x=0.01, y=0.98, xanchor="left", yanchor="top", showarrow=False, font=dict(size=11, color="#848e9c"))
+            fig.add_annotation(
+                text=ohlc_text, xref="paper", yref="paper", 
+                x=0.01, y=0.98, xanchor="left", yanchor="top", 
+                showarrow=False, font=dict(size=11, color="#848e9c")
+            )
 
             fig.update_layout(
                 template="plotly_dark", 
@@ -467,4 +473,4 @@ if st.session_state.is_searched:
 elif st.session_state.search_query != "":
     st.warning(f"找不到與「{st.session_state.search_query}」相關的圖表，請嘗試輸入 **BTC** 或 **ETH**。")
 else:
-    st.info("💡 請在上方查詢欄輸入 **BTC** 或 **ETH**並按下 **Enter** 顯示圖表。")
+    st.info("💡 請在上方查詢欄輸入 **BTC** 或 **ETH** 並按下 **Enter** 顯示圖表。")
