@@ -55,8 +55,6 @@ if "is_searched" not in st.session_state:
     st.session_state.is_searched = False
 if "search_query" not in st.session_state:
     st.session_state.search_query = ""
-if "auto_scroll" not in st.session_state:
-    st.session_state.auto_scroll = True
 
 # 全域 AI 模型快取
 if "ai_models" not in st.session_state:
@@ -203,20 +201,10 @@ if st.session_state.is_searched:
         symbol_name = 'BTC'
         pair_name = 'BTC-USDT-SWAP'
         
-    c1, c2, c3 = st.columns([2.5, 2, 1.5])
-    with c1:
-        selected_tf = st.radio("時間週期 (小波段/大波段)", ['5m', '15m', '1h', '4h'], horizontal=True, key="timeframe_select")
-    with c2:
-        kline_ratio = st.slider("主圖 / 量佔比", min_value=0.5, max_value=0.9, value=0.75, step=0.05, key="ratio_slider")
-    with c3:
-        st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
-        auto_scroll = st.toggle("📍 跟隨最新價", value=st.session_state.auto_scroll, key="auto_scroll_toggle")
-        st.session_state.auto_scroll = auto_scroll
-    
-    volume_ratio = 1.0 - kline_ratio
+    selected_tf = st.radio("時間週期 (小波段/大波段)", ['5m', '15m', '1h', '4h'], horizontal=True, key="timeframe_select")
     
     @st.fragment(run_every=1)
-    def render_live_kline_chart(tbl, sym, pair, tf, k_ratio, v_ratio, follow_latest):
+    def render_live_kline_chart(tbl, sym, pair, tf):
         df = load_historical_data(tbl, sym)
         df_tf = df[df['timeframe'] == tf].sort_values('open_time').copy()
         
@@ -322,10 +310,10 @@ if st.session_state.is_searched:
             latest_rsi = latest['RSI'] if not pd.isna(latest['RSI']) else 50.0
             latest_ai_prob = latest['AI_Prob'] * 100
 
-            # 建立雙區塊圖表 (Row 1: 主圖 K線與技術指標, Row 2: 獨立成交量副圖)
-            fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.015, row_heights=[k_ratio, v_ratio])
+            # 建立雙區塊圖表 (固定比例: 主圖 0.75, 副圖 0.25)
+            fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.015, row_heights=[0.75, 0.25])
             
-            # 1. K線圖主體（設定 hoverinfo="skip" 與 hovertemplate=None 徹底隱藏懸停提示框，但保留十字線）
+            # 1. K線圖主體
             fig.add_trace(go.Candlestick(
                 x=df_tf['open_time'], open=df_tf['open_price'], high=df_tf['high_price'], low=df_tf['low_price'], close=df_tf['close_price'],
                 name=sym, line=dict(width=1.5), 
@@ -334,7 +322,7 @@ if st.session_state.is_searched:
                 hoverinfo="skip"
             ), row=1, col=1)
             
-            # 2. 技術指標與策略線 (EMA 與 雙軌通道)
+            # 2. 技術指標與策略線
             fig.add_trace(go.Scatter(x=df_tf['open_time'], y=df_tf['EMA_21'], mode='lines', name='EMA21', line=dict(color='#2962FF', width=1.2), hoverinfo="skip"), row=1, col=1)
             fig.add_trace(go.Scatter(x=df_tf['open_time'], y=df_tf['EMA_50'], mode='lines', name='EMA50', line=dict(color='#FFFFFF', width=1.2), hoverinfo="skip"), row=1, col=1)
             fig.add_trace(go.Scatter(x=df_tf['open_time'], y=df_tf['EMA_100'], mode='lines', name='EMA100', line=dict(color='#FF5252', width=1.4), hoverinfo="skip"), row=1, col=1)
@@ -404,7 +392,7 @@ if st.session_state.is_searched:
                 template="plotly_dark", 
                 paper_bgcolor="#0b0e11", 
                 plot_bgcolor="#0b0e11", 
-                hovermode=False,  # 確保完全關閉黑色對話框
+                hovermode=False, 
                 xaxis_rangeslider_visible=False, 
                 dragmode='pan', 
                 height=820, 
@@ -413,10 +401,10 @@ if st.session_state.is_searched:
                 margin=dict(l=10, r=85, t=25, b=30), 
                 uirevision="constant_lock_state"
             )
-            if follow_latest:
-                fig.update_layout(xaxis=dict(range=[start_time, end_time], autorange=False))
+            
+            # 預設自動跟隨最新 K 線範圍
+            fig.update_layout(xaxis=dict(range=[start_time, end_time], autorange=False))
 
-            # 🛠️ 保留超細十字虛線（spikes），讓滑鼠移動時維持專業的格線對齊
             fig.update_xaxes(
                 showticklabels=True, gridcolor="#1e2329", zeroline=False, linecolor="#2b313a",
                 showspikes=True, spikemode='across', spikesnap='cursor', spikethickness=1, spikedash='dash', spikecolor='#787f8b'
@@ -472,7 +460,7 @@ if st.session_state.is_searched:
         else:
             st.warning("此週期目前尚無資料。")
 
-    render_live_kline_chart(target_table, symbol_name, pair_name, selected_tf, kline_ratio, volume_ratio, auto_scroll)
+    render_live_kline_chart(target_table, symbol_name, pair_name, selected_tf)
 
 elif st.session_state.search_query != "":
     st.warning(f"找不到與「{st.session_state.search_query}」相關的圖表，請嘗試輸入 **BTC** 或 **ETH**。")
