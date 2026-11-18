@@ -25,7 +25,7 @@ def get_db_connection():
 
 
 def send_discord_alert(symbol, tf, signal_type, price, sl, tp):
-  """發送 Discord Webhook 即時通知，確保包含方向、進場點、止損、止盈與目前時間"""
+  """發送 Discord Webhook 即時通知，確保欄位型態正確並強制印出回應除錯"""
   if not DISCORD_WEBHOOK_URL or "你的_DISCORD_WEBHOOK_URL" in DISCORD_WEBHOOK_URL:
     print("[警告] 未設定 Discord Webhook URL，無法發送通知！")
     return
@@ -34,6 +34,7 @@ def send_discord_alert(symbol, tf, signal_type, price, sl, tp):
   emoji = "🟢" if "LONG" in signal_type else "🔴"
   current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
+  # 確保所有數值都確實轉換為字串，避免 Discord API 因為型態拒絕接收
   payload = {
       "embeds": [{
           "title": f"{emoji} 【加密貨幣雙軌策略信號通知】",
@@ -41,28 +42,32 @@ def send_discord_alert(symbol, tf, signal_type, price, sl, tp):
           "fields": [
               {
                   "name": "交易對 / 週期",
-                  "value": f"{symbol}/USDT | 週期: {tf}",
+                  "value": str(f"{symbol}/USDT | 週期: {tf}"),
                   "inline": True,
               },
               {
                   "name": "做單方向",
-                  "value": f"**{signal_type}**",
+                  "value": str(f"**{signal_type}**"),
                   "inline": True,
               },
-              {"name": "目前時間", "value": f"`{current_time}`", "inline": True},
+              {
+                  "name": "目前時間",
+                  "value": str(f"`{current_time}`"),
+                  "inline": True,
+              },
               {
                   "name": "進場點位 (Entry)",
-                  "value": f"`{price:,.2f} USDT`",
+                  "value": str(f"`{price:,.2f} USDT`"),
                   "inline": True,
               },
               {
                   "name": "建議止損 (SL)",
-                  "value": f"`{sl:,.2f} USDT`",
+                  "value": str(f"`{sl:,.2f} USDT`"),
                   "inline": True,
               },
               {
                   "name": "建議止盈 (TP)",
-                  "value": f"`{tp:,.2f} USDT`",
+                  "value": str(f"`{tp:,.2f} USDT`"),
                   "inline": True,
               },
           ],
@@ -72,10 +77,14 @@ def send_discord_alert(symbol, tf, signal_type, price, sl, tp):
 
   try:
     response = requests.post(DISCORD_WEBHOOK_URL, json=payload, timeout=5)
+    # 如果 Discord 回傳錯誤，將錯誤內容印出以便排查
     if response.status_code not in [200, 204]:
-      print(f"[Discord] 推送失敗，狀態碼: {response.status_code}")
+      print(
+          f"[Discord] 推送失敗，狀態碼: {response.status_code}, 回應:"
+          f" {response.text}"
+      )
     else:
-      print(f"[Discord] 成功推播 {symbol} {tf} 訊號！")
+      print(f"[Discord] 成功推送 {symbol} {tf} 訊號！(包含方向、SL、TP、時間)")
   except Exception as e:
     print(f"[Discord] 推送異常: {e}")
 
@@ -159,7 +168,7 @@ def check_signal_and_notify(symbol, tf, df_tf):
 
   latest = df_tf.iloc[-1]
   latest_time = latest["open_time"]
-  latest_close = latest["close_price"]
+  latest_close = float(latest["close_price"])
 
   key = f"{symbol}_{tf}"
 
@@ -167,8 +176,9 @@ def check_signal_and_notify(symbol, tf, df_tf):
   if latest["Long_Signal"] and last_notified_timestamps.get(key) != latest_time:
     last_notified_timestamps[key] = latest_time
 
-    # 計算多單止損 (Trend Support 或 1.5% 止損) 與止盈 (1:2 盈虧比)
-    support_val = latest.get("Trend_Support", latest_close * 0.985)
+    support_val = float(
+        latest.get("Trend_Support", latest_close * 0.985)
+    )
     sl = round(min(support_val, latest_close * 0.985), 2)
     risk = latest_close - sl
     tp = round(latest_close + risk * 2, 2)
@@ -181,8 +191,9 @@ def check_signal_and_notify(symbol, tf, df_tf):
   ):
     last_notified_timestamps[key] = latest_time
 
-    # 計算空單止損 (Trend Resistance 或 1.5% 止損) 與止盈 (1:2 盈虧比)
-    resistance_val = latest.get("Trend_Resistance", latest_close * 1.015)
+    resistance_val = float(
+        latest.get("Trend_Resistance", latest_close * 1.015)
+    )
     sl = round(max(resistance_val, latest_close * 1.015), 2)
     risk = sl - latest_close
     tp = round(latest_close - risk * 2, 2)
@@ -228,7 +239,6 @@ def fetch_and_process_symbol(symbol_name, table_name, tf):
       cursor.executemany(sql, batch_data)
       connection.commit()
 
-      # 轉換 DataFrame 進行信號檢測
       df_tf = pd.DataFrame(
           batch_data,
           columns=[
