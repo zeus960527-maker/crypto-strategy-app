@@ -7,7 +7,7 @@ from plotly.subplots import make_subplots
 import lightgbm as lgb
 
 # 頁面基本設定
-st.set_page_config(page_title="加密貨幣AI策略系統", layout="wide")
+st.set_page_config(page_title="加密貨幣雙軌策略 AI 看盤系統", layout="wide")
 
 # 注入專業暗色系樣式、強制取消所有畫面變淡與載入遮罩，並修復搜尋框點擊變灰的問題
 st.markdown("""
@@ -63,7 +63,7 @@ if "ai_models" not in st.session_state:
     st.session_state.ai_models = {}
 
 # ==================== 1. 頂部標題與搜尋表單 ====================
-st.title("加密貨幣AI策略系統")
+st.title("加密貨幣分析 - 雙軌策略 AI 智能看盤系統（小波段 5m/15m + 大波段 1h/4h）")
 
 with st.form(key="search_form"):
     col_f1, col_f2 = st.columns([4, 1])
@@ -92,12 +92,10 @@ DB_NAME = "postgres"
 
 @st.cache_resource
 def get_db_engine():
-    """快取資料庫連線引擎，避免每次查詢都重新交握建立連線，大幅降低延遲"""
     db_url = f"postgresql+psycopg2://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
     return create_engine(db_url)
 
 def load_historical_data(table_name, symbol_name):
-    """從 Supabase (PostgreSQL) 快速讀取最新 K 線資料，並轉換為台灣時間 (UTC+8)"""
     try:
         engine = get_db_engine()
         query = f"SELECT timeframe, open_time, open_price, high_price, low_price, close_price, volume FROM {table_name} ORDER BY open_time DESC LIMIT 300"
@@ -131,7 +129,6 @@ def load_historical_data(table_name, symbol_name):
     return df
 
 def calculate_trendline_channel(df, window=30, num_dev=1.8):
-    """計算動態線性回歸趨勢線與通道"""
     close = df['close_price'].values
     n = len(close)
     mid = np.zeros(n)
@@ -158,7 +155,6 @@ def calculate_trendline_channel(df, window=30, num_dev=1.8):
     return df
 
 def train_or_get_ai_model(df_tf, key):
-    """即時機器學習訓練：根據當前 K 線特徵訓練 LightGBM 模型以預測勝率"""
     if key in st.session_state.ai_models:
         return st.session_state.ai_models[key]
     
@@ -367,7 +363,7 @@ if st.session_state.is_searched:
 
             latest_close = latest['close_price']
             
-            # 🛠️ 確保最新價標籤精準顯示在右側價格軸上 (透過 xref='paper', x=1.0, annotation_position='middle right')
+            # 最新價標籤方格
             fig.add_annotation(
                 x=1.0,
                 y=latest_close,
@@ -384,7 +380,6 @@ if st.session_state.is_searched:
                 borderpad=4
             )
 
-            # 同時保留一條淡化的虛線標記最新價水平位置
             fig.add_hline(
                 y=latest_close, line_dash="dot", line_width=1, line_color=status_color, row=1, col=1
             )
@@ -421,7 +416,7 @@ if st.session_state.is_searched:
                 height=820, 
                 bargap=0.15, 
                 showlegend=False,
-                margin=dict(l=10, r=105, t=25, b=30),  # 稍微加寬右側 margin 預留空間給價格軸標籤方格
+                margin=dict(l=10, r=105, t=25, b=30), 
                 uirevision="constant_lock_state"
             )
             if follow_latest:
