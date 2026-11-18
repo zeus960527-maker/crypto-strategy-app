@@ -9,4 +9,4 @@ plotly
 requests
 supabase
 lightgbm
-streamlit-lightweight-charts
+streamlit_lightweight_charts
