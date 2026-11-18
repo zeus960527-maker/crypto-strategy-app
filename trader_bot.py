@@ -13,7 +13,7 @@ from sklearn.model_selection import train_test_split
 # 📌 你的 Supabase 連線網址
 SUPABASE_DB_URL = "postgresql://postgres.ygzeqvcyqtvhvjrxhzdv:%4010233960527Ken@aws-0-ap-northeast-1.pooler.supabase.com:6543/postgres"
 
-# 📌 請務必填入你的 Discord Webhook URL
+# 📌 Discord Webhook URL
 DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/1571457845772165170/MZt_7HpNi9VD_peLI8ttwP_EXlAD5gAePTNSPff65whlJ-IMdv9qbPRnVy22npwjftI7"
 
 # 記錄上一次發送過信號的時間戳，避免同一根 K 棒重複推播
@@ -44,13 +44,13 @@ def send_discord_alert(symbol, tf, signal_type, price, sl, tp, ai_prob):
             "title": f"{emoji} 【AI 智能雙軌策略信號通知】",
             "color": color,
             "fields": [
-                {"name": "交易對 / 週期", "value": str(f"{symbol}/USDT | 週期: {tf}"), "inline": True},
-                {"name": "做單方向", "value": str(f"**{signal_type}**"), "inline": True},
-                {"name": "目前時間", "value": str(f"`{current_time}`"), "inline": True},
-                {"name": "進場點位 (Entry)", "value": str(f"`{price:,.2f} USDT`"), "inline": True},
-                {"name": "建議止損 (SL)", "value": str(f"`{sl:,.2f} USDT`"), "inline": True},
-                {"name": "建議止盈 (TP)", "value": str(f"`{tp:,.2f} USDT`"), "inline": True},
-                {"name": "🤖 AI 模型勝率評分", "value": str(f"`{ai_prob * 100:.1f}%` 高勝率信號"), "inline": False},
+                {"name": "交易對 / 週期", "value": f"{symbol}/USDT | 週期: {tf}", "inline": True},
+                {"name": "做單方向", "value": f"**{signal_type}**", "inline": True},
+                {"name": "目前時間", "value": current_time, "inline": True},
+                {"name": "進場點位 (Entry)", "value": f"{price:,.2f} USDT", "inline": True},
+                {"name": "建議止損 (SL)", "value": f"{sl:,.2f} USDT", "inline": True},
+                {"name": "建議止盈 (TP)", "value": f"{tp:,.2f} USDT", "inline": True},
+                {"name": "🤖 AI 模型勝率評分", "value": f"**{ai_prob * 100:.1f}%**  高勝率信號", "inline": False},
             ],
             "footer": {"text": "24/7 AI 自動化交易與策略監控系統"}
         }]
@@ -95,10 +95,9 @@ def train_or_get_ai_model(df_tf, key):
         return ai_models[key]
     
     if len(df_tf) < 60:
-        return None # 資料不足暫不啟用 AI
+        return None
     
     try:
-        # 建立特徵工程
         df = df_tf.copy()
         df['vol_ratio'] = df['volume'] / df['volume'].rolling(20).mean()
         body_size = (df['close_price'] - df['open_price']).abs()
@@ -107,7 +106,6 @@ def train_or_get_ai_model(df_tf, key):
         df['atr_ratio'] = df['ATR'] / df['close_price']
         df['ema_diff'] = (df['EMA_21'] - df['EMA_50']) / df['close_price']
         
-        # 定義標籤 (Label)：未來 3 根 K 棒最高價漲幅超過 1.2% 且沒先跌破 1% 視為成功 (1)，否則 (0)
         future_max_gain = df['high_price'].shift(-3).rolling(3).max() / df['close_price'] - 1
         df['target'] = (future_max_gain > 0.012).astype(int)
         
@@ -120,7 +118,6 @@ def train_or_get_ai_model(df_tf, key):
         X = train_df[feature_cols]
         y = train_df['target']
         
-        # 若標籤過於單一，手動補個 dummy 避免報錯
         if len(y.unique()) < 2:
             return None
             
@@ -139,7 +136,6 @@ def check_signal_and_notify(symbol, tf, df_tf):
     if df_tf.empty or len(df_tf) < 50:
         return
 
-    # 計算均線與指標
     df_tf['EMA_21'] = df_tf['close_price'].ewm(span=21, adjust=False).mean()
     df_tf['EMA_50'] = df_tf['close_price'].ewm(span=50, adjust=False).mean()
 
@@ -164,7 +160,6 @@ def check_signal_and_notify(symbol, tf, df_tf):
     candle_range = df_tf['high_price'] - df_tf['low_price']
     df_tf['Body_Ratio'] = body_size / candle_range.replace(0, 1)
 
-    # 基礎策略條件 (大小通吃、多空全抓)
     if tf in ['5m', '15m']:
         long_cond = (
             (df_tf['close_price'] > df_tf['Trend_Resistance']) & 
@@ -200,13 +195,11 @@ def check_signal_and_notify(symbol, tf, df_tf):
 
     key = f"{symbol}_{tf}"
     
-    # 取得或訓練 AI 模型
     ai_model = train_or_get_ai_model(df_tf, key)
 
     # 觸發做多信號
     if latest['Long_Signal'] and last_notified_timestamps.get(key) != latest_time:
-        # AI 模型勝率評分預測
-        ai_prob = 0.75 # 預設保底分數
+        ai_prob = 0.75
         if ai_model is not None:
             try:
                 features = pd.DataFrame([{
@@ -220,7 +213,6 @@ def check_signal_and_notify(symbol, tf, df_tf):
             except Exception:
                 pass
 
-        # 智能門檻：AI 預測勝率大於 58% 才發送通知
         if ai_prob >= 0.58:
             last_notified_timestamps[key] = latest_time
             sl = round(latest_close - (latest_atr * 1.5), 2)
