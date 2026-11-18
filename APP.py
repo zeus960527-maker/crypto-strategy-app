@@ -406,7 +406,7 @@ if st.session_state.is_searched:
                 template="plotly_dark", 
                 paper_bgcolor="#0b0e11", 
                 plot_bgcolor="#0b0e11", 
-                hovermode="x unified",  # 讓滑鼠在圖表任意水平位置都能同時抓取資料並顯示十字線
+                hovermode="closest",  
                 xaxis_rangeslider_visible=False, 
                 dragmode='pan', 
                 height=820, 
@@ -418,7 +418,6 @@ if st.session_state.is_searched:
             if follow_latest:
                 fig.update_layout(xaxis=dict(range=[start_time, end_time], autorange=False))
 
-            # 讓十字線隨處自由移動且貫穿整個邊界
             fig.update_xaxes(
                 showticklabels=True, gridcolor="#1e2329", zeroline=False, linecolor="#2b313a",
                 showspikes=True, spikemode='across', spikesnap='cursor', spikethickness=1, spikedash='dash', spikecolor='#787f8b'
@@ -479,4 +478,4 @@ if st.session_state.is_searched:
 elif st.session_state.search_query != "":
     st.warning(f"找不到與「{st.session_state.search_query}」相關的圖表，請嘗試輸入 **BTC** 或 **ETH**。")
 else:
-    st.info("💡 請在上方查詢欄輸入 **BTC** 或 **ETH**並按下 **Enter** 顯示圖表。")
+    st.info("💡 請在上方查詢欄輸入 **BTC** 或 **ETH** 並按下 **Enter** 顯示圖表。")
