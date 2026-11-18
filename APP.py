@@ -372,7 +372,7 @@ if st.session_state.is_searched:
                 row=1, col=1
             )
 
-            # 🛠️ 調整 y=0.99 並且上方保留小邊距 (t=25)，讓文字回到最左上角頂端
+            # 🛠️ 標題文字置於左上角頂端
             mode_desc = "⚡ AI小波段閃電模式" if tf in ['5m', '15m'] else "🌊 AI大波段趨勢模式"
             ohlc_text = (
                 f"<b>{pair} · {tf} ({mode_desc})</b><br>"
@@ -386,11 +386,12 @@ if st.session_state.is_searched:
                 showarrow=False, align="left", font=dict(size=11, color="#848e9c")
             )
 
+            # 🛠️ 關鍵修正：hovermode 設為 "x"，讓十字虛線與滑鼠完全同步跟隨移動
             fig.update_layout(
                 template="plotly_dark", 
                 paper_bgcolor="#0b0e11", 
                 plot_bgcolor="#0b0e11", 
-                hovermode="closest",  
+                hovermode="x",  
                 hoverdistance=100,
                 spikedistance=1000,
                 xaxis_rangeslider_visible=False, 
@@ -398,13 +399,13 @@ if st.session_state.is_searched:
                 height=820, 
                 bargap=0.15, 
                 showlegend=False,
-                margin=dict(l=10, r=85, t=25, b=30),  # 調整回 t=25 保持緊湊頂部
+                margin=dict(l=10, r=85, t=25, b=30), 
                 uirevision="constant_lock_state"
             )
             
             fig.update_layout(xaxis=dict(range=[start_time, end_time], autorange=False))
 
-            # 🛠️ 保持十字虛線同步跟隨滑鼠
+            # 🛠️ 強制 X 軸與 Y 軸的 spike 緊貼滑鼠游標 (spikesnap='cursor')
             fig.update_xaxes(
                 showticklabels=True, gridcolor="#1e2329", zeroline=False, linecolor="#2b313a",
                 showspikes=True, spikemode='across', spikesnap='cursor', spikethickness=1, spikedash='dash', spikecolor='#a0a6b2'
