@@ -3,7 +3,7 @@ name: Discord Signal Worker
 on:
   schedule:
     # GitHub Actions 使用 UTC；每 5 分鐘檢查一次 Supabase 訊號佇列
-    - cron: "*/5 * * * *"
+    - cron: "*/1 * * * *"
   workflow_dispatch:
 
 concurrency:
