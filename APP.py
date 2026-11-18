@@ -3,7 +3,6 @@ import pandas as pd
 import numpy as np
 from sqlalchemy import create_engine
 import lightgbm as lgb
-from streamlit_lightweight_charts import render_lightweight_charts
 
 # 頁面基本設定
 st.set_page_config(page_title="加密貨幣AI策略系統", layout="wide")
@@ -297,77 +296,8 @@ if st.session_state.is_searched:
             df_tf['AI_Prob'] = ai_probabilities
 
             latest = df_tf.iloc[-1]
-            change_pct = ((latest['close_price'] - latest['open_price']) / latest['open_price']) * 100
-            status_color = "#0ECB81" if latest['close_price'] >= latest['open_price'] else "#F6465D"
             latest_rsi = latest['RSI'] if not pd.isna(latest['RSI']) else 50.0
             latest_ai_prob = latest['AI_Prob'] * 100
-
-            # 轉換為 TradingView Lightweight Charts 所需格式
-            candles = []
-            volumes = []
-            ema21_data = []
-            ema50_data = []
-            ema100_data = []
-
-            for _, row in df_tf.iterrows():
-                time_str = int(row['open_time'].timestamp())
-                c_color = '#0ECB81' if row['close_price'] >= row['open_price'] else '#F6465D'
-                
-                candles.append({
-                    "time": time_str,
-                    "open": float(row['open_price']),
-                    "high": float(row['high_price']),
-                    "low": float(row['low_price']),
-                    "close": float(row['close_price'])
-                })
-                volumes.append({
-                    "time": time_str,
-                    "value": float(row['volume']),
-                    "color": 'rgba(14, 203, 129, 0.5)' if row['close_price'] >= row['open_price'] else 'rgba(246, 70, 93, 0.5)'
-                })
-                if not pd.isna(row['EMA_21']):
-                    ema21_data.append({"time": time_str, "value": float(row['EMA_21'])})
-                if not pd.isna(row['EMA_50']):
-                    ema50_data.append({"time": time_str, "value": float(row['EMA_50'])})
-                if not pd.isna(row['EMA_100']):
-                    ema100_data.append({"time": time_str, "value": float(row['EMA_100'])})
-
-            # 建立 Lightweight Charts 設定
-            chart_options = {
-                "layout": {"background": {"type": "solid", "color": "#0b0e11"}, "textColor": "#d1d4dc"},
-                "grid": {"vertLines": {"color": "#1e2329"}, "horzLines": {"color": "#1e2329"}},
-                "crosshair": {"mode": 0},
-                "rightPriceScale": {"borderColor": "#2b313a"},
-                "timeScale": {"borderColor": "#2b313a", "timeVisible": True, "secondsVisible": False}
-            }
-
-            series_data = [
-                {
-                    "type": "Candlestick",
-                    "data": candles,
-                    "options": {"upColor": "#0ECB81", "downColor": "#F6465D", "borderVisible": False, "wickUpColor": "#0ECB81", "wickDownColor": "#F6465D"}
-                },
-                {
-                    "type": "Line",
-                    "data": ema21_data,
-                    "options": {"color": "#2962FF", "lineWidth": 1}
-                },
-                {
-                    "type": "Line",
-                    "data": ema50_data,
-                    "options": {"color": "#FFFFFF", "lineWidth": 1}
-                },
-                {
-                    "type": "Line",
-                    "data": ema100_data,
-                    "options": {"color": "#FF5252", "lineWidth": 1}
-                },
-                {
-                    "type": "Histogram",
-                    "data": volumes,
-                    "options": {"priceFormat": {"type": "volume"}, "priceScaleId": "volume"}
-                }
-            ]
 
             mode_desc = "⚡ AI小波段閃電模式" if tf in ['5m', '15m'] else "🌊 AI大波段趨勢模式"
             
@@ -375,13 +305,10 @@ if st.session_state.is_searched:
             with chart_col:
                 st.markdown(f"**{pair} · {tf} ({mode_desc})** &nbsp;&nbsp; <b>RSI:</b> {latest_rsi:.1f} | <b>🤖 AI勝率:</b> <span style='color:#f0b90b'>{latest_ai_prob:.1f}%</span>", unsafe_allow_html=True)
                 
-                # 渲染 TradingView 輕量化圖表（原生具備右側價格軸游標方格）
-                render_lightweight_charts([
-                    {
-                        "chart": chart_options,
-                        "series": series_data
-                    }
-                ], key=f"{sym.lower()}_lw_chart")
+                # 使用 Streamlit 內建的穩定圖表呈現收盤價與移動平均線
+                chart_data = df_tf.set_index('open_time')[['close_price', 'EMA_21', 'EMA_50', 'EMA_100']]
+                chart_data.columns = ['Close Price', 'EMA 21', 'EMA 50', 'EMA 100']
+                st.line_chart(chart_data, height=450)
             
             with panel_col:
                 st.markdown("### 🎯 AI 即時操作建議")
