@@ -63,7 +63,7 @@ if "ai_models" not in st.session_state:
     st.session_state.ai_models = {}
 
 # ==================== 1. 頂部標題與搜尋表單 ====================
-st.title("加密貨幣AI策略系統")
+st.title("加密貨幣分析AI策略系統")
 
 with st.form(key="search_form"):
     col_f1, col_f2 = st.columns([4, 1])
@@ -367,6 +367,7 @@ if st.session_state.is_searched:
 
             latest_close = latest['close_price']
             
+            # 最新價格標籤方格（最新 K 棒上漲為綠色 #0ECB81，下跌為紅色 #F6465D）
             fig.add_hline(
                 y=latest_close, line_dash="dot", line_width=1, line_color=status_color, 
                 annotation_text=f" {latest_close:,.2f} ", 
@@ -405,7 +406,7 @@ if st.session_state.is_searched:
                 template="plotly_dark", 
                 paper_bgcolor="#0b0e11", 
                 plot_bgcolor="#0b0e11", 
-                hovermode="x unified",  
+                hovermode="closest",  # 讓滑鼠可以隨處在圖表上自由定位，不受限於單一 K 棒吸附
                 xaxis_rangeslider_visible=False, 
                 dragmode='pan', 
                 height=820, 
@@ -417,6 +418,7 @@ if st.session_state.is_searched:
             if follow_latest:
                 fig.update_layout(xaxis=dict(range=[start_time, end_time], autorange=False))
 
+            # 讓 X 軸與 Y 軸的十字線（Spikes）即時同步、跨越整個圖表邊界，並在 Y 軸上自動帶出灰色方格標籤
             fig.update_xaxes(
                 showticklabels=True, gridcolor="#1e2329", zeroline=False, linecolor="#2b313a",
                 showspikes=True, spikemode='across', spikesnap='cursor', spikethickness=1, spikedash='dash', spikecolor='#787f8b'
