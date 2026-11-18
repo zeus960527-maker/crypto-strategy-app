@@ -7,7 +7,7 @@ from plotly.subplots import make_subplots
 import lightgbm as lgb
 
 # 頁面基本設定
-st.set_page_config(page_title="加密貨幣AI策略", layout="wide")
+st.set_page_config(page_title="加密貨幣雙軌策略 AI 看盤系統", layout="wide")
 
 # 注入專業暗色系樣式、強制取消所有畫面變淡與載入遮罩
 st.markdown("""
@@ -52,7 +52,7 @@ if "ai_models" not in st.session_state:
     st.session_state.ai_models = {}
 
 # ==================== 1. 頂部標題與搜尋表單 ====================
-st.title("加密貨幣分析")
+st.title("加密貨幣分析 - 雙軌策略 AI 智能看盤系統（小波段 5m/15m + 大波段 1h/4h）")
 
 with st.form(key="search_form"):
     col_f1, col_f2 = st.columns([4, 1])
@@ -163,7 +163,6 @@ def train_or_get_ai_model(df_tf, key):
         df['atr_ratio'] = df['ATR'] / df['close_price']
         df['ema_diff'] = (df['EMA_21'] - df['EMA_50']) / df['close_price']
         
-        # 建立歷史目標標籤：未來 3 根 K 棒最高價漲幅超過 1.2% 為成功 (1)
         future_max_gain = df['high_price'].shift(-3).rolling(3).max() / df['close_price'] - 1
         df['target'] = (future_max_gain > 0.012).astype(int)
         
@@ -240,7 +239,6 @@ if st.session_state.is_searched:
             candle_range = df_tf['high_price'] - df_tf['low_price']
             df_tf['Body_Ratio'] = body_size / candle_range.replace(0, 1)
 
-            # 基礎策略條件 (大小通吃、多空全抓)
             if tf in ['5m', '15m']:
                 df_tf['Base_Long'] = (
                     (df_tf['close_price'] > df_tf['Trend_Resistance']) & 
@@ -266,7 +264,6 @@ if st.session_state.is_searched:
                     (df_tf['volume'] > df_tf['Vol_SMA20'] * 1.0)
                 )
 
-            # 🤖 結合 AI 模型評分進行過濾
             model_key = f"{sym}_{tf}"
             ai_model = train_or_get_ai_model(df_tf, model_key)
             
@@ -277,7 +274,7 @@ if st.session_state.is_searched:
             for idx, row in df_tf.iterrows():
                 is_l = row['Base_Long']
                 is_s = row['Base_Short']
-                prob = 0.70  # 預設保底分數
+                prob = 0.70  
                 
                 if (is_l or is_s) and ai_model is not None:
                     try:
@@ -293,7 +290,6 @@ if st.session_state.is_searched:
                         pass
                 
                 ai_probabilities.append(prob)
-                # AI 勝率門檻設為 58% 以上才確認發出訊號
                 long_signals.append(is_l and prob >= 0.58)
                 short_signals.append(is_s and prob >= 0.58)
                 
@@ -359,7 +355,19 @@ if st.session_state.is_searched:
             fig.add_trace(go.Bar(x=df_tf['open_time'], y=df_tf['volume'], name='VOL', marker_color=vol_colors), row=2, col=1)
 
             latest_close = latest['close_price']
-            fig.add_hline(y=latest_close, line_dash="dot", line_width=1, line_color=status_color, annotation_text=f" {latest_close:,.2f} ", annotation_position="right", row=1, col=1)
+            
+            # 🛠️ 最新價格標籤方格（最新 K 棒上漲為綠色 #0ECB81，下跌為紅色 #F6465D）
+            fig.add_hline(
+                y=latest_close, line_dash="dot", line_width=1, line_color=status_color, 
+                annotation_text=f" {latest_close:,.2f} ", 
+                annotation_position="right", 
+                annotation_font=dict(color="white", size=11, family="Arial Black"),
+                annotation_bgcolor=status_color,
+                annotation_bordercolor=status_color,
+                annotation_borderwidth=1,
+                annotation_borderpad=3,
+                row=1, col=1
+            )
 
             active_signal_type = 'None'
             latest_atr = latest['ATR'] if not pd.isna(latest['ATR']) else latest_close * 0.015
@@ -368,7 +376,7 @@ if st.session_state.is_searched:
                 active_signal_type = 'LONG'
                 active_entry, active_sl, active_tp = latest_close, latest_close - (latest_atr * 1.5), latest_close + (latest_atr * 1.5 * 2.5)
             elif df_tf.iloc[-1]['Short_Signal']:
-                active_signal_type = 'SHORT'
+                active_signal_type='SHORT'
                 active_entry, active_sl, active_tp = latest_close, latest_close + (latest_atr * 1.5), latest_close - (latest_atr * 1.5 * 2.5)
 
             if active_signal_type != 'None':
@@ -384,14 +392,22 @@ if st.session_state.is_searched:
             fig.add_annotation(text=ohlc_text, xref="paper", yref="paper", x=0.01, y=0.98, xanchor="left", yanchor="top", showarrow=False, font=dict(size=11, color="#848e9c"))
 
             fig.update_layout(
-                template="plotly_dark", paper_bgcolor="#0b0e11", plot_bgcolor="#0b0e11", hovermode="closest",
-                xaxis_rangeslider_visible=False, dragmode='pan', height=820, bargap=0.15, showlegend=False,
-                margin=dict(l=10, r=85, t=25, b=30), uirevision="constant_lock_state"
+                template="plotly_dark", 
+                paper_bgcolor="#0b0e11", 
+                plot_bgcolor="#0b0e11", 
+                hovermode="x unified",  # 🛠️ 啟用統一追蹤，消除延遲，讓虛線跟隨滑鼠位置即時同步
+                xaxis_rangeslider_visible=False, 
+                dragmode='pan', 
+                height=820, 
+                bargap=0.15, 
+                showlegend=False,
+                margin=dict(l=10, r=85, t=25, b=30), 
+                uirevision="constant_lock_state"
             )
             if follow_latest:
                 fig.update_layout(xaxis=dict(range=[start_time, end_time], autorange=False))
 
-            # 🛠️ 調整十字光標 (Spikes)：橫軸與縱軸同時開啟、使用細虛線且延伸至邊界
+            # 🛠️ 調整十字光標 (Spikes)：橫軸與縱軸同時開啟、超細虛線（1px）、延伸至整個邊界、帶有灰色方格標籤
             fig.update_xaxes(
                 showticklabels=True, gridcolor="#1e2329", zeroline=False, linecolor="#2b313a",
                 showspikes=True, spikemode='across', spikesnap='cursor', spikethickness=1, spikedash='dash', spikecolor='#787f8b'
@@ -399,6 +415,8 @@ if st.session_state.is_searched:
             fig.update_yaxes(
                 side="right", gridcolor="#1e2329", zeroline=False, linecolor="#2b313a", tickformat=",.2f", 
                 showspikes=True, spikemode='across', spikesnap='cursor', spikethickness=1, spikedash='dash', spikecolor='#787f8b',
+                spikeplacement="data", spikesnap="hovereddata",
+                showline=True,
                 row=1, col=1, range=y_range
             )
             fig.update_yaxes(
