@@ -37,7 +37,7 @@ icon_img = load_image_safe("hacker_icon.png")
 bg_base64 = get_base64_image("background.png")
 
 st.set_page_config(
-    page_title="加密貨幣AI策略系統",
+    page_title="加密貨幣 AI 策略系統",
     page_icon=icon_img if icon_img else "💻",
     layout="wide",
 )
@@ -149,8 +149,7 @@ st.markdown("---")
 
 # ============================================================
 # 2. Supabase 連線
-# 請在 Streamlit Secrets 或環境變數設定 SUPABASE_DB_URL。
-# 不要將資料庫密碼直接寫入程式。
+# 請在 Streamlit Secrets 或環境變數設定 SUPABASE_DB_URL
 # ============================================================
 def get_database_url():
     url = os.getenv("SUPABASE_DB_URL", "").strip()
@@ -159,6 +158,7 @@ def get_database_url():
             url = str(st.secrets.get("SUPABASE_DB_URL", "")).strip()
         except Exception:
             url = ""
+
     if url.startswith("postgres://"):
         url = "postgresql://" + url[len("postgres://"):]
     if url.startswith("postgresql://"):
@@ -174,13 +174,16 @@ def get_db_engine():
             "找不到 SUPABASE_DB_URL，請在 Streamlit Secrets 或環境變數設定。"
         )
     return create_engine(
-        url, pool_pre_ping=True, pool_recycle=1800,
+        url,
+        pool_pre_ping=True,
+        pool_recycle=1800,
         connect_args={"connect_timeout": 10},
     )
 
 
 def load_historical_data(table_name, symbol_name):
-    if table_name not in {"btc_contract_klines", "eth_contract_klines"}:
+    allowed_tables = {"btc_contract_klines", "eth_contract_klines"}
+    if table_name not in allowed_tables:
         st.error("資料表名稱不合法。")
         return pd.DataFrame()
 
@@ -195,14 +198,17 @@ def load_historical_data(table_name, symbol_name):
         """)
         with engine.connect() as conn:
             df = pd.read_sql(sql, con=conn)
+
         if df.empty:
             return df
         df = df.sort_values("open_time").reset_index(drop=True)
+
     except Exception as e:
         st.error(f"Supabase 連線或讀取錯誤：{e}")
         return pd.DataFrame()
 
     df["symbol"] = symbol_name
+
     if pd.api.types.is_numeric_dtype(df["open_time"]):
         sample = df["open_time"].dropna()
         sample_value = sample.iloc[0] if not sample.empty else 0
@@ -218,8 +224,10 @@ def load_historical_data(table_name, symbol_name):
     df["open_time"] = (
         df["open_time"].dt.tz_convert("Asia/Taipei").dt.tz_localize(None)
     )
+
     for col in ["open_price", "high_price", "low_price", "close_price", "volume"]:
         df[col] = pd.to_numeric(df[col], errors="coerce")
+
     return df.dropna(subset=[
         "open_time", "open_price", "high_price",
         "low_price", "close_price", "volume"
@@ -233,6 +241,7 @@ def calculate_trendline_channel(df, window=30, num_dev=1.8):
     df = df.copy()
     close = df["close_price"].astype(float).values
     n = len(close)
+
     mid = np.full(n, np.nan)
     upper = np.full(n, np.nan)
     lower = np.full(n, np.nan)
@@ -255,6 +264,7 @@ def calculate_trendline_channel(df, window=30, num_dev=1.8):
 
 def calculate_indicators(df, tf):
     df = df.copy()
+
     df["EMA_21"] = df["close_price"].ewm(span=21, adjust=False).mean()
     df["EMA_50"] = df["close_price"].ewm(span=50, adjust=False).mean()
     df["EMA_100"] = df["close_price"].ewm(span=100, adjust=False).mean()
@@ -273,34 +283,42 @@ def calculate_indicators(df, tf):
     high_close = (df["high_price"] - df["close_price"].shift()).abs()
     low_close = (df["low_price"] - df["close_price"].shift()).abs()
     tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+
     df["ATR"] = tr.rolling(14).mean()
     df["Vol_SMA20"] = df["volume"].rolling(20).mean()
 
     body = (df["close_price"] - df["open_price"]).abs()
     candle_range = df["high_price"] - df["low_price"]
     df["Body_Ratio"] = (body / candle_range.replace(0, np.nan)).fillna(0)
+
     return df, win, dev
 
 
 # ============================================================
-# 4. LightGBM 模型（保留原始模型目標與參數）
+# 4. LightGBM 模型
 # ============================================================
 def train_or_get_ai_model(df_tf, key):
     if key in st.session_state.ai_models:
         return st.session_state.ai_models[key]
+
     if len(df_tf) < 60:
         return None
 
     try:
         df = df_tf.copy()
-        df["vol_ratio"] = df["volume"] / df["volume"].rolling(20).mean()
+
+        df["vol_ratio"] = (
+            df["volume"] / df["volume"].rolling(20).mean()
+        )
         body = (df["close_price"] - df["open_price"]).abs()
         candle_range = df["high_price"] - df["low_price"]
         df["body_ratio"] = body / candle_range.replace(0, np.nan)
         df["atr_ratio"] = df["ATR"] / df["close_price"]
-        df["ema_diff"] = (df["EMA_21"] - df["EMA_50"]) / df["close_price"]
+        df["ema_diff"] = (
+            (df["EMA_21"] - df["EMA_50"]) / df["close_price"]
+        )
 
-        # 沿用原程式：未來價格上漲幅度是否超過 1.2%
+        # 沿用原策略：未來高點相對目前收盤價上漲超過 1.2%
         future_max_gain = (
             df["high_price"].shift(-3).rolling(3).max()
             / df["close_price"] - 1
@@ -309,15 +327,21 @@ def train_or_get_ai_model(df_tf, key):
 
         features = ["RSI", "vol_ratio", "body_ratio", "atr_ratio", "ema_diff"]
         train_df = df.dropna(subset=features + ["target"])
+
         if len(train_df) < 30 or train_df["target"].nunique() < 2:
             return None
 
         model = lgb.LGBMClassifier(
-            n_estimators=40, learning_rate=0.05, max_depth=3, verbose=-1
+            n_estimators=40,
+            learning_rate=0.05,
+            max_depth=3,
+            verbose=-1,
         )
         model.fit(train_df[features], train_df["target"])
+
         st.session_state.ai_models[key] = model
         return model
+
     except Exception as e:
         st.warning(f"AI 模型訓練失敗：{e}")
         return None
@@ -355,17 +379,20 @@ def add_trade_signals(df, tf, model):
         )
 
     features = ["RSI", "vol_ratio", "body_ratio", "atr_ratio", "ema_diff"]
-    probabilities, longs, shorts = [], [], []
+    probabilities = []
+    longs = []
+    shorts = []
 
     for _, row in df.iterrows():
         is_long = bool(row["Base_Long"])
         is_short = bool(row["Base_Short"])
-        prob = 0.70  # 沿用原始程式的預設分數
+        prob = 0.70
 
         if (is_long or is_short) and model is not None:
             try:
                 vol_sma = row["Vol_SMA20"]
                 close = row["close_price"]
+
                 feature_row = pd.DataFrame([{
                     "RSI": row["RSI"],
                     "vol_ratio": (
@@ -382,6 +409,7 @@ def add_trade_signals(df, tf, model):
                         if close else 0
                     ),
                 }], columns=features)
+
                 prob = float(model.predict_proba(feature_row)[0][1])
             except Exception:
                 pass
@@ -393,11 +421,12 @@ def add_trade_signals(df, tf, model):
     df["AI_Prob"] = probabilities
     df["Long_Signal"] = longs
     df["Short_Signal"] = shorts
+
     return df
 
 
 # ============================================================
-# 6. 首頁說明區（紅色框位置）
+# 6. 首頁說明區
 # ============================================================
 def render_homepage():
     st.info("💡 請在上方查詢欄輸入 BTC 或 ETH，並按下「送出查詢」開始使用。")
@@ -443,6 +472,7 @@ def render_homepage():
 
     st.markdown("---")
     st.markdown("## 📖 使用說明")
+
     with st.container(border=True):
         st.markdown("### ① 輸入加密貨幣名稱")
         st.write("在頁面最上方搜尋欄輸入 BTC 或 ETH。")
@@ -464,6 +494,7 @@ def render_homepage():
 
     st.markdown("---")
     st.markdown("## 🧠 AI 策略判斷方式")
+
     strategy_df = pd.DataFrame({
         "技術指標": [
             "趨勢通道", "RSI（14）", "成交量",
@@ -508,14 +539,16 @@ def render_homepage():
     AI 模型分數不是實際勝率。市場可能因突發事件快速變動，
     請自行評估風險並設定適當止損，不要只依賴單一指標或模型分數。
     """)
+
     st.caption("加密貨幣 AI 策略系統｜BTC / ETH｜5m / 15m / 1h / 4h")
 
 
 # ============================================================
-# 7. K 線圖與右側 AI 建議面板
+# 7. K 線圖與進場點位
 # ============================================================
 def render_live_kline_chart(table, symbol, pair, tf):
     df = load_historical_data(table, symbol)
+
     if df.empty:
         st.warning("目前無法取得資料，請確認 Supabase 連線及資料表內容。")
         return
@@ -526,8 +559,9 @@ def render_live_kline_chart(table, symbol, pair, tf):
         .copy()
         .reset_index(drop=True)
     )
+
     if df_tf.empty:
-        st.warning("此週期目前尚無資料。")
+        st.warning(f"{tf} 週期目前尚無資料。")
         return
 
     df_tf, win, dev = calculate_indicators(df_tf, tf)
@@ -536,6 +570,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
 
     display_count = 90 if symbol == "ETH" else 120
     view_df = df_tf.tail(display_count)
+
     if view_df.empty:
         st.warning("目前沒有足夠資料可顯示。")
         return
@@ -549,6 +584,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
 
     supports = view_df["Trend_Support"].dropna()
     resistances = view_df["Trend_Resistance"].dropna()
+
     low = min(
         view_df["low_price"].min(),
         supports.min() if not supports.empty else view_df["low_price"].min()
@@ -557,8 +593,9 @@ def render_live_kline_chart(table, symbol, pair, tf):
         view_df["high_price"].max(),
         resistances.max() if not resistances.empty else view_df["high_price"].max()
     )
+
     span = max(high - low, abs(high) * 0.001, 1e-8)
-    y_range = [low - span * 0.03, high + span * 0.03]
+    y_range = [low - span * 0.08, high + span * 0.08]
 
     latest = df_tf.iloc[-1]
     latest_close = float(latest["close_price"])
@@ -566,6 +603,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
         (latest_close - latest["open_price"]) / latest["open_price"] * 100
         if latest["open_price"] else 0
     )
+
     status_color = (
         "#0ECB81" if latest["close_price"] >= latest["open_price"]
         else "#F6465D"
@@ -574,10 +612,14 @@ def render_live_kline_chart(table, symbol, pair, tf):
     ai_score = float(latest["AI_Prob"]) * 100
 
     fig = make_subplots(
-        rows=2, cols=1, shared_xaxes=True,
-        vertical_spacing=0.015, row_heights=[0.75, 0.25]
+        rows=2,
+        cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.015,
+        row_heights=[0.75, 0.25],
     )
 
+    # K 線
     fig.add_trace(go.Candlestick(
         x=df_tf["open_time"],
         open=df_tf["open_price"],
@@ -590,77 +632,136 @@ def render_live_kline_chart(table, symbol, pair, tf):
         increasing_fillcolor="#0ECB81",
         decreasing_line_color="#F6465D",
         decreasing_fillcolor="#F6465D",
-        hoverinfo="none"
+        hoverinfo="none",
     ), row=1, col=1)
 
+    # EMA 均線
     for ema, color, width in [
         ("EMA_21", "#2962FF", 1.2),
         ("EMA_50", "#FFFFFF", 1.2),
         ("EMA_100", "#FF5252", 1.4),
     ]:
         fig.add_trace(go.Scatter(
-            x=df_tf["open_time"], y=df_tf[ema],
-            mode="lines", name=ema.replace("_", ""),
-            line=dict(color=color, width=width), hoverinfo="none"
+            x=df_tf["open_time"],
+            y=df_tf[ema],
+            mode="lines",
+            name=ema.replace("_", ""),
+            line=dict(color=color, width=width),
+            hoverinfo="none",
         ), row=1, col=1)
 
+    # 趨勢通道
     fig.add_trace(go.Scatter(
-        x=df_tf["open_time"], y=df_tf["Trend_Resistance"],
-        mode="lines", name="壓力趨勢線",
+        x=df_tf["open_time"],
+        y=df_tf["Trend_Resistance"],
+        mode="lines",
+        name="壓力趨勢線",
         line=dict(color="rgba(246,70,93,.7)", width=1.5, dash="dash"),
-        hoverinfo="none"
+        hoverinfo="none",
     ), row=1, col=1)
 
     fig.add_trace(go.Scatter(
-        x=df_tf["open_time"], y=df_tf["Trend_Support"],
-        mode="lines", name="支撐趨勢線",
+        x=df_tf["open_time"],
+        y=df_tf["Trend_Support"],
+        mode="lines",
+        name="支撐趨勢線",
         line=dict(color="rgba(14,203,129,.7)", width=1.5, dash="dash"),
-        fill="tonexty", fillcolor="rgba(126,87,194,.02)",
-        hoverinfo="none"
+        hoverinfo="none",
     ), row=1, col=1)
 
-    long_df = df_tf[df_tf["Long_Signal"]]
+    # ========================================================
+    # 多單進場標記：綠色箭頭 + 進場參考價格
+    # ========================================================
+    long_df = view_df[view_df["Long_Signal"]].copy()
+
     if not long_df.empty:
         fig.add_trace(go.Scatter(
-            x=long_df["open_time"], y=long_df["low_price"] * 0.995,
-            mode="markers+text", name="AI 多點",
+            x=long_df["open_time"],
+            y=long_df["low_price"] - span * 0.018,
+            mode="markers+text",
+            name="LONG 多單進場",
             marker=dict(
-                symbol="triangle-up", size=10, color="#0ECB81",
-                line=dict(width=1, color="white")
+                symbol="triangle-up",
+                size=16,
+                color="#00E676",
+                line=dict(width=1.5, color="white"),
             ),
-            text=["🟢 AI多"] * len(long_df),
+            text=[
+                f"LONG<br>{price:,.2f}"
+                for price in long_df["close_price"]
+            ],
             textposition="bottom center",
-            textfont=dict(color="#0ECB81", size=11, family="Arial Black"),
-            hoverinfo="none"
+            textfont=dict(
+                color="#00E676",
+                size=10,
+                family="Arial Black",
+            ),
+            customdata=long_df[["close_price", "AI_Prob"]].to_numpy(),
+            hovertemplate=(
+                "🟢 LONG 多單進場<br>"
+                "時間：%{x}<br>"
+                "參考進場價：%{customdata[0]:,.2f}<br>"
+                "AI 分數：%{customdata[1]:.1%}"
+                "<extra></extra>"
+            ),
         ), row=1, col=1)
 
-    short_df = df_tf[df_tf["Short_Signal"]]
+    # ========================================================
+    # 空單進場標記：紅色箭頭 + 進場參考價格
+    # ========================================================
+    short_df = view_df[view_df["Short_Signal"]].copy()
+
     if not short_df.empty:
         fig.add_trace(go.Scatter(
-            x=short_df["open_time"], y=short_df["high_price"] * 1.005,
-            mode="markers+text", name="AI 空點",
+            x=short_df["open_time"],
+            y=short_df["high_price"] + span * 0.018,
+            mode="markers+text",
+            name="SHORT 空單進場",
             marker=dict(
-                symbol="triangle-down", size=10, color="#F6465D",
-                line=dict(width=1, color="white")
+                symbol="triangle-down",
+                size=16,
+                color="#FF1744",
+                line=dict(width=1.5, color="white"),
             ),
-            text=["🔴 AI空"] * len(short_df),
+            text=[
+                f"SHORT<br>{price:,.2f}"
+                for price in short_df["close_price"]
+            ],
             textposition="top center",
-            textfont=dict(color="#F6465D", size=11, family="Arial Black"),
-            hoverinfo="none"
+            textfont=dict(
+                color="#FF1744",
+                size=10,
+                family="Arial Black",
+            ),
+            customdata=short_df[["close_price", "AI_Prob"]].to_numpy(),
+            hovertemplate=(
+                "🔴 SHORT 空單進場<br>"
+                "時間：%{x}<br>"
+                "參考進場價：%{customdata[0]:,.2f}<br>"
+                "AI 分數：%{customdata[1]:.1%}"
+                "<extra></extra>"
+            ),
         ), row=1, col=1)
 
+    # 成交量
     volume_colors = [
-        "rgba(14,203,129,.5)" if close >= open_
-        else "rgba(246,70,93,.5)"
+        "rgba(14,203,129,.5)" if close >= open_ else "rgba(246,70,93,.5)"
         for close, open_ in zip(df_tf["close_price"], df_tf["open_price"])
     ]
+
     fig.add_trace(go.Bar(
-        x=df_tf["open_time"], y=df_tf["volume"],
-        name="VOL", marker_color=volume_colors, hoverinfo="none"
+        x=df_tf["open_time"],
+        y=df_tf["volume"],
+        name="VOL",
+        marker_color=volume_colors,
+        hoverinfo="none",
     ), row=2, col=1)
 
+    # 最新價格水平線
     fig.add_hline(
-        y=latest_close, line_dash="dot", line_width=1,
+        y=latest_close,
+        line_dash="dot",
+        line_width=1,
         line_color=status_color,
         annotation_text=f" {latest_close:,.2f} ",
         annotation_position="right",
@@ -669,76 +770,141 @@ def render_live_kline_chart(table, symbol, pair, tf):
         annotation_bordercolor=status_color,
         annotation_borderwidth=1,
         annotation_borderpad=3,
-        row=1, col=1
+        row=1,
+        col=1,
     )
 
-    mode = "⚡ AI小波段閃電模式" if tf in ["5m", "15m"] else "🌊 AI大波段趨勢模式"
+    mode = (
+        "⚡ AI小波段閃電模式"
+        if tf in ["5m", "15m"]
+        else "🌊 AI大波段趨勢模式"
+    )
+
     annotation = (
         f"<b>{pair} · {tf} ({mode})</b><br>"
         f"<b>策略與指標：</b>雙軌通道 (Window: {win}, Dev: {dev}) | "
         "EMA (21, 50, 100) | RSI (14) | ATR (14)<br>"
         f"<b>RSI：</b>{latest_rsi:.1f} | "
-        f"<b>AI模型信心分數：</b><span style='color:#f0b90b'>{ai_score:.1f}%</span> | "
+        f"<b>AI模型分數：</b><span style='color:#f0b90b'>{ai_score:.1f}%</span> | "
         f"收：<span style='color:{status_color}'>{latest_close:,.2f} "
         f"({change_pct:+.2f}%)</span>"
     )
+
     fig.add_annotation(
-        text=annotation, xref="paper", yref="paper",
-        x=0.01, y=0.99, xanchor="left", yanchor="top",
-        showarrow=False, align="left",
-        font=dict(size=11, color="#c2c8d0")
+        text=annotation,
+        xref="paper",
+        yref="paper",
+        x=0.01,
+        y=0.99,
+        xanchor="left",
+        yanchor="top",
+        showarrow=False,
+        align="left",
+        font=dict(size=11, color="#c2c8d0"),
     )
 
     fig.update_layout(
         template="plotly_dark",
         paper_bgcolor="rgba(11,14,17,.6)",
         plot_bgcolor="rgba(11,14,17,.6)",
-        hovermode="x", hoverdistance=100, spikedistance=1000,
-        xaxis_rangeslider_visible=False, dragmode="pan",
-        height=820, bargap=0.15, showlegend=False,
-        margin=dict(l=10, r=85, t=25, b=30),
+        hovermode="x",
+        hoverdistance=100,
+        spikedistance=1000,
+        xaxis_rangeslider_visible=False,
+        dragmode="pan",
+        height=820,
+        bargap=0.15,
+        showlegend=True,
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="left",
+            x=0,
+            font=dict(size=10),
+        ),
+        margin=dict(l=10, r=85, t=65, b=30),
         uirevision=f"{symbol}_{tf}_chart",
         hoverlabel=dict(
-            bgcolor="rgba(30,35,41,.95)", font_size=12,
-            font_color="white", bordercolor="#f0b90b"
-        )
+            bgcolor="rgba(30,35,41,.95)",
+            font_size=12,
+            font_color="white",
+            bordercolor="#f0b90b",
+        ),
     )
+
     fig.update_layout(xaxis=dict(
-        range=[start_time, end_time], autorange=False
+        range=[start_time, end_time],
+        autorange=False,
     ))
+
     fig.update_xaxes(
-        showticklabels=True, gridcolor="#1e2329",
-        zeroline=False, linecolor="#2b313a",
-        showspikes=True, spikemode="across", spikesnap="cursor",
-        spikethickness=1, spikedash="dash", spikecolor="#a0a6b2"
+        showticklabels=True,
+        gridcolor="#1e2329",
+        zeroline=False,
+        linecolor="#2b313a",
+        showspikes=True,
+        spikemode="across",
+        spikesnap="cursor",
+        spikethickness=1,
+        spikedash="dash",
+        spikecolor="#a0a6b2",
     )
+
     fig.update_yaxes(
-        side="right", gridcolor="#1e2329", zeroline=False,
-        linecolor="#2b313a", tickformat=",.2f",
-        showspikes=True, spikemode="across+toaxis",
-        spikesnap="cursor", spikethickness=1,
-        spikedash="dash", spikecolor="#a0a6b2",
-        showline=True, row=1, col=1, range=y_range
+        side="right",
+        gridcolor="#1e2329",
+        zeroline=False,
+        linecolor="#2b313a",
+        tickformat=",.2f",
+        showspikes=True,
+        spikemode="across+toaxis",
+        spikesnap="cursor",
+        spikethickness=1,
+        spikedash="dash",
+        spikecolor="#a0a6b2",
+        showline=True,
+        row=1,
+        col=1,
+        range=y_range,
     )
+
     fig.update_yaxes(
-        side="right", gridcolor="#1e2329", zeroline=False,
-        linecolor="#2b313a", tickformat=",.2f",
-        showspikes=True, spikemode="across",
-        spikesnap="cursor", spikethickness=1,
-        spikedash="dash", spikecolor="#a0a6b2",
-        row=2, col=1
+        side="right",
+        gridcolor="#1e2329",
+        zeroline=False,
+        linecolor="#2b313a",
+        tickformat=",.2f",
+        showspikes=True,
+        spikemode="across",
+        spikesnap="cursor",
+        spikethickness=1,
+        spikedash="dash",
+        spikecolor="#a0a6b2",
+        row=2,
+        col=1,
     )
 
     chart_col, panel_col = st.columns([3.6, 1.2])
+
     with chart_col:
         st.plotly_chart(
-            fig, use_container_width=True,
-            config={"scrollZoom": True, "displayModeBar": True, "displaylogo": False},
-            key=f"{symbol.lower()}_{tf}_chart"
+            fig,
+            use_container_width=True,
+            config={
+                "scrollZoom": True,
+                "displayModeBar": True,
+                "displaylogo": False,
+            },
+            key=f"{symbol.lower()}_{tf}_chart",
         )
 
+    # ========================================================
+    # 右側 AI 操作建議面板
+    # ========================================================
     with panel_col:
         st.markdown("### 🎯 AI 即時操作建議")
+
         st.markdown(f"""
         <div style="background:rgba(30,35,41,.9);border:1px solid #2b313a;
                     padding:10px;border-radius:6px;margin-bottom:10px;">
@@ -750,33 +916,50 @@ def render_live_kline_chart(table, symbol, pair, tf):
         """, unsafe_allow_html=True)
 
         if bool(latest["Long_Signal"]):
-            st.markdown(f"""
-            <div style="background:rgba(30,35,41,.9);border:1px solid #0ECB81;
-                        padding:12px;border-radius:6px;border-left:5px solid #0ECB81;">
-                <div style="color:#0ECB81;font-weight:bold;">🟢 AI 智能多單 (LONG)</div>
-                <div style="font-size:12px;">參考價格：{latest_close:,.2f}</div>
-            </div>
-            """, unsafe_allow_html=True)
-        elif bool(latest["Short_Signal"]):
-            st.markdown(f"""
-            <div style="background:rgba(30,35,41,.9);border:1px solid #F6465D;
-                        padding:12px;border-radius:6px;border-left:5px solid #F6465D;">
-                <div style="color:#F6465D;font-weight:bold;">🔴 AI 智能空單 (SHORT)</div>
-                <div style="font-size:12px;">參考價格：{latest_close:,.2f}</div>
-            </div>
-            """, unsafe_allow_html=True)
-        else:
-            st.markdown("""
-            <div style="background:rgba(30,35,41,.9);border:1px solid #2b313a;
-                        padding:15px;border-radius:6px;text-align:center;
-                        border-left:5px solid #f0b90b;">
-                <div style="color:#f0b90b;font-weight:bold;">⏳ AI 觀望中 (WAIT)</div>
-                <div style="font-size:11px;color:#848e9c;margin-top:4px;">
-                    等待符合策略條件的市場機會
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
+            st.success("🟢 LONG 多單進場訊號")
+            st.metric("參考進場價格", f"{latest_close:,.2f}")
+            st.metric("AI 模型分數", f"{ai_score:.1f}%")
 
+        elif bool(latest["Short_Signal"]):
+            st.error("🔴 SHORT 空單進場訊號")
+            st.metric("參考進場價格", f"{latest_close:,.2f}")
+            st.metric("AI 模型分數", f"{ai_score:.1f}%")
+
+        else:
+            st.warning("⏳ WAIT 目前沒有進場訊號")
+            st.caption(
+                "等待價格突破趨勢通道，並符合 RSI、成交量及 AI 條件。"
+            )
+
+        st.markdown("---")
+        st.markdown("#### 📌 最近進場訊號")
+
+        recent_signals = df_tf[
+            df_tf["Long_Signal"] | df_tf["Short_Signal"]
+        ].tail(5).copy()
+
+        if recent_signals.empty:
+            st.caption("目前查詢資料中沒有符合條件的進場訊號。")
+        else:
+            for _, signal in recent_signals.iloc[::-1].iterrows():
+                signal_time = signal["open_time"].strftime("%m/%d %H:%M")
+                signal_price = float(signal["close_price"])
+                signal_prob = float(signal["AI_Prob"]) * 100
+
+                if bool(signal["Long_Signal"]):
+                    st.markdown(
+                        f"🟢 **LONG**｜{signal_time}  \n"
+                        f"進場參考價：`{signal_price:,.2f}`  \n"
+                        f"AI 分數：`{signal_prob:.1f}%`"
+                    )
+                else:
+                    st.markdown(
+                        f"🔴 **SHORT**｜{signal_time}  \n"
+                        f"進場參考價：`{signal_price:,.2f}`  \n"
+                        f"AI 分數：`{signal_prob:.1f}%`"
+                    )
+
+        st.caption("進場價格為訊號 K 線收盤價參考值，不代表實際成交價。")
         st.caption("AI 模型分數不是實際交易勝率。")
 
 
@@ -785,30 +968,37 @@ def render_live_kline_chart(table, symbol, pair, tf):
 # ============================================================
 if st.session_state.is_searched:
     query = st.session_state.search_query.upper()
+
     if "ETH" in query:
         table_name, symbol_name, pair_name = (
-            "eth_contract_klines", "ETH", "ETH-USDT-SWAP"
+            "eth_contract_klines",
+            "ETH",
+            "ETH-USDT-SWAP",
         )
     else:
         table_name, symbol_name, pair_name = (
-            "btc_contract_klines", "BTC", "BTC-USDT-SWAP"
+            "btc_contract_klines",
+            "BTC",
+            "BTC-USDT-SWAP",
         )
 
     selected_tf = st.radio(
         "時間週期（小波段／大波段）",
         ["5m", "15m", "1h", "4h"],
         horizontal=True,
-        key="timeframe_select"
+        key="timeframe_select",
     )
 
-    # Streamlit fragment 每 5 秒更新一次顯示。
-    # 若安裝的 Streamlit 太舊而不支援 fragment，請升級 Streamlit。
+    # Streamlit 版本需支援 st.fragment
     @st.fragment(run_every=5)
     def render_live_fragment(tbl, sym, pair, timeframe):
         render_live_kline_chart(tbl, sym, pair, timeframe)
 
     render_live_fragment(
-        table_name, symbol_name, pair_name, selected_tf
+        table_name,
+        symbol_name,
+        pair_name,
+        selected_tf,
     )
 
 elif st.session_state.search_query:
@@ -817,5 +1007,6 @@ elif st.session_state.search_query:
         "請嘗試輸入 BTC 或 ETH。"
     )
     render_homepage()
+
 else:
     render_homepage()
