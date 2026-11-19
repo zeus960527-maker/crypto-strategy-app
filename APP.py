@@ -329,26 +329,26 @@ def build_candidate_signals(df, tf):
     if tf in ["5m", "15m"]:
         df["Base_Long"] = (
             (df["close_price"] > df["Trend_Resistance"])
-            & df["RSI"].between(42, 85)
-            & (df["volume"] > df["Vol_SMA20"] * 1.05)
-            & (df["Body_Ratio"] > 0.3)
+            & df["RSI"].between(40, 90)
+            & (df["volume"] > df["Vol_SMA20"] * 1.0)
+            & (df["Body_Ratio"] > 0.2)
         )
         df["Base_Short"] = (
             (df["close_price"] < df["Trend_Support"])
-            & df["RSI"].between(15, 58)
-            & (df["volume"] > df["Vol_SMA20"] * 1.05)
-            & (df["Body_Ratio"] > 0.3)
+            & df["RSI"].between(10, 60)
+            & (df["volume"] > df["Vol_SMA20"] * 1.0)
+            & (df["Body_Ratio"] > 0.2)
         )
     else:
         df["Base_Long"] = (
             (df["close_price"] > df["Trend_Resistance"])
-            & df["RSI"].between(45, 80)
-            & (df["volume"] > df["Vol_SMA20"])
+            & df["RSI"].between(40, 85)
+            & (df["volume"] > df["Vol_SMA20"] * 0.95)
         )
         df["Base_Short"] = (
             (df["close_price"] < df["Trend_Support"])
-            & df["RSI"].between(20, 55)
-            & (df["volume"] > df["Vol_SMA20"])
+            & df["RSI"].between(15, 60)
+            & (df["volume"] > df["Vol_SMA20"] * 0.95)
         )
 
     df["vol_ratio"] = df["volume"] / df["Vol_SMA20"].replace(0, np.nan)
@@ -461,7 +461,7 @@ def train_or_get_ai_model(df, key):
     candidates = df[df["Base_Long"] | df["Base_Short"]].copy()
     train_df = candidates[candidates["Trade_Result"].isin(["成功", "未達標"])].copy()
 
-    if len(train_df) < 30 or train_df["Trade_Result"].nunique() < 2:
+    if len(train_df) < 15 or train_df["Trade_Result"].nunique() < 2:
         return None, len(train_df), int((train_df["Trade_Result"] == "成功").sum())
 
     train_df["target"] = (train_df["Trade_Result"] == "成功").astype(int)
@@ -470,10 +470,10 @@ def train_or_get_ai_model(df, key):
 
     try:
         model = lgb.LGBMClassifier(
-            n_estimators=60,
-            learning_rate=0.04,
+            n_estimators=50,
+            learning_rate=0.05,
             max_depth=3,
-            num_leaves=7,
+            num_leaves=5,
             class_weight="balanced",
             random_state=42,
             verbose=-1,
@@ -503,14 +503,15 @@ def add_trade_signals(df, model):
                 pass
 
     if model is None:
-        df["AI_Prob"] = np.where(candidates, 0.70, np.nan)
+        df["AI_Prob"] = np.where(candidates, 0.75, np.nan)
         df["Long_Signal"] = df["Base_Long"]
         df["Short_Signal"] = df["Base_Short"]
-        df["AI_Mode"] = "策略回退（歷史樣本不足）"
+        df["AI_Mode"] = "策略回退（樣本不足）"
     else:
-        df["Long_Signal"] = df["Base_Long"] & (df["AI_Prob"] >= 0.60)
-        df["Short_Signal"] = df["Base_Short"] & (df["AI_Prob"] >= 0.60)
-        df["AI_Mode"] = "歷史結果訓練模型"
+        # 將 AI 信心門檻降至 0.50，確保歷史候選點能順利顯示空心三角形標記
+        df["Long_Signal"] = df["Base_Long"] & (df["AI_Prob"] >= 0.50)
+        df["Short_Signal"] = df["Base_Short"] & (df["AI_Prob"] >= 0.50)
+        df["AI_Mode"] = "AI 機器學習模型"
 
     return df
 
