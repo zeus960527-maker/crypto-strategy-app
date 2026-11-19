@@ -116,7 +116,7 @@ def calculate_indicators_and_signals(df, tf):
 
 def scan_and_import_historical_signals(engine, table_name, symbol, timeframe):
     """
-    從歷史 K 線中找出從上一次到最新一次的所有訊號，並批次匯入資料表 (ON CONFLICT DO NOTHING)
+    從歷史 K 線中找出符合條件的訊號，並批次匯入資料表 (ON CONFLICT DO NOTHING)
     """
     try:
         query = text(f"""
@@ -140,7 +140,7 @@ def scan_and_import_historical_signals(engine, table_name, symbol, timeframe):
 
         df = calculate_indicators_and_signals(df, timeframe)
         
-        # 篩選出所有符合 LONG 或 SHORT 條件的歷史 K 線
+        # 篩選出所有符合 LONG 或 SHORT 條件的 K 線
         signal_rows = df[df["Long_Signal"] | df["Short_Signal"]]
         if signal_rows.empty:
             return
@@ -169,7 +169,9 @@ def scan_and_import_historical_signals(engine, table_name, symbol, timeframe):
                 else:
                     candle_time = candle_time.astimezone(TAIWAN_TZ)
 
-                signal_time_text = candle_time.strftime("%Y-%m-%d %H:%M:%S")
+                # 💡 確保訊號時間使用目前的台灣時間
+                current_taipei_time = datetime.now(TAIWAN_TZ)
+                signal_time_text = current_taipei_time.strftime("%Y-%m-%d %H:%M:%S")
 
                 result = conn.execute(text("""
                     INSERT INTO strategy_signal_outbox (
@@ -262,9 +264,9 @@ def main():
 
     engine = create_engine(db_url)
     ensure_signal_outbox_table(engine)
-    print("🚀 OKX 策略訊號掃描與派送系統啟動...")
+    print("🚀 OKX 策略訊號掃描與派送系統啟動（涵蓋 BTC 與 ETH）...")
 
-    # 1. 依序掃描 BTC 與 ETH 各時間週期的歷史訊號並匯入 Outbox
+    # 1. 涵蓋 BTC 與 ETH 各時間週期的資料表與標的
     pairs = [
         ("btc_contract_klines", "BTC"),
         ("eth_contract_klines", "ETH")
@@ -277,7 +279,7 @@ def main():
 
     # 2. 處理 Outbox 佇列中所有待發送的訊號並推送到 Discord
     process_outbox_and_notify(engine, webhook_url)
-    print("✨ 本次掃描與派送任務執行完畢。")
+    print("✨ 本次 BTC 與 ETH 掃描與派送任務執行完畢。")
 
 if __name__ == "__main__":
     main()
