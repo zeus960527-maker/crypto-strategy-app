@@ -508,7 +508,6 @@ def add_trade_signals(df, model):
         df["Short_Signal"] = df["Base_Short"]
         df["AI_Mode"] = "策略回退（歷史樣本不足）"
     else:
-        # 調整門檻至 0.60，確保訊號能正常觸發並繪製三角形標記
         df["Long_Signal"] = df["Base_Long"] & (df["AI_Prob"] >= 0.60)
         df["Short_Signal"] = df["Base_Short"] & (df["AI_Prob"] >= 0.60)
         df["AI_Mode"] = "歷史結果訓練模型"
@@ -563,7 +562,7 @@ def render_homepage():
 
 
 # ============================================================
-# 6. K 線圖與進場點位（更緊湊、更高挑修長）
+# 6. K 線圖與空心三角形進場點位
 # ============================================================
 def render_live_kline_chart(table, symbol, pair, tf):
     df = load_historical_data(table, symbol)
@@ -691,6 +690,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
         hoverinfo="none",
     ), row=1, col=1)
 
+    # LONG 多單空心三角形標記
     long_df = view_df[view_df["Long_Signal"]].copy()
     if not long_df.empty:
         long_y = long_df["low_price"] - span * 0.25
@@ -710,7 +710,12 @@ def render_live_kline_chart(table, symbol, pair, tf):
             y=long_y,
             mode="markers+text",
             name="LONG 多單進場",
-            marker=dict(symbol="triangle-up", size=10, color="#00E676", line=dict(width=1, color="white")),
+            marker=dict(
+                symbol="triangle-up",
+                size=11,
+                color="rgba(11, 14, 17, 0.9)",  # 空心（填入背景色）
+                line=dict(width=2, color="#00E676")   # 螢光綠外框線
+            ),
             text=[f"LONG<br>{price:,.2f}" for price in long_df["close_price"]],
             textposition="bottom center",
             textfont=dict(color="#00E676", size=9, family="Arial Black"),
@@ -725,6 +730,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
             ),
         ), row=1, col=1)
 
+    # SHORT 空單空心三角形標記
     short_df = view_df[view_df["Short_Signal"]].copy()
     if not short_df.empty:
         short_y = short_df["high_price"] + span * 0.25
@@ -744,7 +750,12 @@ def render_live_kline_chart(table, symbol, pair, tf):
             y=short_y,
             mode="markers+text",
             name="SHORT 空單進場",
-            marker=dict(symbol="triangle-down", size=10, color="#FF1744", line=dict(width=1, color="white")),
+            marker=dict(
+                symbol="triangle-down",
+                size=11,
+                color="rgba(11, 14, 17, 0.9)",  # 空心（填入背景色）
+                line=dict(width=2, color="#FF1744")   # 亮紅外框線
+            ),
             text=[f"SHORT<br>{price:,.2f}" for price in short_df["close_price"]],
             textposition="top center",
             textfont=dict(color="#FF1744", size=9, family="Arial Black"),
@@ -849,7 +860,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
         spikemode="across+toaxis",
         spikesnap="cursor",
         spikethickness=1,
-        spikedash="dash",
+        spikesdash="dash",
         spikecolor="#a0a6b2",
         showline=True,
         row=1,
@@ -867,7 +878,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
         spikemode="across",
         spikesnap="cursor",
         spikethickness=1,
-        spikedash="dash",
+        spikesdash="dash",
         spikecolor="#a0a6b2",
         row=2,
         col=1,
