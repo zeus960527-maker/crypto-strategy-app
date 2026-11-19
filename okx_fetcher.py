@@ -112,7 +112,7 @@ def background_worker():
     while True:
         try:
             fetch_and_save_btc_contracts()
-            time.sleep(2)
+            time.sleep(1)
         except Exception as e:
             print(f"背景迴圈錯誤: {e}")
             time.sleep(0.5)
