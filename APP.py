@@ -11,7 +11,6 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import lightgbm as lgb
 from zoneinfo import ZoneInfo
-import subprocess
 from flask import Flask, jsonify
 
 TAIWAN_TZ = ZoneInfo('Asia/Taipei')
@@ -20,29 +19,19 @@ RISK_REWARD_RATIO = 2.5
 
 
 # ============================================================
-# 0. 頁面設定、圖片與背景（含手機 RWD 響應式 CSS）與 Flask 路由
+# 0. 頁面設定、圖片與背景（含手機 RWD 響應式 CSS）與 Flask 路由 (保持 Render 活躍)
 # ============================================================
 BASE_DIR = Path(__file__).resolve().parent
 
-# 建立 Flask 應用實例，供 Render Web Service 背景 / 路由使用
 app = Flask(__name__)
 
 @app.route("/")
 def home():
-    return "Crypto AI Scanner Web Service is running 24/7! 🚀"
+    return "Crypto AI Streamlit Web App is running 24/7! 🚀"
 
-@app.route("/run-scanner", methods=["GET", "POST"])
-def manual_run():
-    """提供外部 Webhook / Cron-job 觸發掃描的路由"""
-    try:
-        result = subprocess.run(["python", "okx_signal_scanner.py"], capture_output=True, text=True)
-        return jsonify({
-            "status": "success",
-            "message": "Scanner executed successfully via Webhook",
-            "output": result.stdout
-        }), 200
-    except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
+@app.route("/health", methods=["GET"])
+def health_check():
+    return jsonify({"status": "healthy"}), 200
 
 
 def load_image_safe(filename):
@@ -186,7 +175,7 @@ st.markdown("---")
 
 
 # ============================================================
-# 2. Supabase 連線與 Outbox 寫入
+# 2. Supabase 連線
 # ============================================================
 def get_database_url():
     url = os.getenv("SUPABASE_DB_URL", "").strip()
@@ -216,98 +205,6 @@ def get_db_engine():
         pool_recycle=1800,
         connect_args={"connect_timeout": 10},
     )
-
-
-def ensure_signal_outbox_table():
-    engine = get_db_engine()
-    with engine.begin() as conn:
-        conn.execute(text("""
-            CREATE TABLE IF NOT EXISTS strategy_signal_outbox (
-                id BIGSERIAL PRIMARY KEY,
-                symbol TEXT NOT NULL,
-                timeframe TEXT NOT NULL,
-                direction TEXT NOT NULL CHECK (direction IN ('LONG', 'SHORT')),
-                candle_open_time TIMESTAMPTZ NOT NULL,
-                signal_time_taipei TEXT NOT NULL,
-                entry_price DOUBLE PRECISION NOT NULL,
-                stop_loss DOUBLE PRECISION NOT NULL,
-                take_profit DOUBLE PRECISION NOT NULL,
-                atr DOUBLE PRECISION,
-                ai_probability DOUBLE PRECISION,
-                status TEXT NOT NULL DEFAULT 'pending'
-                    CHECK (status IN ('pending', 'processing', 'sent')),
-                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                sent_at TIMESTAMPTZ,
-                error_message TEXT,
-                UNIQUE(symbol, timeframe, candle_open_time, direction)
-            )
-        """))
-
-
-def publish_latest_signal_to_outbox(df_tf, symbol, timeframe):
-    if df_tf.empty:
-        return
-
-    latest = df_tf.iloc[-1]
-    is_long = bool(latest.get("Long_Signal", False))
-    is_short = bool(latest.get("Short_Signal", False))
-    if not (is_long or is_short) or (is_long and is_short):
-        return
-
-    entry = float(latest["close_price"])
-    atr = float(latest["ATR"]) if pd.notna(latest["ATR"]) else 0.0
-    if entry <= 0 or atr <= 0:
-        return
-
-    direction = "LONG" if is_long else "SHORT"
-    if direction == "LONG":
-        stop_loss = entry - atr * ATR_STOP_MULTIPLIER
-        take_profit = entry + (entry - stop_loss) * RISK_REWARD_RATIO
-    else:
-        stop_loss = entry + atr * ATR_STOP_MULTIPLIER
-        take_profit = entry - (stop_loss - entry) * RISK_REWARD_RATIO
-
-    candle_time = pd.Timestamp(latest["open_time"]).to_pydatetime()
-    if candle_time.tzinfo is None:
-        candle_time = candle_time.replace(tzinfo=TAIWAN_TZ)
-    else:
-        candle_time = candle_time.astimezone(TAIWAN_TZ)
-
-    signal_time_text = datetime.now(TAIWAN_TZ).strftime("%Y-%m-%d %H:%M:%S")
-    ai_prob = latest.get("AI_Prob")
-    ai_prob = float(ai_prob) if pd.notna(ai_prob) else None
-
-    try:
-        ensure_signal_outbox_table()
-        engine = get_db_engine()
-        with engine.begin() as conn:
-            conn.execute(text("""
-                INSERT INTO strategy_signal_outbox (
-                    symbol, timeframe, direction, candle_open_time,
-                    signal_time_taipei, entry_price, stop_loss, take_profit,
-                    atr, ai_probability, status
-                )
-                VALUES (
-                    :symbol, :timeframe, :direction, :candle_open_time,
-                    :signal_time_taipei, :entry_price, :stop_loss, :take_profit,
-                    :atr, :ai_probability, 'pending'
-                )
-                ON CONFLICT (symbol, timeframe, candle_open_time, direction)
-                DO NOTHING
-            """), {
-                "symbol": symbol,
-                "timeframe": timeframe,
-                "direction": direction,
-                "candle_open_time": candle_time,
-                "signal_time_taipei": signal_time_text,
-                "entry_price": entry,
-                "stop_loss": stop_loss,
-                "take_profit": take_profit,
-                "atr": atr,
-                "ai_probability": ai_prob,
-            })
-    except Exception:
-        pass
 
 
 def load_historical_data(table_name, symbol_name):
@@ -665,7 +562,7 @@ def render_homepage():
 
 
 # ============================================================
-# 6. K 線圖與進場點位
+# 6. K 線圖與進場點位（更緊湊、更高挑修長）
 # ============================================================
 def render_live_kline_chart(table, symbol, pair, tf):
     df = load_historical_data(table, symbol)
@@ -692,9 +589,6 @@ def render_live_kline_chart(table, symbol, pair, tf):
     )
     df_tf = add_trade_signals(df_tf, model)
 
-    publish_latest_signal_to_outbox(df_tf, symbol, tf)
-
-    # 💡 增加顯示根數（設為 75~90 根），讓 K 棒在左右排得更緊湊、密集
     display_count = 75 if symbol == "ETH" else 90
     view_df = df_tf.tail(display_count)
 
@@ -722,7 +616,6 @@ def render_live_kline_chart(table, symbol, pair, tf):
     )
 
     span = max(high - low, abs(high) * 0.001, 1e-8)
-    # 💡 收窄 Y 軸邊距（設為 0.25），讓 K 棒實體與影線在垂直方向拉得更高、更長
     y_range = [low - span * 0.25, high + span * 0.25]
 
     latest = df_tf.iloc[-1]
@@ -750,7 +643,6 @@ def render_live_kline_chart(table, symbol, pair, tf):
         row_heights=[0.75, 0.25],
     )
 
-    # 💡 保持纖細線條 (width=1.0)，在更緊湊的排版下呈現漂亮修長的 K 棒
     fig.add_trace(go.Candlestick(
         x=df_tf["open_time"],
         open=df_tf["open_price"],
@@ -923,7 +815,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
         spikedistance=1000,
         xaxis_rangeslider_visible=False,
         dragmode="pan",
-        height=880,  # 💡 稍微拉高畫布高度，讓緊湊排列的 K 棒縱向空間更充裕、看起來更高挑
+        height=880,
         bargap=0.0,
         showlegend=True,
         legend=dict(
