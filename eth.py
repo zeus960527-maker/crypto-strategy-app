@@ -35,6 +35,15 @@ def home():
 def health_check():
     return jsonify({"status": "healthy"}), 200
 
+# 💡 加上這個路由供 cron-job.org Ping，確保回傳 200 OK 且順便手動觸發一次即時同步
+@app.route("/run-scanner", methods=["GET", "POST"])
+def run_scanner():
+    try:
+        run_sync_task(fetch_single_timeframe_realtime)
+        return jsonify({"status": "success", "message": "ETH Scanned successfully via Webhook!"}), 200
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
 SUPABASE_DB_URL = "postgresql://postgres.ygzeqvcyqtvhvjrxhzdv:%4010233960527Ken@aws-0-ap-northeast-1.pooler.supabase.com:6543/postgres"
 
 def get_db_connection():
@@ -192,11 +201,11 @@ def background_worker():
             start_time = time.time()
             run_sync_task(fetch_single_timeframe_realtime)
             elapsed = time.time() - start_time
-            sleep_time = max(1.0, 3.0 - elapsed-1)
+            sleep_time = max(1.0, 3.0 - elapsed)
             time.sleep(sleep_time)
         except Exception as e:
             print(f"背景迴圈錯誤: {e}")
-            time.sleep(0.5)
+            time.sleep(5)
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
