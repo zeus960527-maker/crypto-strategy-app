@@ -469,11 +469,9 @@ def add_trade_signals(df, model):
 
 
 # ============================================================
-# 5. 首頁說明區
+# 5. 首頁說明區 (已完全拿掉提示框)
 # ============================================================
 def render_homepage():
-    st.info("💡 請在上方查詢欄輸入 BTC 或 ETH，並按下「送出查詢」開始使用。")
-
     st.markdown("""
     <div class="intro-card">
         <h2 style="color:#f0b90b;">🚀 關於加密貨幣 AI 策略系統</h2>
@@ -488,7 +486,7 @@ def render_homepage():
 
 
 # ============================================================
-# 6. K 線圖（主副圖之間具備延伸至價格軸的粗灰分隔線）
+# 6. K 線圖（主副圖分隔線延伸至價格軸）
 # ============================================================
 def render_live_kline_chart(table, symbol, pair, tf):
     df = load_historical_data(table, symbol)
@@ -755,12 +753,10 @@ def render_live_kline_chart(table, symbol, pair, tf):
 
     fig.update_layout(xaxis=dict(range=[start_time, end_time], autorange=False))
 
-    # 💡 關鍵設定：透過設定副圖 X 軸 (`xaxis2`) 的 linecolor 與 linewidth，
-    # 在主副圖之間完美畫出延伸至右側價格軸（Y軸）的粗灰分隔線
     fig.update_xaxes(
         showline=True,
         linewidth=2,
-        linecolor="#434c5e",  # 粗灰色分隔線
+        linecolor="#434c5e",
         mirror=True,
         row=2,
         col=1
