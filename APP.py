@@ -605,7 +605,8 @@ def render_live_kline_chart(table, symbol, pair, tf):
 
     publish_latest_signal_to_outbox(df_tf, symbol, tf)
 
-    display_count = 90 if symbol == "ETH" else 120
+    # 調整顯示根數（調少顯示數量可讓單根 K 棒在圖表中自動變寬、更飽滿）
+    display_count = 55 if symbol == "ETH" else 70
     view_df = df_tf.tail(display_count)
 
     if view_df.empty:
@@ -616,8 +617,8 @@ def render_live_kline_chart(table, symbol, pair, tf):
         view_df["open_time"].diff().median()
         if len(view_df) > 1 else pd.Timedelta(minutes=1)
     )
-    start_time = view_df["open_time"].iloc[0] - interval * 5
-    end_time = view_df["open_time"].iloc[-1] + interval * 10
+    start_time = view_df["open_time"].iloc[0] - interval * 4
+    end_time = view_df["open_time"].iloc[-1] + interval * 6
 
     supports = view_df["Trend_Support"].dropna()
     resistances = view_df["Trend_Resistance"].dropna()
@@ -667,7 +668,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
         low=df_tf["low_price"],
         close=df_tf["close_price"],
         name=symbol,
-        line=dict(width=1),
+        line=dict(width=1.5),
         increasing_line_color="#0ECB81",
         increasing_fillcolor="#0ECB81",
         decreasing_line_color="#F6465D",
@@ -677,9 +678,9 @@ def render_live_kline_chart(table, symbol, pair, tf):
 
     # EMA 均線
     for ema, color, width in [
-        ("EMA_21", "#2962FF", 1.2),
-        ("EMA_50", "#FFFFFF", 1.2),
-        ("EMA_100", "#FF5252", 1.4),
+        ("EMA_21", "#2962FF", 1.5),
+        ("EMA_50", "#FFFFFF", 1.5),
+        ("EMA_100", "#FF5252", 1.8),
     ]:
         fig.add_trace(go.Scatter(
             x=df_tf["open_time"],
@@ -710,7 +711,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
     ), row=1, col=1)
 
     # ========================================================
-    # 三角形距離拉大、縮小、使用「灰色 (#848e9c)」虛線連接
+    # 三角形進場點位（灰色虛線連接、適當拉遠距離）
     # ========================================================
     long_df = view_df[view_df["Long_Signal"]].copy()
     if not long_df.empty:
@@ -721,7 +722,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
                 x=[t, t],
                 y=[low_p, ly],
                 mode="lines",
-                line=dict(color="#848e9c", width=1, dash="dot"),  # 虛線改為灰色
+                line=dict(color="#848e9c", width=1, dash="dot"),
                 showlegend=False,
                 hoverinfo="none"
             ), row=1, col=1)
@@ -756,7 +757,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
                 x=[t, t],
                 y=[high_p, sy],
                 mode="lines",
-                line=dict(color="#848e9c", width=1, dash="dot"),  # 虛線改為灰色
+                line=dict(color="#848e9c", width=1, dash="dot"),
                 showlegend=False,
                 hoverinfo="none"
             ), row=1, col=1)
