@@ -321,23 +321,23 @@ def calculate_indicators(df, tf):
 
 
 # ============================================================
-# 4. 精確策略訊號判定
+# 4. 嚴謹策略訊號判定
 # ============================================================
 def build_candidate_signals(df, tf):
     df = df.copy()
 
-    # 多頭突破：收盤價突破壓力通道且收紅 K，且成交量放大
     df["Base_Long"] = (
         (df["close_price"] > df["Trend_Resistance"])
         & (df["close_price"] > df["open_price"])
+        & (df["Body_Ratio"] > 0.3)
         & df["RSI"].between(45, 80)
         & (df["volume"] > df["Vol_SMA20"] * 1.05)
     )
 
-    # 空頭跌破：收盤價跌破支撐通道且收黑 K，且成交量放大
     df["Base_Short"] = (
         (df["close_price"] < df["Trend_Support"])
         & (df["close_price"] < df["open_price"])
+        & (df["Body_Ratio"] > 0.3)
         & df["RSI"].between(20, 55)
         & (df["volume"] > df["Vol_SMA20"] * 1.05)
     )
@@ -488,7 +488,7 @@ def render_homepage():
 
 
 # ============================================================
-# 6. K 線圖（維持完整歷史 K 棒資料，不調整大小）
+# 6. K 線圖（固定每根 K 棒大小，歷史資料往左隱藏可滑動）
 # ============================================================
 def render_live_kline_chart(table, symbol, pair, tf):
     df = load_historical_data(table, symbol)
@@ -515,12 +515,20 @@ def render_live_kline_chart(table, symbol, pair, tf):
     )
     df_tf = add_trade_signals(df_tf, model)
 
-    # 💡 完整使用載入的全部 K 棒資料，不進行任何裁切縮放
     view_df = df_tf.copy()
 
     if view_df.empty:
         st.warning("目前沒有足夠資料可顯示。")
         return
+
+    # 💡 關鍵設定：預設只顯示最近的 85 根 K 棒在畫面中，其餘歷史資料自動往左隱藏，可隨時左右滑動檢視
+    display_len = 85
+    if len(view_df) > display_len:
+        start_time = view_df["open_time"].iloc[-display_len]
+        end_time = view_df["open_time"].iloc[-1] + pd.Timedelta(minutes=5)
+    else:
+        start_time = view_df["open_time"].iloc[0]
+        end_time = view_df["open_time"].iloc[-1]
 
     supports = view_df["Trend_Support"].dropna()
     resistances = view_df["Trend_Resistance"].dropna()
@@ -609,10 +617,10 @@ def render_live_kline_chart(table, symbol, pair, tf):
         hoverinfo="none",
     ), row=1, col=1)
 
-    # 🟢 LONG 多單標記格式（帶垂直虛線與乾淨的下方三角形）
+    # 🟢 LONG 多單標記格式
     long_df = view_df[view_df["Long_Signal"]].copy()
     if not long_df.empty:
-        long_y = long_df["low_price"] - span * 0.20
+        long_y = long_df["low_price"] - span * 0.25
 
         for t, low_p, ly in zip(long_df["open_time"], long_df["low_price"], long_y):
             fig.add_trace(go.Scatter(
@@ -641,10 +649,10 @@ def render_live_kline_chart(table, symbol, pair, tf):
             hoverinfo="none",
         ), row=1, col=1)
 
-    # 🔴 SHORT 空單標記格式（帶垂直虛線與乾淨的上方三角形）
+    # 🔴 SHORT 空單標記格式
     short_df = view_df[view_df["Short_Signal"]].copy()
     if not short_df.empty:
-        short_y = short_df["high_price"] + span * 0.20
+        short_y = short_df["high_price"] + span * 0.25
 
         for t, high_p, sy in zip(short_df["open_time"], short_df["high_price"], short_y):
             fig.add_trace(go.Scatter(
@@ -751,8 +759,8 @@ def render_live_kline_chart(table, symbol, pair, tf):
         ),
     )
 
-    # 💡 允許完整 X 軸自動調整與自由左右滑動
-    fig.update_layout(xaxis=dict(autorange=True))
+    # 💡 鎖定初始 X 軸預設範圍在最近的 85 根 K 棒，其餘歷史資料往左隱藏，支援手動滑動檢視
+    fig.update_layout(xaxis=dict(range=[start_time, end_time], autorange=False))
 
     fig.update_yaxes(
         side="right",
