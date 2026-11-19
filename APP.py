@@ -632,7 +632,6 @@ def render_live_kline_chart(table, symbol, pair, tf):
     )
 
     span = max(high - low, abs(high) * 0.001, 1e-8)
-    # 預留更大的上下範圍，容納更遠距離的三角形與文字標籤
     y_range = [low - span * 0.50, high + span * 0.50]
 
     latest = df_tf.iloc[-1]
@@ -711,11 +710,10 @@ def render_live_kline_chart(table, symbol, pair, tf):
     ), row=1, col=1)
 
     # ========================================================
-    # 三角形距離再次加倍拉遠（模擬 +1000cm）、縮小、虛線連接
+    # 三角形距離拉大、縮小、使用「灰色 (#848e9c)」虛線連接
     # ========================================================
     long_df = view_df[view_df["Long_Signal"]].copy()
     if not long_df.empty:
-        # 將向下位移係數從 0.14 提升至 0.35（更遠的距離）
         long_y = long_df["low_price"] - span * 0.35
 
         for t, low_p, ly in zip(long_df["open_time"], long_df["low_price"], long_y):
@@ -723,7 +721,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
                 x=[t, t],
                 y=[low_p, ly],
                 mode="lines",
-                line=dict(color="#00E676", width=1, dash="dot"),
+                line=dict(color="#848e9c", width=1, dash="dot"),  # 虛線改為灰色
                 showlegend=False,
                 hoverinfo="none"
             ), row=1, col=1)
@@ -751,7 +749,6 @@ def render_live_kline_chart(table, symbol, pair, tf):
 
     short_df = view_df[view_df["Short_Signal"]].copy()
     if not short_df.empty:
-        # 將向上位移係數從 0.14 提升至 0.35（更遠的距離）
         short_y = short_df["high_price"] + span * 0.35
 
         for t, high_p, sy in zip(short_df["open_time"], short_df["high_price"], short_y):
@@ -759,7 +756,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
                 x=[t, t],
                 y=[high_p, sy],
                 mode="lines",
-                line=dict(color="#FF1744", width=1, dash="dot"),
+                line=dict(color="#848e9c", width=1, dash="dot"),  # 虛線改為灰色
                 showlegend=False,
                 hoverinfo="none"
             ), row=1, col=1)
@@ -866,9 +863,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
 
     fig.update_layout(xaxis=dict(range=[start_time, end_time], autorange=False))
 
-    # ========================================================
     # Y 軸座標軸設定在「右側」 (side="right")
-    # ========================================================
     fig.update_yaxes(
         side="right",
         gridcolor="#1e2329",
