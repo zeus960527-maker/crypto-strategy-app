@@ -16,6 +16,7 @@ def background_scanner_loop():
         current_time = datetime.now(TAIWAN_TZ).strftime('%Y-%m-%d %H:%M:%S')
         print(f"[{current_time}] 開始執行自動排程掃描...")
         try:
+            # 執行核心掃描與發送腳本
             result = subprocess.run(["python", "okx_signal_scanner.py"], capture_output=True, text=True)
             if result.returncode == 0:
                 print(f"[{current_time}] ✅ 自動掃描執行成功:\n{result.stdout.strip()}")
@@ -24,10 +25,10 @@ def background_scanner_loop():
         except Exception as e:
             print(f"[{current_time}] ❌ 背景執行例外錯誤: {e}")
         
-        # 每 60 秒執行一次
+        # 每 60 秒執行一次迴圈
         time.sleep(60)
 
-# 當 Flask 啟動時，自動在背景開一個執行緒跑迴圈
+# 當 Flask 啟動時，自動在背景開一個獨立執行緒跑迴圈
 def start_background_task():
     thread = threading.Thread(target=background_scanner_loop, daemon=True)
     thread.start()
@@ -41,12 +42,12 @@ def home():
 
 @app.route("/run-scanner", methods=["GET", "POST"])
 def manual_run():
-    """保留手動觸發的路由，供外部備用"""
+    """提供手動觸發與防休眠 Ping 的路由"""
     try:
         result = subprocess.run(["python", "okx_signal_scanner.py"], capture_output=True, text=True)
         return jsonify({
             "status": "success",
-            "message": "Manual scanner executed",
+            "message": "Scanner executed successfully",
             "output": result.stdout
         }), 200
     except Exception as e:
