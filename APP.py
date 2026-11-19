@@ -175,7 +175,7 @@ st.markdown("---")
 
 
 # ============================================================
-# 2. Supabase 連線
+# 2. Supabase 連線（擴充載入歷史 K 線筆數以提升 AI 訓練量）
 # ============================================================
 def get_database_url():
     url = os.getenv("SUPABASE_DB_URL", "").strip()
@@ -215,12 +215,13 @@ def load_historical_data(table_name, symbol_name):
 
     try:
         engine = get_db_engine()
+        # 將 LIMIT 從 300 擴充至 1000 筆，提供機器學習更充足的訓練樣本
         sql = text(f"""
             SELECT timeframe, open_time, open_price, high_price,
                    low_price, close_price, volume
             FROM {table_name}
             ORDER BY open_time DESC
-            LIMIT 300
+            LIMIT 1000
         """)
         with engine.connect() as conn:
             df = pd.read_sql(sql, con=conn)
@@ -261,7 +262,7 @@ def load_historical_data(table_name, symbol_name):
 
 
 # ============================================================
-# 3. 技術指標
+# 3. 升級版技術指標與特徵工程 (加入 MACD 與通道相對位置)
 # ============================================================
 def calculate_trendline_channel(df, window=30, num_dev=1.8):
     df = df.copy()
@@ -299,12 +300,25 @@ def calculate_indicators(df, tf):
     dev = 1.5 if tf in ["5m", "15m"] else 2.0
     df = calculate_trendline_channel(df, win, dev)
 
+    # 計算通道相對位置 (Channel Position: 0=支撐線, 1=壓力線)
+    channel_range = df["Trend_Resistance"] - df["Trend_Support"]
+    df["Channel_Pos"] = (df["close_price"] - df["Trend_Support"]) / channel_range.replace(0, np.nan)
+
+    # RSI (14)
     delta = df["close_price"].diff()
     gain = delta.where(delta > 0, 0).rolling(14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
     rs = gain / loss.replace(0, np.nan)
     df["RSI"] = (100 - 100 / (1 + rs)).fillna(50)
 
+    # MACD 動能指標
+    exp1 = df["close_price"].ewm(span=12, adjust=False).mean()
+    exp2 = df["close_price"].ewm(span=26, adjust=False).mean()
+    df["MACD"] = exp1 - exp2
+    df["MACD_Signal"] = df["MACD"].ewm(span=9, adjust=False).mean()
+    df["MACD_Hist"] = df["MACD"] - df["MACD_Signal"]
+
+    # ATR 與成交量
     high_low = df["high_price"] - df["low_price"]
     high_close = (df["high_price"] - df["close_price"].shift()).abs()
     low_close = (df["low_price"] - df["close_price"].shift()).abs()
@@ -321,7 +335,7 @@ def calculate_indicators(df, tf):
 
 
 # ============================================================
-# 4. LightGBM 模型與動態 TP/SL 模擬判定
+# 4. LightGBM 模型優化與高準確度過濾判定
 # ============================================================
 def build_candidate_signals(df, tf):
     df = df.copy()
@@ -329,26 +343,30 @@ def build_candidate_signals(df, tf):
     if tf in ["5m", "15m"]:
         df["Base_Long"] = (
             (df["close_price"] > df["Trend_Resistance"])
-            & df["RSI"].between(42, 85)
-            & (df["volume"] > df["Vol_SMA20"] * 1.05)
-            & (df["Body_Ratio"] > 0.3)
-        )
-        df["Base_Short"] = (
-            (df["close_price"] < df["Trend_Support"])
-            & df["RSI"].between(15, 58)
-            & (df["volume"] > df["Vol_SMA20"] * 1.05)
-            & (df["Body_Ratio"] > 0.3)
-        )
-    else:
-        df["Base_Long"] = (
-            (df["close_price"] > df["Trend_Resistance"])
             & df["RSI"].between(45, 80)
-            & (df["volume"] > df["Vol_SMA20"])
+            & (df["volume"] > df["Vol_SMA20"] * 1.1)
+            & (df["Body_Ratio"] > 0.35)
+            & (df["MACD_Hist"] > 0)
         )
         df["Base_Short"] = (
             (df["close_price"] < df["Trend_Support"])
             & df["RSI"].between(20, 55)
-            & (df["volume"] > df["Vol_SMA20"])
+            & (df["volume"] > df["Vol_SMA20"] * 1.1)
+            & (df["Body_Ratio"] > 0.35)
+            & (df["MACD_Hist"] < 0)
+        )
+    else:
+        df["Base_Long"] = (
+            (df["close_price"] > df["Trend_Resistance"])
+            & df["RSI"].between(48, 78)
+            & (df["volume"] > df["Vol_SMA20"] * 1.05)
+            & (df["MACD_Hist"] > 0)
+        )
+        df["Base_Short"] = (
+            (df["close_price"] < df["Trend_Support"])
+            & df["RSI"].between(22, 52)
+            & (df["volume"] > df["Vol_SMA20"] * 1.05)
+            & (df["MACD_Hist"] < 0)
         )
 
     df["vol_ratio"] = df["volume"] / df["Vol_SMA20"].replace(0, np.nan)
@@ -456,7 +474,8 @@ def build_candidate_signals(df, tf):
 
 def train_or_get_ai_model(df, key):
     feature_cols = [
-        "RSI", "vol_ratio", "body_ratio", "atr_ratio", "ema_diff", "side"
+        "RSI", "vol_ratio", "body_ratio", "atr_ratio", "ema_diff", 
+        "MACD_Hist", "Channel_Pos", "side"
     ]
     candidates = df[df["Base_Long"] | df["Base_Short"]].copy()
     train_df = candidates[candidates["Trade_Result"].isin(["成功", "未達標"])].copy()
@@ -470,10 +489,12 @@ def train_or_get_ai_model(df, key):
 
     try:
         model = lgb.LGBMClassifier(
-            n_estimators=60,
-            learning_rate=0.04,
-            max_depth=3,
-            num_leaves=7,
+            n_estimators=100,
+            learning_rate=0.03,
+            max_depth=4,
+            num_leaves=15,
+            subsample=0.8,
+            colsample_bytree=0.8,
             class_weight="balanced",
             random_state=42,
             verbose=-1,
@@ -489,10 +510,12 @@ def add_trade_signals(df, model):
     df["AI_Prob"] = np.nan
     candidates = df["Base_Long"] | df["Base_Short"]
 
+    feature_cols = [
+        "RSI", "vol_ratio", "body_ratio", "atr_ratio", "ema_diff", 
+        "MACD_Hist", "Channel_Pos", "side"
+    ]
+
     if model is not None and candidates.any():
-        feature_cols = [
-            "RSI", "vol_ratio", "body_ratio", "atr_ratio", "ema_diff", "side"
-        ]
         usable = df.loc[candidates, feature_cols].replace([np.inf, -np.inf], np.nan)
         valid = usable.notna().all(axis=1)
         if valid.any():
@@ -508,9 +531,10 @@ def add_trade_signals(df, model):
         df["Short_Signal"] = df["Base_Short"]
         df["AI_Mode"] = "策略回退（歷史樣本不足）"
     else:
-        df["Long_Signal"] = df["Base_Long"] & (df["AI_Prob"] >= 0.58)
-        df["Short_Signal"] = df["Base_Short"] & (df["AI_Prob"] >= 0.58)
-        df["AI_Mode"] = "歷史結果訓練模型"
+        confidence_threshold = 0.65
+        df["Long_Signal"] = df["Base_Long"] & (df["AI_Prob"] >= confidence_threshold)
+        df["Short_Signal"] = df["Base_Short"] & (df["AI_Prob"] >= confidence_threshold)
+        df["AI_Mode"] = "高精度機器學習模型 (LGBM)"
 
     return df
 
@@ -527,8 +551,8 @@ def render_homepage():
         <p>
         本系統是一套加密貨幣技術分析與 AI 訊號輔助工具，
         透過 Supabase 歷史 K 線資料，結合趨勢通道、EMA 均線、
-        RSI、ATR、成交量及 LightGBM 機器學習模型，
-        協助使用者觀察 BTC 與 ETH 市場走勢，尋找可能的多單與空單機會。
+        RSI、ATR、MACD 動能、成交量及高精度 LightGBM 機器學習模型，
+        協助使用者觀察 BTC 與 ETH 市場走勢，嚴格過濾並尋找高品質的多單與空單機會。
         </p>
     </div>
     """, unsafe_allow_html=True)
@@ -540,7 +564,7 @@ def render_homepage():
         st.markdown("""
         <div class="feature-card" style="border:1px solid #0ECB81;">
         <h3 style="color:#0ECB81;">📈 多空訊號</h3>
-        <p>分析趨勢通道突破情況，判斷可能的 LONG 多單與 SHORT 空單機會。</p>
+        <p>分析趨勢通道突破與 MACD 動能，嚴格判斷 LONG 與 SHORT 機會。</p>
         </div>
         """, unsafe_allow_html=True)
 
@@ -548,7 +572,7 @@ def render_homepage():
         st.markdown("""
         <div class="feature-card" style="border:1px solid #2962FF;">
         <h3 style="color:#66a3ff;">🤖 AI 模型分析</h3>
-        <p>使用 LightGBM 分析技術指標，提供 AI 模型信心分數，輔助觀察市場。</p>
+        <p>使用多維特徵與 LightGBM 分類器，提供高信賴度分數過濾雜訊。</p>
         </div>
         """, unsafe_allow_html=True)
 
@@ -556,7 +580,7 @@ def render_homepage():
         st.markdown("""
         <div class="feature-card" style="border:1px solid #f0b90b;">
         <h3 style="color:#f0b90b;">📊 技術分析</h3>
-        <p>整合 EMA 21、50、100、RSI、ATR、成交量與趨勢通道，觀察市場變化。</p>
+        <p>整合 EMA、RSI、ATR、MACD、成交量與雙軌趨勢通道。</p>
         </div>
         """, unsafe_allow_html=True)
 
@@ -786,7 +810,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
     annotation = (
         f"<b>{pair} · {tf} ({mode})</b><br>"
         f"<b>策略與指標：</b>雙軌通道 (Window: {win}, Dev: {dev}) | "
-        "EMA (21, 50, 100) | RSI (14) | ATR (14)<br>"
+        "EMA (21, 50, 100) | RSI (14) | MACD | ATR<br>"
         f"<b>RSI：</b>{latest_rsi:.1f} | "
         f"<b>AI模型分數：</b><span style='color:#f0b90b'>{ai_score:.1f}%</span> | "
         f"收：<span style='color:{status_color}'>{latest_close:,.2f} "
@@ -891,7 +915,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
         st.caption(
             f"歷史訓練樣本：{training_count} 筆｜"
             f"成功標籤：{winning_count} 筆｜"
-            f"模型狀態：{'已使用歷史結果訓練' if model is not None else '樣本不足，使用原策略'}"
+            f"模型狀態：{'高精度 LGBM 模型' if model is not None else '樣本不足，使用原策略'}"
         )
 
         st.markdown(f"""
@@ -916,7 +940,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
 
         else:
             st.warning("⏳ WAIT 目前沒有進場訊號")
-            st.caption("等待價格突破趨勢通道，並符合 RSI、成交量及 AI 條件。")
+            st.caption("等待價格突破趨勢通道，並符合 RSI、MACD 動能與 AI 高信心條件。")
 
         st.markdown("---")
         st.markdown("#### 📌 最近進場訊號")
@@ -926,7 +950,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
         ].tail(5).copy()
 
         if recent_signals.empty:
-            st.caption("目前查詢資料中沒有符合條件的進場訊號。")
+            st.caption("目前查詢資料中沒有符合條件的高精度進場訊號。")
         else:
             for _, signal in recent_signals.iloc[::-1].iterrows():
                 signal_time = signal["open_time"].strftime("%m/%d %H:%M")
