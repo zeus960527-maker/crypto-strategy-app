@@ -455,8 +455,10 @@ def build_candidate_signals(df, tf):
     )
     df["side"] = np.where(df["Base_Long"], 1, 0)
 
-    # 模擬止盈止損追蹤判定有效性
+    # 模擬止盈止損追蹤判定有效性並計算 SL / TP
     trade_results = []
+    stop_losses = []
+    take_profits = []
     directional_returns = []
 
     close_arr = df["close_price"].values
@@ -472,6 +474,8 @@ def build_candidate_signals(df, tf):
         is_s = base_short_arr[i]
         if not (is_l or is_s):
             trade_results.append("非訊號")
+            stop_losses.append(np.nan)
+            take_profits.append(np.nan)
             directional_returns.append(np.nan)
             continue
 
@@ -479,6 +483,8 @@ def build_candidate_signals(df, tf):
         atr = atr_arr[i]
         if pd.isna(atr) or atr <= 0 or pd.isna(entry) or entry <= 0:
             trade_results.append("觀察中")
+            stop_losses.append(np.nan)
+            take_profits.append(np.nan)
             directional_returns.append(np.nan)
             continue
 
@@ -490,6 +496,9 @@ def build_candidate_signals(df, tf):
             sl = entry + atr * ATR_STOP_MULTIPLIER
             tp = entry - (sl - entry) * RISK_REWARD_RATIO
             direction = 'SHORT'
+
+        stop_losses.append(sl)
+        take_profits.append(tp)
 
         outcome = "觀察中"
         ret = 0.0
@@ -546,6 +555,8 @@ def build_candidate_signals(df, tf):
         directional_returns.append(ret)
 
     df["Trade_Result"] = trade_results
+    df["Stop_Loss"] = stop_losses
+    df["Take_Profit"] = take_profits
     df["directional_return_3"] = directional_returns
     return df
 
@@ -555,7 +566,6 @@ def train_or_get_ai_model(df, key):
         "RSI", "vol_ratio", "body_ratio", "atr_ratio", "ema_diff", "side"
     ]
     candidates = df[df["Base_Long"] | df["Base_Short"]].copy()
-    # 僅使用已跑完 TP/SL 結算（成功或未達標）的歷史樣本來訓練模型
     train_df = candidates[candidates["Trade_Result"].isin(["成功", "未達標"])].copy()
 
     if len(train_df) < 30 or train_df["Trade_Result"].nunique() < 2:
@@ -1063,12 +1073,14 @@ def render_live_kline_chart(table, symbol, pair, tf):
             history["方向"] = np.where(history["Base_Long"], "LONG", "SHORT")
             history["時間"] = history["open_time"].dt.strftime("%m/%d %H:%M")
             history["進場參考價"] = history["close_price"].map(lambda x: f"{x:,.2f}")
+            history["止損價 (SL)"] = history["Stop_Loss"].map(lambda x: f"{x:,.2f}" if pd.notna(x) else "—")
+            history["止盈價 (TP)"] = history["Take_Profit"].map(lambda x: f"{x:,.2f}" if pd.notna(x) else "—")
             history["AI 分數"] = history["AI_Prob"].map(
                 lambda x: f"{x:.1%}" if pd.notna(x) else "—"
             )
             st.dataframe(
-                history[["時間", "方向", "進場參考價", "Trade_Result", "AI 分數"]]
-                .rename(columns={"Trade_Result": "TP/SL 結算結果"}),
+                history[["時間", "方向", "進場參考價", "止損價 (SL)", "止盈價 (TP)", "Trade_Result", "AI 分數"]]
+                .rename(columns={"Trade_Result": "結算結果"}),
                 use_container_width=True,
                 hide_index=True,
             )
