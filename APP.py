@@ -694,7 +694,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
 
     publish_latest_signal_to_outbox(df_tf, symbol, tf)
 
-    # 調整顯示的 K 線根數（設為較少根數，每根 K 棒在畫面上的視覺長度/寬度就會變大變長）
+    # 調整顯示的 K 線根數（設定適當根數讓每根 K 棒在畫面上的視覺長度/寬度適中且飽滿）
     display_count = 35 if symbol == "ETH" else 45
     view_df = df_tf.tail(display_count)
 
@@ -749,7 +749,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
         row_heights=[0.75, 0.25],
     )
 
-    # 💡 調整 K 棒寬度：加入 width=0.7 讓每根 K 棒明顯變粗、變長、充滿視覺張力
+    # K 棒設定（已移除不支援的 width 參數，避免引發 ValueError）
     fig.add_trace(go.Candlestick(
         x=df_tf["open_time"],
         open=df_tf["open_price"],
@@ -757,7 +757,6 @@ def render_live_kline_chart(table, symbol, pair, tf):
         low=df_tf["low_price"],
         close=df_tf["close_price"],
         name=symbol,
-        width=0.7,  # 👈 數值越大 K 棒越寬
         line=dict(width=2),
         increasing_line_color="#0ECB81",
         increasing_fillcolor="#0ECB81",
