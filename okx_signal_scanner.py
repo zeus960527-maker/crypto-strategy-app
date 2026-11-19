@@ -294,8 +294,3 @@ def run_scanner_job():
 
     process_outbox_and_notify(engine, webhook_url)
     print(f"✨ [臺灣時間 {datetime.now(TAIWAN_TZ).strftime('%Y-%m-%d %H:%M:%S')}] 本次掃描與派送任務執行完畢。")
-
-
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
