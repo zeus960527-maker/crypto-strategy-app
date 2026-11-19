@@ -180,9 +180,7 @@ def background_worker():
             print(f"背景迴圈錯誤: {e}")
             time.sleep(5)
 
-if __name__ == "__main__":
+# 💡 確保 Gunicorn 載入時一定能觸發背景執行緒
+if not app.debug or os.environ.get("WERKZEUG_RUN_MAIN") == "true":
     t = threading.Thread(target=background_worker, daemon=True)
     t.start()
-    
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
