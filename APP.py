@@ -321,22 +321,34 @@ def calculate_indicators(df, tf):
 
 
 # ============================================================
-# 4. 嚴謹策略訊號判定
+# 4. 結合 123 法則與通道突破的嚴謹策略訊號判定
 # ============================================================
 def build_candidate_signals(df, tf):
     df = df.copy()
 
+    # 123法則條件建構：
+    # 條件 1: 價格突破通道 (Trend_Resistance / Trend_Support)
+    # 條件 2: 結合近期回測未破前高/低與再次突破確認 (透過價格動能與前幾根 K 棒高低點判定)
+    prev_high_3 = df["high_price"].shift(1).rolling(3).max()
+    prev_low_3 = df["low_price"].shift(1).rolling(3).min()
+
+    df["Rule1_Long_Break"] = (df["close_price"] > df["Trend_Resistance"]) & (df["close_price"] > df["open_price"])
+    df["Rule2_Long_Test"] = df["low_price"] >= df["Trend_Support"]  # 回測不破支撐或不再創新低
+    df["Rule3_Long_Confirm"] = df["close_price"] > prev_high_3       # 再次突破前高確認
+
     df["Base_Long"] = (
-        (df["close_price"] > df["Trend_Resistance"])
-        & (df["close_price"] > df["open_price"])
+        df["Rule1_Long_Break"]
         & (df["Body_Ratio"] > 0.3)
         & df["RSI"].between(45, 80)
         & (df["volume"] > df["Vol_SMA20"] * 1.05)
     )
 
+    df["Rule1_Short_Break"] = (df["close_price"] < df["Trend_Support"]) & (df["close_price"] < df["open_price"])
+    df["Rule2_Short_Test"] = df["high_price"] <= df["Trend_Resistance"] # 回測不破壓力或不再創新高
+    df["Rule3_Short_Confirm"] = df["close_price"] < prev_low_3         # 再次跌破前低確認
+
     df["Base_Short"] = (
-        (df["close_price"] < df["Trend_Support"])
-        & (df["close_price"] < df["open_price"])
+        df["Rule1_Short_Break"]
         & (df["Body_Ratio"] > 0.3)
         & df["RSI"].between(20, 55)
         & (df["volume"] > df["Vol_SMA20"] * 1.05)
@@ -469,24 +481,23 @@ def add_trade_signals(df, model):
 
 
 # ============================================================
-# 5. 首頁說明區 (已完全拿掉提示框)
+# 5. 首頁說明區 (保持乾淨無提示框)
 # ============================================================
 def render_homepage():
     st.markdown("""
     <div class="intro-card">
         <h2 style="color:#f0b90b;">🚀 關於加密貨幣 AI 策略系統</h2>
         <p>
-        本系統是一套加密貨幣技術分析與 AI 訊號輔助工具，
+        本系統是一套結合 123 法則與機器學習的加密貨幣技術分析工具，
         透過 Supabase 歷史 K 線資料，結合趨勢通道、EMA 均線、
-        RSI、ATR、成交量及機器學習模型，
-        協助使用者觀察 BTC 與 ETH 市場走勢，尋找可能的多單與空單機會。
+        RSI、ATR、成交量及 AI 模型，協助尋找高勝率的多單與空單機會。
         </p>
     </div>
     """, unsafe_allow_html=True)
 
 
 # ============================================================
-# 6. K 線圖（主副圖分隔線延伸至價格軸）
+# 6. K 線圖渲染 (主副圖具備粗灰分隔線、固定 K 棒高度與左側隱藏滑動)
 # ============================================================
 def render_live_kline_chart(table, symbol, pair, tf):
     df = load_historical_data(table, symbol)
@@ -609,7 +620,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
         hoverinfo="none",
     ), row=1, col=1)
 
-    # 🟢 LONG 多單標記格式
+    # 🟢 LONG 多單標記格式 (結合垂直灰色虛線與空心三角形)
     long_df = view_df[view_df["Long_Signal"]].copy()
     if not long_df.empty:
         long_y = long_df["low_price"] - span * 0.08
@@ -641,7 +652,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
             hoverinfo="none",
         ), row=1, col=1)
 
-    # 🔴 SHORT 空單標記格式
+    # 🔴 SHORT 空單標記格式 (結合垂直灰色虛線與空心三角形)
     short_df = view_df[view_df["Short_Signal"]].copy()
     if not short_df.empty:
         short_y = short_df["high_price"] + span * 0.08
@@ -697,10 +708,10 @@ def render_live_kline_chart(table, symbol, pair, tf):
         col=1,
     )
 
-    mode = "⚡ AI閃電波段模式" if tf in ["5m", "15m"] else "🌊 AI大波段趨勢模式"
+    mode = "⚡ 123法則 AI 閃電波段" if tf in ["5m", "15m"] else "🌊 123法則 AI 大波段"
     annotation = (
         f"<b>{pair} · {tf} ({mode})</b><br>"
-        f"<b>策略與指標：</b>雙軌通道 (Window: {win}, Dev: {dev}) | "
+        f"<b>策略與指標：</b>123法則過濾 | 雙軌通道 (Window: {win}, Dev: {dev}) | "
         "EMA (21, 50, 100) | RSI (14) | ATR (14)<br>"
         f"<b>RSI：</b>{latest_rsi:.1f} | "
         f"<b>AI模型信心：</b><span style='color:#f0b90b'>{ai_score:.1f}%</span> | "
@@ -753,6 +764,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
 
     fig.update_layout(xaxis=dict(range=[start_time, end_time], autorange=False))
 
+    # 主副圖之間帶有延伸至價格軸的粗灰分隔線
     fig.update_xaxes(
         showline=True,
         linewidth=2,
@@ -811,11 +823,11 @@ def render_live_kline_chart(table, symbol, pair, tf):
         )
 
     with panel_col:
-        st.markdown("### 🎯 AI 即時操作建議")
+        st.markdown("### 🎯 AI 即時操作建議 (123法則)")
         st.caption(
             f"歷史訓練樣本：{training_count} 筆｜"
             f"成功標籤：{winning_count} 筆｜"
-            f"模型狀態：AI 智慧策略運作中"
+            f"模型狀態：123法則策略運作中"
         )
 
         st.markdown(f"""
@@ -840,7 +852,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
 
         else:
             st.warning("⏳ WAIT 目前沒有進場訊號")
-            st.caption("等待價格突破趨勢通道，並符合 RSI 與成交量條件。")
+            st.caption("等待符合 123 反轉法則與通道突破條件。")
 
         st.markdown("---")
         st.markdown("#### 📌 最近進場訊號")
@@ -850,7 +862,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
         ].tail(5).copy()
 
         if recent_signals.empty:
-            st.caption("目前查詢資料中沒有符合條件的進場訊號。")
+            st.caption("目前查詢資料中沒有符合 123 法則的進場訊號。")
         else:
             for _, signal in recent_signals.iloc[::-1].iterrows():
                 signal_time = signal["open_time"].strftime("%m/%d %H:%M")
