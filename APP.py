@@ -694,7 +694,8 @@ def render_live_kline_chart(table, symbol, pair, tf):
 
     publish_latest_signal_to_outbox(df_tf, symbol, tf)
 
-    display_count = 55 if symbol == "ETH" else 70
+    # 調整顯示的 K 線根數（設為較少根數，每根 K 棒在畫面上的視覺長度/寬度就會變大變長）
+    display_count = 35 if symbol == "ETH" else 45
     view_df = df_tf.tail(display_count)
 
     if view_df.empty:
@@ -705,8 +706,8 @@ def render_live_kline_chart(table, symbol, pair, tf):
         view_df["open_time"].diff().median()
         if len(view_df) > 1 else pd.Timedelta(minutes=1)
     )
-    start_time = view_df["open_time"].iloc[0] - interval * 4
-    end_time = view_df["open_time"].iloc[-1] + interval * 6
+    start_time = view_df["open_time"].iloc[0] - interval * 2
+    end_time = view_df["open_time"].iloc[-1] + interval * 3
 
     supports = view_df["Trend_Support"].dropna()
     resistances = view_df["Trend_Resistance"].dropna()
@@ -721,9 +722,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
     )
 
     span = max(high - low, abs(high) * 0.001, 1e-8)
-    
-    # 💡 這裡將 Y 軸上下留白從 0.50 縮小至 0.15，使價格軸軸距縮短、每根 K 棒在視覺上拉長變粗
-    y_range = [low - span * 0.15, high + span * 0.15]
+    y_range = [low - span * 0.50, high + span * 0.50]
 
     latest = df_tf.iloc[-1]
     latest_close = float(latest["close_price"])
@@ -750,6 +749,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
         row_heights=[0.75, 0.25],
     )
 
+    # 💡 調整 K 棒寬度：加入 width=0.7 讓每根 K 棒明顯變粗、變長、充滿視覺張力
     fig.add_trace(go.Candlestick(
         x=df_tf["open_time"],
         open=df_tf["open_price"],
@@ -757,7 +757,8 @@ def render_live_kline_chart(table, symbol, pair, tf):
         low=df_tf["low_price"],
         close=df_tf["close_price"],
         name=symbol,
-        line=dict(width=1.5),
+        width=0.7,  # 👈 數值越大 K 棒越寬
+        line=dict(width=2),
         increasing_line_color="#0ECB81",
         increasing_fillcolor="#0ECB81",
         decreasing_line_color="#F6465D",
@@ -766,9 +767,9 @@ def render_live_kline_chart(table, symbol, pair, tf):
     ), row=1, col=1)
 
     for ema, color, width in [
-        ("EMA_21", "#2962FF", 1.5),
-        ("EMA_50", "#FFFFFF", 1.5),
-        ("EMA_100", "#FF5252", 1.8),
+        ("EMA_21", "#2962FF", 1.8),
+        ("EMA_50", "#FFFFFF", 1.8),
+        ("EMA_100", "#FF5252", 2.0),
     ]:
         fig.add_trace(go.Scatter(
             x=df_tf["open_time"],
@@ -784,7 +785,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
         y=df_tf["Trend_Resistance"],
         mode="lines",
         name="壓力趨勢線",
-        line=dict(color="rgba(246,70,93,.7)", width=1.5, dash="dash"),
+        line=dict(color="rgba(246,70,93,.7)", width=1.8, dash="dash"),
         hoverinfo="none",
     ), row=1, col=1)
 
@@ -793,13 +794,13 @@ def render_live_kline_chart(table, symbol, pair, tf):
         y=df_tf["Trend_Support"],
         mode="lines",
         name="支撐趨勢線",
-        line=dict(color="rgba(14,203,129,.7)", width=1.5, dash="dash"),
+        line=dict(color="rgba(14,203,129,.7)", width=1.8, dash="dash"),
         hoverinfo="none",
     ), row=1, col=1)
 
     long_df = view_df[view_df["Long_Signal"]].copy()
     if not long_df.empty:
-        long_y = long_df["low_price"] - span * 0.12
+        long_y = long_df["low_price"] - span * 0.35
 
         for t, low_p, ly in zip(long_df["open_time"], long_df["low_price"], long_y):
             fig.add_trace(go.Scatter(
@@ -816,10 +817,10 @@ def render_live_kline_chart(table, symbol, pair, tf):
             y=long_y,
             mode="markers+text",
             name="LONG 多單進場",
-            marker=dict(symbol="triangle-up", size=10, color="#00E676", line=dict(width=1, color="white")),
+            marker=dict(symbol="triangle-up", size=11, color="#00E676", line=dict(width=1, color="white")),
             text=[f"LONG<br>{price:,.2f}" for price in long_df["close_price"]],
             textposition="bottom center",
-            textfont=dict(color="#00E676", size=9, family="Arial Black"),
+            textfont=dict(color="#00E676", size=10, family="Arial Black"),
             customdata=long_df[["close_price", "AI_Prob", "Trade_Result"]].to_numpy(),
             hovertemplate=(
                 "🟢 LONG 多單歷史進場<br>"
@@ -833,7 +834,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
 
     short_df = view_df[view_df["Short_Signal"]].copy()
     if not short_df.empty:
-        short_y = short_df["high_price"] + span * 0.12
+        short_y = short_df["high_price"] + span * 0.35
 
         for t, high_p, sy in zip(short_df["open_time"], short_df["high_price"], short_y):
             fig.add_trace(go.Scatter(
@@ -850,10 +851,10 @@ def render_live_kline_chart(table, symbol, pair, tf):
             y=short_y,
             mode="markers+text",
             name="SHORT 空單進場",
-            marker=dict(symbol="triangle-down", size=10, color="#FF1744", line=dict(width=1, color="white")),
+            marker=dict(symbol="triangle-down", size=11, color="#FF1744", line=dict(width=1, color="white")),
             text=[f"SHORT<br>{price:,.2f}" for price in short_df["close_price"]],
             textposition="top center",
-            textfont=dict(color="#FF1744", size=9, family="Arial Black"),
+            textfont=dict(color="#FF1744", size=10, family="Arial Black"),
             customdata=short_df[["close_price", "AI_Prob", "Trade_Result"]].to_numpy(),
             hovertemplate=(
                 "🔴 SHORT 空單歷史進場<br>"
@@ -866,11 +867,11 @@ def render_live_kline_chart(table, symbol, pair, tf):
         ), row=1, col=1)
 
     volume_colors = [
-        "rgba(14,203,129,.5)" if close >= open_ else "rgba(246,70,93,.5)"
+        "rgba(14,203,129,.6)" if close >= open_ else "rgba(246,70,93,.6)"
         for close, open_ in zip(df_tf["close_price"], df_tf["open_price"])
     ]
     fig.add_trace(go.Bar(
-        x=df_tf["open_time"], y=df_tf["volume"], name="VOL", marker_color=volume_colors, hoverinfo="none",
+        x=df_tf["open_time"], y=df_tf["volume"], name="VOL", marker_color=volume_colors, hoverinfo="none", width=0.7
     ), row=2, col=1)
 
     fig.add_hline(
