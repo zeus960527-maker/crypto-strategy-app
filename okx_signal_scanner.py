@@ -1,137 +1,73 @@
-"""Cloud scanner: 讀取 Supabase K線資料表 (與 dashboard_app.py 100% 同步) -> 寫入 strategy_signal_outbox"""
 import os
-import logging
-from datetime import timezone
+import requests
+import pandas as pd
+import numpy as np
+from sqlalchemy import create_engine, text
+from datetime import datetime
 from zoneinfo import ZoneInfo
 
-import numpy as np
-import pandas as pd
-import psycopg2
-import lightgbm as lgb
-
-TZ = ZoneInfo('Asia/Taipei')
-DB_URL = os.getenv('SUPABASE_DB_URL', '').strip()
-TABLES = {
-    'BTC': 'btc_contract_klines',
-    'ETH': 'eth_contract_klines',
-}
-TIMEFRAMES = ['5m', '15m', '1h', '4h']
+TAIWAN_TZ = ZoneInfo('Asia/Taipei')
 ATR_STOP_MULTIPLIER = 1.5
 RISK_REWARD_RATIO = 2.5
-AI_THRESHOLD = 0.58
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
+def get_database_url():
+    url = os.getenv("SUPABASE_DB_URL", "").strip()
+    if url.startswith("postgres://"):
+        url = "postgresql://" + url[len("postgres://"):]
+    if url.startswith("postgresql://"):
+        url = "postgresql+psycopg2://" + url[len("postgresql://"):]
+    return url or None
 
+def ensure_signal_outbox_table(engine):
+    """確保 strategy_signal_outbox 資料表存在"""
+    with engine.begin() as conn:
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS strategy_signal_outbox (
+                id BIGSERIAL PRIMARY KEY,
+                symbol TEXT NOT NULL,
+                timeframe TEXT NOT NULL,
+                direction TEXT NOT NULL CHECK (direction IN ('LONG', 'SHORT')),
+                candle_open_time TIMESTAMPTZ NOT NULL,
+                signal_time_taipei TEXT NOT NULL,
+                entry_price DOUBLE PRECISION NOT NULL,
+                stop_loss DOUBLE PRECISION NOT NULL,
+                take_profit DOUBLE PRECISION NOT NULL,
+                atr DOUBLE PRECISION,
+                ai_probability DOUBLE PRECISION,
+                status TEXT NOT NULL DEFAULT 'pending' 
+                    CHECK (status IN ('pending', 'processing', 'sent')),
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                sent_at TIMESTAMPTZ,
+                error_message TEXT,
+                CONSTRAINT unique_signal_outbox UNIQUE(symbol, timeframe, candle_open_time, direction)
+            )
+        """))
 
-def connect_db():
-    if not DB_URL:
-        raise RuntimeError('缺少 SUPABASE_DB_URL 環境變數')
-    return psycopg2.connect(DB_URL, connect_timeout=15, sslmode='require')
-
-
-def ensure_table(conn):
-    with conn.cursor() as cur:
-        cur.execute('''
-        CREATE TABLE IF NOT EXISTS strategy_signal_outbox (
-            id BIGSERIAL PRIMARY KEY,
-            symbol TEXT NOT NULL,
-            timeframe TEXT NOT NULL,
-            direction TEXT NOT NULL CHECK (direction IN ('LONG','SHORT')),
-            candle_open_time TIMESTAMPTZ NOT NULL,
-            signal_time_taipei TEXT NOT NULL,
-            entry_price DOUBLE PRECISION NOT NULL,
-            stop_loss DOUBLE PRECISION NOT NULL,
-            take_profit DOUBLE PRECISION NOT NULL,
-            atr DOUBLE PRECISION,
-            ai_probability DOUBLE PRECISION,
-            status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','processing','sent')),
-            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-            sent_at TIMESTAMPTZ,
-            error_message TEXT,
-            UNIQUE(symbol, timeframe, candle_open_time, direction)
-        )
-        ''')
-    conn.commit()
-
-
-def load_historical_data_from_supabase(conn, table_name, symbol_name):
-    allowed_tables = {"btc_contract_klines", "eth_contract_klines"}
-    if table_name not in allowed_tables:
-        raise ValueError(f"不合法的資料表名稱: {table_name}")
-
-    sql = f"""
-        SELECT timeframe, open_time, open_price, high_price,
-               low_price, close_price, volume
-        FROM {table_name}
-        ORDER BY open_time DESC
-        LIMIT 300
-    """
-    df = pd.read_sql(sql, con=conn)
-    if df.empty:
-        return df
-
-    df = df.sort_values("open_time").reset_index(drop=True)
-    df["symbol"] = symbol_name
-
-    if pd.api.types.is_numeric_dtype(df["open_time"]):
-        sample = df["open_time"].dropna()
-        sample_value = sample.iloc[0] if not sample.empty else 0
-        unit = "ms" if sample_value > 10_000_000_000 else "s"
-        df["open_time"] = pd.to_datetime(
-            df["open_time"], unit=unit, errors="coerce", utc=True
-        )
-    else:
-        df["open_time"] = pd.to_datetime(
-            df["open_time"], errors="coerce", utc=True
-        )
-
-    df["open_time"] = (
-        df["open_time"].dt.tz_convert("Asia/Taipei").dt.tz_localize(None)
-    )
-
-    for col in ["open_price", "high_price", "low_price", "close_price", "volume"]:
-        df[col] = pd.to_numeric(df[col], errors="coerce")
-
-    return df.dropna(subset=[
-        "open_time", "open_price", "high_price",
-        "low_price", "close_price", "volume"
-    ])
-
-
-def calculate_trendline_channel(df, window=30, num_dev=1.8):
+def calculate_indicators_and_signals(df, tf):
     df = df.copy()
+    df["EMA_21"] = df["close_price"].ewm(span=21, adjust=False).mean()
+    df["EMA_50"] = df["close_price"].ewm(span=50, adjust=False).mean()
+    df["EMA_100"] = df["close_price"].ewm(span=100, adjust=False).mean()
+
+    # 趨勢通道計算
+    window = 20 if tf in ["5m", "15m"] else 40
+    num_dev = 1.5 if tf in ["5m", "15m"] else 2.0
+    
     close = df["close_price"].astype(float).values
     n = len(close)
-
-    mid = np.full(n, np.nan)
     upper = np.full(n, np.nan)
     lower = np.full(n, np.nan)
-
     for i in range(window - 1, n):
         y = close[i - window + 1:i + 1]
         x = np.arange(window)
         slope, intercept = np.polyfit(x, y, 1)
         center = slope * (window - 1) + intercept
         std = np.std(y - (slope * x + intercept))
-        mid[i] = center
         upper[i] = center + num_dev * std
         lower[i] = center - num_dev * std
 
-    df["Trend_Mid"] = mid
     df["Trend_Resistance"] = upper
     df["Trend_Support"] = lower
-    return df
-
-
-def calculate_indicators(df, tf):
-    df = df.copy()
-    df["EMA_21"] = df["close_price"].ewm(span=21, adjust=False).mean()
-    df["EMA_50"] = df["close_price"].ewm(span=50, adjust=False).mean()
-    df["EMA_100"] = df["close_price"].ewm(span=100, adjust=False).mean()
-
-    win = 20 if tf in ["5m", "15m"] else 40
-    dev = 1.5 if tf in ["5m", "15m"] else 2.0
-    df = calculate_trendline_channel(df, win, dev)
 
     delta = df["close_price"].diff()
     gain = delta.where(delta > 0, 0).rolling(14).mean()
@@ -143,205 +79,205 @@ def calculate_indicators(df, tf):
     high_close = (df["high_price"] - df["close_price"].shift()).abs()
     low_close = (df["low_price"] - df["close_price"].shift()).abs()
     tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
-
     df["ATR"] = tr.rolling(14).mean()
     df["Vol_SMA20"] = df["volume"].rolling(20).mean()
 
     body = (df["close_price"] - df["open_price"]).abs()
     candle_range = df["high_price"] - df["low_price"]
     df["Body_Ratio"] = (body / candle_range.replace(0, np.nan)).fillna(0)
-    return df
 
-
-def build_candidate_signals(df, tf):
-    df = df.copy()
+    # 策略進場條件
     if tf in ["5m", "15m"]:
-        df["Base_Long"] = (
+        df["Long_Signal"] = (
             (df["close_price"] > df["Trend_Resistance"])
             & df["RSI"].between(42, 85)
             & (df["volume"] > df["Vol_SMA20"] * 1.05)
             & (df["Body_Ratio"] > 0.3)
         )
-        df["Base_Short"] = (
+        df["Short_Signal"] = (
             (df["close_price"] < df["Trend_Support"])
             & df["RSI"].between(15, 58)
             & (df["volume"] > df["Vol_SMA20"] * 1.05)
             & (df["Body_Ratio"] > 0.3)
         )
     else:
-        df["Base_Long"] = (
+        df["Long_Signal"] = (
             (df["close_price"] > df["Trend_Resistance"])
             & df["RSI"].between(45, 80)
             & (df["volume"] > df["Vol_SMA20"])
         )
-        df["Base_Short"] = (
+        df["Short_Signal"] = (
             (df["close_price"] < df["Trend_Support"])
             & df["RSI"].between(20, 55)
             & (df["volume"] > df["Vol_SMA20"])
         )
 
-    df["vol_ratio"] = df["volume"] / df["Vol_SMA20"].replace(0, np.nan)
-    df["body_ratio"] = df["Body_Ratio"]
-    df["atr_ratio"] = df["ATR"] / df["close_price"].replace(0, np.nan)
-    df["ema_diff"] = (df["EMA_21"] - df["EMA_50"]) / df["close_price"].replace(0, np.nan)
-
-    df["future_close_3"] = df["close_price"].shift(-3)
-    df["future_return_3"] = df["future_close_3"] / df["close_price"] - 1
-    df["side"] = np.where(df["Base_Long"], 1, 0)
-    df["directional_return_3"] = df["future_return_3"] * np.where(df["side"] == 1, 1, -1)
-
-    df["Trade_Result"] = "非訊號"
-    candidate = df["Base_Long"] | df["Base_Short"]
-    matured = candidate & df["future_close_3"].notna()
-    pending = candidate & df["future_close_3"].isna()
-    df.loc[pending, "Trade_Result"] = "觀察中"
-
-    successful = matured & (df["directional_return_3"] > 0.003)
-    long_win = successful & df["Base_Long"]
-    short_win = successful & df["Base_Short"]
-    df.loc[long_win | short_win, "Trade_Result"] = "成功"
-    df.loc[matured & ~(long_win | short_win), "Trade_Result"] = "未達標"
     return df
 
+def scan_and_import_historical_signals(engine, table_name, symbol, timeframe):
+    """
+    從歷史 K 線中找出從上一次到最新一次的所有訊號，並批次匯入資料表 (ON CONFLICT DO NOTHING)
+    """
+    try:
+        query = text(f"""
+            SELECT timeframe, open_time, open_price, high_price,
+                   low_price, close_price, volume
+            FROM {table_name}
+            WHERE timeframe = :tf
+            ORDER BY open_time ASC
+        """)
+        with engine.connect() as conn:
+            df = pd.read_sql(query, con=conn, params={"tf": timeframe})
 
-def train_and_score(df):
-    feature_cols = ["RSI", "vol_ratio", "body_ratio", "atr_ratio", "ema_diff", "side"]
-    candidates = df[df["Base_Long"] | df["Base_Short"]].copy()
-    train_df = candidates.dropna(subset=feature_cols + ["future_return_3"]).copy()
+        if df.empty:
+            return
 
-    model = None
-    if len(train_df) >= 30 and train_df["Trade_Result"].nunique() >= 2:
-        train_df["target"] = (train_df["Trade_Result"] == "成功").astype(int)
-        if train_df["target"].nunique() >= 2:
-            model = lgb.LGBMClassifier(
-                n_estimators=60,
-                learning_rate=0.04,
-                max_depth=3,
-                num_leaves=7,
-                class_weight="balanced",
-                random_state=42,
-                verbose=-1,
-            )
-            model.fit(train_df[feature_cols], train_df["target"])
+        df["open_time"] = pd.to_datetime(df["open_time"], errors="coerce", utc=True)
+        df["open_time"] = df["open_time"].dt.tz_convert(TAIWAN_TZ).dt.tz_localize(None)
 
-    df = df.copy()
-    df["AI_Prob"] = np.nan
-    if model is not None and not candidates.empty:
-        usable = df.loc[candidates.index, feature_cols].replace([np.inf, -np.inf], np.nan)
-        valid = usable.notna().all(axis=1)
-        if valid.any():
-            probabilities = model.predict_proba(usable.loc[valid])[:, 1]
-            df.loc[usable.loc[valid].index, "AI_Prob"] = probabilities
+        for col in ["open_price", "high_price", "low_price", "close_price", "volume"]:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    if model is None:
-        df["AI_Prob"] = np.where(df["Base_Long"] | df["Base_Short"], 0.70, np.nan)
-        df["Long_Signal"] = df["Base_Long"]
-        df["Short_Signal"] = df["Base_Short"]
-    else:
-        df["Long_Signal"] = df["Base_Long"] & (df["AI_Prob"] >= AI_THRESHOLD)
-        df["Short_Signal"] = df["Base_Short"] & (df["AI_Prob"] >= AI_THRESHOLD)
+        df = calculate_indicators_and_signals(df, timeframe)
+        
+        # 篩選出所有符合 LONG 或 SHORT 條件的歷史 K 線
+        signal_rows = df[df["Long_Signal"] | df["Short_Signal"]]
+        if signal_rows.empty:
+            return
 
-    return df
+        imported_count = 0
+        with engine.begin() as conn:
+            for _, row in signal_rows.iterrows():
+                is_long = bool(row["Long_Signal"])
+                direction = "LONG" if is_long else "SHORT"
+                
+                entry = float(row["close_price"])
+                atr = float(row["ATR"]) if pd.notna(row["ATR"]) else 0.0
+                if entry <= 0 or atr <= 0:
+                    continue
 
+                if direction == "LONG":
+                    stop_loss = entry - atr * ATR_STOP_MULTIPLIER
+                    take_profit = entry + (entry - stop_loss) * RISK_REWARD_RATIO
+                else:
+                    stop_loss = entry + atr * ATR_STOP_MULTIPLIER
+                    take_profit = entry - (stop_loss - entry) * RISK_REWARD_RATIO
 
-def enqueue_latest_closed_signal(conn, df_tf, symbol, timeframe):
-    if df_tf.empty:
-        return False
+                candle_time = pd.Timestamp(row["open_time"]).to_pydatetime()
+                if candle_time.tzinfo is None:
+                    candle_time = candle_time.replace(tzinfo=TAIWAN_TZ)
+                else:
+                    candle_time = candle_time.astimezone(TAIWAN_TZ)
 
-    latest = df_tf.iloc[-1]
-    timeframe_delta = {
-        "5m": pd.Timedelta(minutes=5),
-        "15m": pd.Timedelta(minutes=15),
-        "1h": pd.Timedelta(hours=1),
-        "4h": pd.Timedelta(hours=4),
-    }.get(timeframe)
-    if timeframe_delta is None:
-        return False
+                signal_time_text = candle_time.strftime("%Y-%m-%d %H:%M:%S")
 
-    candle_open = pd.Timestamp(latest["open_time"])
-    now_taipei = pd.Timestamp.now(tz="Asia/Taipei").tz_localize(None)
-    if candle_open + timeframe_delta > now_taipei:
-        return False
+                result = conn.execute(text("""
+                    INSERT INTO strategy_signal_outbox (
+                        symbol, timeframe, direction, candle_open_time,
+                        signal_time_taipei, entry_price, stop_loss, take_profit,
+                        atr, ai_probability, status
+                    )
+                    VALUES (
+                        :symbol, :timeframe, :direction, :candle_open_time,
+                        :signal_time_text, :entry_price, :stop_loss, :take_profit,
+                        :atr, 0.70, 'pending'
+                    )
+                    ON CONFLICT (symbol, timeframe, candle_open_time, direction)
+                    DO NOTHING
+                """), {
+                    "symbol": symbol,
+                    "timeframe": timeframe,
+                    "direction": direction,
+                    "candle_open_time": candle_time,
+                    "signal_time_text": signal_time_text,
+                    "entry_price": entry,
+                    "stop_loss": stop_loss,
+                    "take_profit": take_profit,
+                    "atr": atr,
+                })
+                if result.rowcount > 0:
+                    imported_count += 1
 
-    is_long = bool(latest.get("Long_Signal", False))
-    is_short = bool(latest.get("Short_Signal", False))
-    if not (is_long or is_short) or (is_long and is_short):
-        return False
+        if imported_count > 0:
+            print(f"[{symbol} {timeframe}] 成功匯入 {imported_count} 筆新訊號至佇列！")
 
-    entry = float(latest["close_price"])
-    atr = float(latest["ATR"]) if pd.notna(latest["ATR"]) else 0.0
-    if entry <= 0 or atr <= 0:
-        return False
+    except Exception as e:
+        print(f"[{symbol} {timeframe}] 歷史訊號掃描匯入發生錯誤: {e}")
 
-    direction = "LONG" if is_long else "SHORT"
-    if direction == "LONG":
-        stop_loss = entry - atr * ATR_STOP_MULTIPLIER
-        take_profit = entry + (entry - stop_loss) * RISK_REWARD_RATIO
-    else:
-        stop_loss = entry + atr * ATR_STOP_MULTIPLIER
-        take_profit = entry - (stop_loss - entry) * RISK_REWARD_RATIO
+def process_outbox_and_notify(engine, webhook_url):
+    """
+    讀取 strategy_signal_outbox 中狀態為 pending 的訊號，發送到 Discord 並更新為 sent
+    """
+    with engine.begin() as conn:
+        result = conn.execute(text("""
+            SELECT id, symbol, timeframe, direction, signal_time_taipei,
+                   entry_price, stop_loss, take_profit
+            FROM strategy_signal_outbox
+            WHERE status = 'pending'
+            ORDER BY created_at ASC
+            LIMIT 10
+        """))
+        rows = result.fetchall()
 
-    candle_time = candle_open.to_pydatetime().replace(tzinfo=TZ)
-    signal_time_text = candle_time.strftime("%Y-%m-%d %H:%M:%S")
-    ai_prob = float(latest["AI_Prob"]) if pd.notna(latest.get("AI_Prob")) else None
+        for row in rows:
+            sig_id, symbol, tf, direction, sig_time, entry, sl, tp = row
+            emoji = "🟢" if direction == "LONG" else "🔴"
+            
+            payload = {
+                "content": f"🚨 **加密貨幣 AI 策略新訊號** 🚨",
+                "embeds": [{
+                    "title": f"{emoji} {symbol} ({tf}) - {direction}",
+                    "color": 3066993 if direction == "LONG" else 15158332,
+                    "fields": [
+                        {"name": "⏰ 訊號時間 (TAIPEI)", "value": sig_time, "inline": False},
+                        {"name": "💰 參考進場價", "value": f"`{entry:,.2f}`", "inline": True},
+                        {"name": "🛡️ 建議止損價 (SL)", "value": f"`{sl:,.2f}`", "inline": True},
+                        {"name": "🎯 建議止盈價 (TP)", "value": f"`{tp:,.2f}`", "inline": True},
+                    ],
+                    "footer": {"text": "OKX AI Strategy Scanner Bot"}
+                }]
+            }
 
-    with conn.cursor() as cur:
-        cur.execute("""
-            INSERT INTO strategy_signal_outbox (
-                symbol, timeframe, direction, candle_open_time,
-                signal_time_taipei, entry_price, stop_loss, take_profit,
-                atr, ai_probability, status
-            )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'pending')
-            ON CONFLICT (symbol, timeframe, candle_open_time, direction)
-            DO NOTHING
-            RETURNING id
-        """, (
-            symbol, timeframe, direction, candle_time.astimezone(timezone.utc),
-            signal_time_text, entry, stop_loss, take_profit, atr, ai_prob
-        ))
-        inserted = cur.fetchone() is not None
-    conn.commit()
-
-    if inserted:
-        logging.info("新訊號已入列：%s %s %s @ %.4f", symbol, timeframe, direction, entry)
-    else:
-        logging.info("重複訊號略過：%s %s %s (%s)", symbol, timeframe, direction, signal_time_text)
-    return inserted
-
+            res = requests.post(webhook_url, json=payload)
+            if res.status_code in [200, 204]:
+                conn.execute(text("""
+                    UPDATE strategy_signal_outbox
+                    SET status = 'sent', sent_at = NOW()
+                    WHERE id = :id
+                """), {"id": sig_id})
+                print(f"✅ 訊號 ID {sig_id} ({symbol} {tf} {direction}) 已成功發送到 Discord！")
+            else:
+                print(f"⚠️ 訊號 ID {sig_id} 發送失敗，HTTP Status: {res.status_code}")
 
 def main():
-    total = 0
-    with connect_db() as conn:
-        ensure_table(conn)
-        for symbol, table_name in TABLES.items():
-            df = load_historical_data_from_supabase(conn, table_name, symbol)
-            if df.empty:
-                logging.warning("%s 資料表為空，略過掃描", symbol)
-                continue
+    db_url = get_database_url()
+    webhook_url = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
 
-            for tf in TIMEFRAMES:
-                try:
-                    df_tf = (
-                        df[df["timeframe"] == tf]
-                        .sort_values("open_time")
-                        .copy()
-                        .reset_index(drop=True)
-                    )
-                    if df_tf.empty:
-                        continue
+    if not db_url:
+        print("❌ 錯誤：未設定 SUPABASE_DB_URL")
+        return
+    if not webhook_url:
+        print("❌ 錯誤：未設定 DISCORD_WEBHOOK_URL")
+        return
 
-                    df_tf = calculate_indicators(df_tf, tf)
-                    df_tf = build_candidate_signals(df_tf, tf)
-                    df_tf = train_and_score(df_tf)
+    engine = create_engine(db_url)
+    ensure_signal_outbox_table(engine)
+    print("🚀 OKX 策略訊號掃描與派送系統啟動...")
 
-                    if enqueue_latest_closed_signal(conn, df_tf, symbol, tf):
-                        total += 1
-                except Exception:
-                    logging.exception("掃描失敗：%s %s", symbol, tf)
+    # 1. 依序掃描 BTC 與 ETH 各時間週期的歷史訊號並匯入 Outbox
+    pairs = [
+        ("btc_contract_klines", "BTC"),
+        ("eth_contract_klines", "ETH")
+    ]
+    timeframes = ["5m", "15m", "1h", "4h"]
 
-    logging.info("掃描完成；新增訊號 %d 筆", total)
+    for table_name, symbol in pairs:
+        for tf in timeframes:
+            scan_and_import_historical_signals(engine, table_name, symbol, tf)
 
+    # 2. 處理 Outbox 佇列中所有待發送的訊號並推送到 Discord
+    process_outbox_and_notify(engine, webhook_url)
+    print("✨ 本次掃描與派送任務執行完畢。")
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
