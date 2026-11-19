@@ -35,6 +35,15 @@ def home():
 def health_check():
     return jsonify({"status": "healthy"}), 200
 
+# 💡 加上這個路由供 cron-job.org Ping，確保回傳 200 OK 且順便手動觸發一次同步
+@app.route("/run-scanner", methods=["GET", "POST"])
+def run_scanner():
+    try:
+        fetch_and_save_btc_contracts()
+        return jsonify({"status": "success", "message": "BTC Scanned successfully via Webhook!"}), 200
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
 SUPABASE_DB_URL = "postgresql://postgres.ygzeqvcyqtvhvjrxhzdv:%4010233960527Ken@aws-0-ap-northeast-1.pooler.supabase.com:6543/postgres"
 
 def get_db_connection():
@@ -112,10 +121,10 @@ def background_worker():
     while True:
         try:
             fetch_and_save_btc_contracts()
-            time.sleep(1)
+            time.sleep(2)
         except Exception as e:
             print(f"背景迴圈錯誤: {e}")
-            time.sleep(0.5)
+            time.sleep(5)
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
