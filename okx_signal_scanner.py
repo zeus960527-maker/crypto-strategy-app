@@ -114,21 +114,26 @@ def calculate_indicators_and_signals(df, tf):
 
     return df
 
-def scan_and_import_historical_signals(engine, table_name, symbol, timeframe):
-    """從歷史 K 線中找出訊號，並批次匯入佇列 (ON CONFLICT DO NOTHING)"""
+def scan_and_import_latest_signal(engine, table_name, symbol, timeframe):
+    """只抓取最近幾根 K 線來計算指標，並僅對最新產生的訊號進行匯入"""
     try:
+        # 為了計算指標需要足夠的歷史回溯長度（例如取最近 100 筆），但我們只檢查最後一根 K 線
         query = text(f"""
             SELECT timeframe, open_time, open_price, high_price,
                    low_price, close_price, volume
             FROM {table_name}
             WHERE timeframe = :tf
-            ORDER BY open_time ASC
+            ORDER BY open_time DESC
+            LIMIT 120
         """)
         with engine.connect() as conn:
             df = pd.read_sql(query, con=conn, params={"tf": timeframe})
 
         if df.empty:
             return
+
+        # 轉回時間正序以正確計算移動平均與 ATR
+        df = df.sort_values("open_time", ascending=True).reset_index(drop=True)
 
         df["open_time"] = pd.to_datetime(df["open_time"], errors="coerce", utc=True)
         df["open_time"] = df["open_time"].dt.tz_convert(TAIWAN_TZ).dt.tz_localize(None)
@@ -137,69 +142,70 @@ def scan_and_import_historical_signals(engine, table_name, symbol, timeframe):
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
         df = calculate_indicators_and_signals(df, timeframe)
-        signal_rows = df[df["Long_Signal"] | df["Short_Signal"]]
-        if signal_rows.empty:
+        
+        if df.empty:
             return
 
-        imported_count = 0
+        # 🔥 核心修改：只取最上面（最新）的一根 K 線來判斷是否有訊號
+        latest_row = df.iloc[-1]
+        is_long = bool(latest_row["Long_Signal"])
+        is_short = bool(latest_row["Short_Signal"])
+
+        if not is_long and not is_short:
+            return
+
+        direction = "LONG" if is_long else "SHORT"
+        entry = float(latest_row["close_price"])
+        atr = float(latest_row["ATR"]) if pd.notna(latest_row["ATR"]) else 0.0
+        if entry <= 0 or atr <= 0:
+            return
+
+        if direction == "LONG":
+            stop_loss = entry - atr * ATR_STOP_MULTIPLIER
+            take_profit = entry + (entry - stop_loss) * RISK_REWARD_RATIO
+        else:
+            stop_loss = entry + atr * ATR_STOP_MULTIPLIER
+            take_profit = entry - (stop_loss - entry) * RISK_REWARD_RATIO
+
+        candle_time = pd.Timestamp(latest_row["open_time"]).to_pydatetime()
+        if candle_time.tzinfo is None:
+            candle_time = candle_time.replace(tzinfo=TAIWAN_TZ)
+        else:
+            candle_time = candle_time.astimezone(TAIWAN_TZ)
+
+        current_taipei_time = datetime.now(TAIWAN_TZ)
+        signal_time_text = current_taipei_time.strftime("%Y-%m-%d %H:%M:%S")
+
         with engine.begin() as conn:
-            for _, row in signal_rows.iterrows():
-                is_long = bool(row["Long_Signal"])
-                direction = "LONG" if is_long else "SHORT"
-                
-                entry = float(row["close_price"])
-                atr = float(row["ATR"]) if pd.notna(row["ATR"]) else 0.0
-                if entry <= 0 or atr <= 0:
-                    continue
-
-                if direction == "LONG":
-                    stop_loss = entry - atr * ATR_STOP_MULTIPLIER
-                    take_profit = entry + (entry - stop_loss) * RISK_REWARD_RATIO
-                else:
-                    stop_loss = entry + atr * ATR_STOP_MULTIPLIER
-                    take_profit = entry - (stop_loss - entry) * RISK_REWARD_RATIO
-
-                candle_time = pd.Timestamp(row["open_time"]).to_pydatetime()
-                if candle_time.tzinfo is None:
-                    candle_time = candle_time.replace(tzinfo=TAIWAN_TZ)
-                else:
-                    candle_time = candle_time.astimezone(TAIWAN_TZ)
-
-                current_taipei_time = datetime.now(TAIWAN_TZ)
-                signal_time_text = current_taipei_time.strftime("%Y-%m-%d %H:%M:%S")
-
-                result = conn.execute(text("""
-                    INSERT INTO strategy_signal_outbox (
-                        symbol, timeframe, direction, candle_open_time,
-                        signal_time_taipei, entry_price, stop_loss, take_profit,
-                        atr, ai_probability, status
-                    )
-                    VALUES (
-                        :symbol, :timeframe, :direction, :candle_open_time,
-                        :signal_time_text, :entry_price, :stop_loss, :take_profit,
-                        :atr, 0.70, 'pending'
-                    )
-                    ON CONFLICT (symbol, timeframe, candle_open_time, direction)
-                    DO NOTHING
-                """), {
-                    "symbol": symbol,
-                    "timeframe": timeframe,
-                    "direction": direction,
-                    "candle_open_time": candle_time,
-                    "signal_time_text": signal_time_text,
-                    "entry_price": entry,
-                    "stop_loss": stop_loss,
-                    "take_profit": take_profit,
-                    "atr": atr,
-                })
-                if result.rowcount > 0:
-                    imported_count += 1
-
-        if imported_count > 0:
-            print(f"[{symbol} {timeframe}] 成功匯入 {imported_count} 筆新訊號至佇列！")
+            result = conn.execute(text("""
+                INSERT INTO strategy_signal_outbox (
+                    symbol, timeframe, direction, candle_open_time,
+                    signal_time_taipei, entry_price, stop_loss, take_profit,
+                    atr, ai_probability, status
+                )
+                VALUES (
+                    :symbol, :timeframe, :direction, :candle_open_time,
+                    :signal_time_text, :entry_price, :stop_loss, :take_profit,
+                    :atr, 0.70, 'pending'
+                )
+                ON CONFLICT (symbol, timeframe, candle_open_time, direction)
+                DO NOTHING
+            """), {
+                "symbol": symbol,
+                "timeframe": timeframe,
+                "direction": direction,
+                "candle_open_time": candle_time,
+                "signal_time_text": signal_time_text,
+                "entry_price": entry,
+                "stop_loss": stop_loss,
+                "take_profit": take_profit,
+                "atr": atr,
+            })
+            if result.rowcount > 0:
+                print(f"[{symbol} {timeframe}] 偵測到最新即時訊號 ({direction})，已成功加入佇列！")
 
     except Exception as e:
-        print(f"[{symbol} {timeframe}] 歷史訊號掃描匯入發生錯誤: {e}")
+        print(f"[{symbol} {timeframe}] 最新訊號掃描發生錯誤: {e}")
 
 def process_outbox_and_notify(engine, webhook_url):
     """讀取佇列中 pending 的訊號，發送到 Discord 並更新為 sent"""
@@ -246,7 +252,7 @@ def process_outbox_and_notify(engine, webhook_url):
 
 def main():
     now_taipei = datetime.now(TAIWAN_TZ).strftime('%Y-%m-%d %H:%M:%S')
-    print(f"🕒 [台灣時間 {now_taipei}] OKX 策略訊號掃描與派送系統啟動（涵蓋 BTC 與 ETH）...")
+    print(f"🕒 [台灣時間 {now_taipei}] OKX 即時策略訊號掃描與派送系統啟動（涵蓋 BTC 與 ETH）...")
 
     db_url = get_database_url()
     webhook_url = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
@@ -269,10 +275,10 @@ def main():
 
     for table_name, symbol in pairs:
         for tf in timeframes:
-            scan_and_import_historical_signals(engine, table_name, symbol, tf)
+            scan_and_import_latest_signal(engine, table_name, symbol, tf)
 
     process_outbox_and_notify(engine, webhook_url)
-    print(f"✨ [台灣時間 {datetime.now(TAIWAN_TZ).strftime('%Y-%m-%d %H:%M:%S')}] 本次掃描與派送任務執行完畢。")
+    print(f"✨ [台灣時間 {datetime.now(TAIWAN_TZ).strftime('%Y-%m-%d %H:%M:%S')}] 本次即時掃描與派送任務執行完畢。")
 
 if __name__ == "__main__":
     main()
