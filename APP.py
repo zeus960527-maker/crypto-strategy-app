@@ -416,7 +416,7 @@ def calculate_indicators(df, tf):
 
 
 # ============================================================
-# 4. LightGBM 模型（觀察窗口改為 20 根 K 棒）
+# 4. LightGBM 模型與止盈止損模擬判定
 # ============================================================
 def build_candidate_signals(df, tf):
     df = df.copy()
@@ -453,29 +453,100 @@ def build_candidate_signals(df, tf):
         (df["EMA_21"] - df["EMA_50"])
         / df["close_price"].replace(0, np.nan)
     )
-
-    # 觀察窗口從 3 根 K 棒擴大為 20 根 K 棒判斷
-    df["future_close_20"] = df["close_price"].shift(-20)
-    df["future_return_20"] = (
-        df["future_close_20"] / df["close_price"] - 1
-    )
-
     df["side"] = np.where(df["Base_Long"], 1, 0)
-    df["directional_return_20"] = df["future_return_20"] * np.where(df["side"] == 1, 1, -1)
 
-    df["Trade_Result"] = "非訊號"
-    candidate = df["Base_Long"] | df["Base_Short"]
-    matured = candidate & df["future_close_20"].notna()
-    pending = candidate & df["future_close_20"].isna()
-    df.loc[pending, "Trade_Result"] = "觀察中"
+    # 模擬止盈止損追蹤判定有效性
+    trade_results = []
+    directional_returns = []
 
-    # 20 根 K 棒後的止盈標準（設定方向報酬大於 0.8% 視為成功止盈）
-    successful = matured & (df["directional_return_20"] > 0.008)
-    long_win = successful & df["Base_Long"]
-    short_win = successful & df["Base_Short"]
-    df.loc[long_win | short_win, "Trade_Result"] = "成功"
-    df.loc[matured & ~(long_win | short_win), "Trade_Result"] = "未達標"
+    close_arr = df["close_price"].values
+    high_arr = df["high_price"].values
+    low_arr = df["low_price"].values
+    atr_arr = df["ATR"].values
+    base_long_arr = df["Base_Long"].values
+    base_short_arr = df["Base_Short"].values
+    n = len(df)
 
+    for i in range(n):
+        is_l = base_long_arr[i]
+        is_s = base_short_arr[i]
+        if not (is_l or is_s):
+            trade_results.append("非訊號")
+            directional_returns.append(np.nan)
+            continue
+
+        entry = close_arr[i]
+        atr = atr_arr[i]
+        if pd.isna(atr) or atr <= 0 or pd.isna(entry) or entry <= 0:
+            trade_results.append("觀察中")
+            directional_returns.append(np.nan)
+            continue
+
+        if is_l:
+            sl = entry - atr * ATR_STOP_MULTIPLIER
+            tp = entry + (entry - sl) * RISK_REWARD_RATIO
+            direction = 'LONG'
+        else:
+            sl = entry + atr * ATR_STOP_MULTIPLIER
+            tp = entry - (sl - entry) * RISK_REWARD_RATIO
+            direction = 'SHORT'
+
+        outcome = "觀察中"
+        ret = 0.0
+        matured = False
+
+        # 往後追蹤最多 100 根 K 線，看是否先觸及 TP 或 SL
+        for j in range(i + 1, min(n, i + 100)):
+            h = high_arr[j]
+            l = low_arr[j]
+            if pd.isna(h) or pd.isna(l):
+                continue
+
+            if direction == 'LONG':
+                hit_sl = (l <= sl)
+                hit_tp = (h >= tp)
+                if hit_sl and hit_tp:
+                    outcome = "未達標"
+                    ret = -1.0
+                    matured = True
+                    break
+                elif hit_sl:
+                    outcome = "未達標"
+                    ret = -1.0
+                    matured = True
+                    break
+                elif hit_tp:
+                    outcome = "成功"
+                    ret = 1.0
+                    matured = True
+                    break
+            else:
+                hit_sl = (h >= sl)
+                hit_tp = (l <= tp)
+                if hit_sl and hit_tp:
+                    outcome = "未達標"
+                    ret = -1.0
+                    matured = True
+                    break
+                elif hit_sl:
+                    outcome = "未達標"
+                    ret = -1.0
+                    matured = True
+                    break
+                elif hit_tp:
+                    outcome = "成功"
+                    ret = 1.0
+                    matured = True
+                    break
+
+        if not matured:
+            outcome = "觀察中"
+
+        trade_results.append(outcome)
+        directional_returns.append(ret)
+
+    df["Trade_Result"] = trade_results
+    df["directional_return_3"] = directional_returns
     return df
 
 
@@ -484,9 +555,8 @@ def train_or_get_ai_model(df, key):
         "RSI", "vol_ratio", "body_ratio", "atr_ratio", "ema_diff", "side"
     ]
     candidates = df[df["Base_Long"] | df["Base_Short"]].copy()
-    train_df = candidates.dropna(
-        subset=feature_cols + ["future_return_20"]
-    ).copy()
+    # 僅使用已跑完 TP/SL 結算（成功或未達標）的歷史樣本來訓練模型
+    train_df = candidates[candidates["Trade_Result"].isin(["成功", "未達標"])].copy()
 
     if len(train_df) < 30 or train_df["Trade_Result"].nunique() < 2:
         return None, len(train_df), int((train_df["Trade_Result"] == "成功").sum())
@@ -672,7 +742,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
         row_heights=[0.75, 0.25],
     )
 
-    # K線
+    # K線（bargap=0 確保 K 棒與 K 棒緊密貼合、間距為 0）
     fig.add_trace(go.Candlestick(
         x=df_tf["open_time"],
         open=df_tf["open_price"],
@@ -748,14 +818,13 @@ def render_live_kline_chart(table, symbol, pair, tf):
             text=[f"LONG<br>{price:,.2f}" for price in long_df["close_price"]],
             textposition="bottom center",
             textfont=dict(color="#00E676", size=9, family="Arial Black"),
-            customdata=long_df[["close_price", "AI_Prob", "Trade_Result", "directional_return_20"]].to_numpy(),
+            customdata=long_df[["close_price", "AI_Prob", "Trade_Result"]].to_numpy(),
             hovertemplate=(
                 "🟢 LONG 多單歷史進場<br>"
                 "時間：%{x}<br>"
                 "參考進場價：%{customdata[0]:,.2f}<br>"
                 "AI 分數：%{customdata[1]:.1%}<br>"
-                "20 根 K 線後結果：%{customdata[2]}<br>"
-                "方向報酬：%{customdata[3]:.2%}"
+                "TP/SL 結算結果：%{customdata[2]}"
                 "<extra></extra>"
             ),
         ), row=1, col=1)
@@ -783,14 +852,13 @@ def render_live_kline_chart(table, symbol, pair, tf):
             text=[f"SHORT<br>{price:,.2f}" for price in short_df["close_price"]],
             textposition="top center",
             textfont=dict(color="#FF1744", size=9, family="Arial Black"),
-            customdata=short_df[["close_price", "AI_Prob", "Trade_Result", "directional_return_20"]].to_numpy(),
+            customdata=short_df[["close_price", "AI_Prob", "Trade_Result"]].to_numpy(),
             hovertemplate=(
                 "🔴 SHORT 空單歷史進場<br>"
                 "時間：%{x}<br>"
                 "參考進場價：%{customdata[0]:,.2f}<br>"
                 "AI 分數：%{customdata[1]:.1%}<br>"
-                "20 根 K 線後結果：%{customdata[2]}<br>"
-                "方向報酬：%{customdata[3]:.2%}"
+                "TP/SL 結算結果：%{customdata[2]}"
                 "<extra></extra>"
             ),
         ), row=1, col=1)
@@ -987,7 +1055,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
 
         st.caption("進場價格為訊號 K 線收盤價參考值，不代表實際成交價。")
 
-        st.markdown("#### 🧠 歷史訊號學習紀錄（20根K線視窗）")
+        st.markdown("#### 🧠 歷史訊號學習紀錄 (TP/SL 結算)")
         history = df_tf[df_tf["Base_Long"] | df_tf["Base_Short"]].tail(12).copy()
         if history.empty:
             st.caption("目前載入的 K 線中尚無歷史候選進場點。")
@@ -1000,7 +1068,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
             )
             st.dataframe(
                 history[["時間", "方向", "進場參考價", "Trade_Result", "AI 分數"]]
-                .rename(columns={"Trade_Result": "20 根 K 線後結果"}),
+                .rename(columns={"Trade_Result": "TP/SL 結算結果"}),
                 use_container_width=True,
                 hide_index=True,
             )
