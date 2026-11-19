@@ -677,7 +677,6 @@ def render_live_kline_chart(table, symbol, pair, tf):
     )
     df_tf = add_trade_signals(df_tf, model)
 
-    # 網頁即時推播至 Supabase 佇列（與雲端 Worker 共同維護唯一鍵，防止重複）
     publish_latest_signal_to_outbox(df_tf, symbol, tf)
 
     display_count = 90 if symbol == "ETH" else 120
@@ -707,7 +706,9 @@ def render_live_kline_chart(table, symbol, pair, tf):
     )
 
     span = max(high - low, abs(high) * 0.001, 1e-8)
-    y_range = [low - span * 0.12, high + span * 0.12]
+    # 預留上下空間以容納拉遠的進場三角形與文字標籤
+    y_range = [low - span * 0.16, high + span * 0.16]
+    marker_offset = span * 0.085
 
     latest = df_tf.iloc[-1]
     latest_close = float(latest["close_price"])
@@ -784,15 +785,37 @@ def render_live_kline_chart(table, symbol, pair, tf):
         hoverinfo="none",
     ), row=1, col=1)
 
-    # 多單進場標記（歷史進場：縮小三角形並拉開與 K 棒距離）
+    # 多單進場標記：縮小三角形 + 遠離 K 棒 + 虛線連接 K 棒
     long_df = view_df[view_df["Long_Signal"]].copy()
     if not long_df.empty:
+        long_marker_y = long_df["low_price"] - marker_offset
+
+        # 虛線連接 K 棒低點與三角形
+        line_x, line_y = [], []
+        for t, y_top, y_bot in zip(long_df["open_time"], long_df["low_price"], long_marker_y):
+            line_x.extend([t, t, None])
+            line_y.extend([y_top, y_bot, None])
+
+        fig.add_trace(go.Scatter(
+            x=line_x,
+            y=line_y,
+            mode="lines",
+            line=dict(color="rgba(0, 230, 118, 0.75)", width=1.2, dash="dot"),
+            showlegend=False,
+            hoverinfo="skip",
+        ), row=1, col=1)
+
         fig.add_trace(go.Scatter(
             x=long_df["open_time"],
-            y=long_df["low_price"] - span * 0.045,
+            y=long_marker_y,
             mode="markers+text",
             name="LONG 多單進場",
-            marker=dict(symbol="triangle-up", size=10, color="#00E676", line=dict(width=1, color="white")),
+            marker=dict(
+                symbol="triangle-up",
+                size=10,
+                color="#00E676",
+                line=dict(width=1, color="white"),
+            ),
             text=[f"LONG<br>{price:,.2f}" for price in long_df["close_price"]],
             textposition="bottom center",
             textfont=dict(color="#00E676", size=9, family="Arial Black"),
@@ -808,15 +831,37 @@ def render_live_kline_chart(table, symbol, pair, tf):
             ),
         ), row=1, col=1)
 
-    # 空單進場標記（歷史進場：縮小三角形並拉開與 K 棒距離）
+    # 空單進場標記：縮小三角形 + 遠離 K 棒 + 虛線連接 K 棒
     short_df = view_df[view_df["Short_Signal"]].copy()
     if not short_df.empty:
+        short_marker_y = short_df["high_price"] + marker_offset
+
+        # 虛線連接 K 棒高點與三角形
+        line_x, line_y = [], []
+        for t, y_bot, y_top in zip(short_df["open_time"], short_df["high_price"], short_marker_y):
+            line_x.extend([t, t, None])
+            line_y.extend([y_bot, y_top, None])
+
+        fig.add_trace(go.Scatter(
+            x=line_x,
+            y=line_y,
+            mode="lines",
+            line=dict(color="rgba(255, 23, 68, 0.75)", width=1.2, dash="dot"),
+            showlegend=False,
+            hoverinfo="skip",
+        ), row=1, col=1)
+
         fig.add_trace(go.Scatter(
             x=short_df["open_time"],
-            y=short_df["high_price"] + span * 0.045,
+            y=short_marker_y,
             mode="markers+text",
             name="SHORT 空單進場",
-            marker=dict(symbol="triangle-down", size=10, color="#FF1744", line=dict(width=1, color="white")),
+            marker=dict(
+                symbol="triangle-down",
+                size=10,
+                color="#FF1744",
+                line=dict(width=1, color="white"),
+            ),
             text=[f"SHORT<br>{price:,.2f}" for price in short_df["close_price"]],
             textposition="top center",
             textfont=dict(color="#FF1744", size=9, family="Arial Black"),
@@ -838,7 +883,11 @@ def render_live_kline_chart(table, symbol, pair, tf):
         for close, open_ in zip(df_tf["close_price"], df_tf["open_price"])
     ]
     fig.add_trace(go.Bar(
-        x=df_tf["open_time"], y=df_tf["volume"], name="VOL", marker_color=volume_colors, hoverinfo="none",
+        x=df_tf["open_time"],
+        y=df_tf["volume"],
+        name="VOL",
+        marker_color=volume_colors,
+        hoverinfo="none",
     ), row=2, col=1)
 
     fig.add_hline(
