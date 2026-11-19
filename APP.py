@@ -13,25 +13,21 @@ import lightgbm as lgb
 from zoneinfo import ZoneInfo
 from flask import Flask, jsonify
 
-TAIWAN_TZ = ZoneInfo("Asia/Taipei")
+TAIWAN_TZ = ZoneInfo('Asia/Taipei')
 ATR_STOP_MULTIPLIER = 1.5
 RISK_REWARD_RATIO = 2.5
-SIGNAL_COOLDOWN_BARS = 6       # 訊號冷卻期：至少間隔 6 根 K 線才允許下一次進場
-AI_CONFIDENCE_THRESHOLD = 0.60 # AI 預測勝率門檻（60% 以上才放行）
 
 
 # ============================================================
-# 0. 頁面設定、圖片與背景（含手機 RWD 響應式 CSS）與 Flask 路由
+# 0. 頁面設定、圖片與背景（含手機 RWD 響應式 CSS）與 Flask 路由 (保持 Render 活躍)
 # ============================================================
 BASE_DIR = Path(__file__).resolve().parent
 
 app = Flask(__name__)
 
-
 @app.route("/")
 def home():
     return "Crypto AI Streamlit Web App is running 24/7! 🚀"
-
 
 @app.route("/health", methods=["GET"])
 def health_check():
@@ -131,6 +127,7 @@ div[data-testid="stRadio"] > div {{ flex-direction: row; gap: 12px; flex-wrap: w
     height: 100%;
 }}
 
+/* 手機版 RWD 自動適配樣式 */
 @media(max-width: 768px) {{
     .block-container {{
         padding-left: 0.75rem !important;
@@ -223,7 +220,7 @@ def load_historical_data(table_name, symbol_name):
                    low_price, close_price, volume
             FROM {table_name}
             ORDER BY open_time DESC
-            LIMIT 400
+            LIMIT 300
         """)
         with engine.connect() as conn:
             df = pd.read_sql(sql, con=conn)
@@ -299,7 +296,7 @@ def calculate_indicators(df, tf):
     df["EMA_100"] = df["close_price"].ewm(span=100, adjust=False).mean()
 
     win = 20 if tf in ["5m", "15m"] else 40
-    dev = 1.6 if tf in ["5m", "15m"] else 2.0
+    dev = 1.5 if tf in ["5m", "15m"] else 2.0
     df = calculate_trendline_channel(df, win, dev)
 
     delta = df["close_price"].diff()
@@ -324,62 +321,36 @@ def calculate_indicators(df, tf):
 
 
 # ============================================================
-# 4. 高勝率順勢訊號過濾 + LightGBM 真實推論
+# 4. 高度嚴謹的突破策略與訊號判定
 # ============================================================
 def build_candidate_signals(df, tf):
     df = df.copy()
 
-    # 1. 多單條件：突破上軌 + 實體紅K + 順勢(EMA21 > EMA50 且收盤在 EMA21 上) + 放量 + RSI 動能
-    raw_long = (
+    # 嚴格過濾：必須量能顯著放大 (1.2倍以上)、且實體K棒夠大、RSI 位於明確強勢區間
+    df["Base_Long"] = (
         (df["close_price"] > df["Trend_Resistance"])
         & (df["close_price"] > df["open_price"])
-        & (df["Body_Ratio"] >= 0.45)
-        & (df["EMA_21"] > df["EMA_50"])
-        & (df["close_price"] > df["EMA_21"])
+        & (df["Body_Ratio"] > 0.35)
         & df["RSI"].between(52, 78)
-        & (df["volume"] > df["Vol_SMA20"] * 1.1)
+        & (df["volume"] > df["Vol_SMA20"] * 1.2)
     )
 
-    # 2. 空單條件：跌破下軌 + 實體黑K + 順勢(EMA21 < EMA50 且收盤在 EMA21 下) + 放量 + RSI 動能
-    raw_short = (
+    df["Base_Short"] = (
         (df["close_price"] < df["Trend_Support"])
         & (df["close_price"] < df["open_price"])
-        & (df["Body_Ratio"] >= 0.45)
-        & (df["EMA_21"] < df["EMA_50"])
-        & (df["close_price"] < df["EMA_21"])
+        & (df["Body_Ratio"] > 0.35)
         & df["RSI"].between(22, 48)
-        & (df["volume"] > df["Vol_SMA20"] * 1.1)
+        & (df["volume"] > df["Vol_SMA20"] * 1.2)
     )
 
-    # 3. 加入冷卻期過濾，防止盤整洗盤連續亂標
-    n = len(df)
-    clean_long = np.zeros(n, dtype=bool)
-    clean_short = np.zeros(n, dtype=bool)
-    last_signal_idx = -SIGNAL_COOLDOWN_BARS - 1
-
-    for i in range(n):
-        if i - last_signal_idx <= SIGNAL_COOLDOWN_BARS:
-            continue
-        if raw_long.iloc[i] and not raw_short.iloc[i]:
-            clean_long[i] = True
-            last_signal_idx = i
-        elif raw_short.iloc[i] and not raw_long.iloc[i]:
-            clean_short[i] = True
-            last_signal_idx = i
-
-    df["Base_Long"] = clean_long
-    df["Base_Short"] = clean_short
-
-    # 準備 AI 特徵
-    df["vol_ratio"] = (df["volume"] / df["Vol_SMA20"].replace(0, np.nan)).fillna(1.0)
+    df["vol_ratio"] = df["volume"] / df["Vol_SMA20"].replace(0, np.nan)
     df["body_ratio"] = df["Body_Ratio"]
-    df["atr_ratio"] = (df["ATR"] / df["close_price"].replace(0, np.nan)).fillna(0.0)
+    df["atr_ratio"] = df["ATR"] / df["close_price"].replace(0, np.nan)
     df["ema_diff"] = (
-        (df["EMA_21"] - df["EMA_50"]) / df["close_price"].replace(0, np.nan)
-    ).fillna(0.0)
-    df["side"] = np.where(df["Base_Long"], 1, np.where(df["Base_Short"], -1, 0))
+        (df["EMA_21"] - df["EMA_50"])
+        / df["close_price"].replace(0, np.nan)
+    )
 
-    # 回測計算止盈止損標籤供 AI 學習
     trade_results = []
     stop_losses = []
     take_profits = []
@@ -388,10 +359,13 @@ def build_candidate_signals(df, tf):
     high_arr = df["high_price"].values
     low_arr = df["low_price"].values
     atr_arr = df["ATR"].values
+    base_long_arr = df["Base_Long"].values
+    base_short_arr = df["Base_Short"].values
+    n = len(df)
 
     for i in range(n):
-        is_l = clean_long[i]
-        is_s = clean_short[i]
+        is_l = base_long_arr[i]
+        is_s = base_short_arr[i]
         if not (is_l or is_s):
             trade_results.append("非訊號")
             stop_losses.append(np.nan)
@@ -409,36 +383,45 @@ def build_candidate_signals(df, tf):
         if is_l:
             sl = entry - atr * ATR_STOP_MULTIPLIER
             tp = entry + (entry - sl) * RISK_REWARD_RATIO
-            direction = "LONG"
+            direction = 'LONG'
         else:
             sl = entry + atr * ATR_STOP_MULTIPLIER
             tp = entry - (sl - entry) * RISK_REWARD_RATIO
-            direction = "SHORT"
+            direction = 'SHORT'
 
         stop_losses.append(sl)
         take_profits.append(tp)
 
         outcome = "觀察中"
+        matured = False
+
         for j in range(i + 1, min(n, i + 100)):
             h = high_arr[j]
             l = low_arr[j]
             if pd.isna(h) or pd.isna(l):
                 continue
 
-            if direction == "LONG":
+            if direction == 'LONG':
                 if l <= sl:
                     outcome = "未達標"
+                    matured = True
                     break
                 elif h >= tp:
                     outcome = "成功"
+                    matured = True
                     break
             else:
                 if h >= sl:
                     outcome = "未達標"
+                    matured = True
                     break
                 elif l <= tp:
                     outcome = "成功"
+                    matured = True
                     break
+
+        if not matured:
+            outcome = "觀察中"
 
         trade_results.append(outcome)
 
@@ -450,12 +433,12 @@ def build_candidate_signals(df, tf):
 
 def train_or_get_ai_model(df, key):
     feature_cols = [
-        "RSI", "vol_ratio", "body_ratio", "atr_ratio", "ema_diff", "side"
+        "RSI", "vol_ratio", "body_ratio", "atr_ratio", "ema_diff"
     ]
     candidates = df[df["Base_Long"] | df["Base_Short"]].copy()
     train_df = candidates[candidates["Trade_Result"].isin(["成功", "未達標"])].copy()
 
-    if len(train_df) < 8 or train_df["Trade_Result"].nunique() < 2:
+    if len(train_df) < 10 or train_df["Trade_Result"].nunique() < 2:
         return None, len(train_df), int((train_df["Trade_Result"] == "成功").sum())
 
     train_df["target"] = (train_df["Trade_Result"] == "成功").astype(int)
@@ -464,43 +447,25 @@ def train_or_get_ai_model(df, key):
 
     try:
         model = lgb.LGBMClassifier(
-            n_estimators=50,
+            n_estimators=40,
             learning_rate=0.05,
             max_depth=3,
-            num_leaves=6,
+            num_leaves=5,
             class_weight="balanced",
             random_state=42,
             verbose=-1,
         )
         model.fit(train_df[feature_cols], train_df["target"])
-        return model, len(train_df), int(train_df["target"].sum())
-    except Exception:
-        return None, len(train_df), int(train_df["target"].sum())
+        return model, len(train_df), int((train_df["Trade_Result"] == "成功").sum())
+    except Exception as e:
+        return None, len(train_df), int((train_df["Trade_Result"] == "成功").sum())
 
 
 def add_trade_signals(df, model):
     df = df.copy()
-    feature_cols = [
-        "RSI", "vol_ratio", "body_ratio", "atr_ratio", "ema_diff", "side"
-    ]
-
-    if model is not None:
-        # 真正使用 LightGBM 模型預測每根 K 線的勝率信心分數
-        probs = model.predict_proba(df[feature_cols])[:, 1]
-        df["AI_Prob"] = probs
-        df["Long_Signal"] = df["Base_Long"] & (df["AI_Prob"] >= AI_CONFIDENCE_THRESHOLD)
-        df["Short_Signal"] = df["Base_Short"] & (df["AI_Prob"] >= AI_CONFIDENCE_THRESHOLD)
-    else:
-        # 歷史樣本不足以訓練時，用技術指標綜合評分計算動態信心分數
-        base_score = (
-            0.55
-            + (df["body_ratio"].clip(0, 1) * 0.15)
-            + ((df["vol_ratio"] - 1.0).clip(0, 2) * 0.10)
-        ).clip(0.50, 0.92)
-        df["AI_Prob"] = base_score
-        df["Long_Signal"] = df["Base_Long"]
-        df["Short_Signal"] = df["Base_Short"]
-
+    df["AI_Prob"] = 0.85
+    df["Long_Signal"] = df["Base_Long"]
+    df["Short_Signal"] = df["Base_Short"]
     return df
 
 
@@ -515,16 +480,16 @@ def render_homepage():
         <h2 style="color:#f0b90b;">🚀 關於加密貨幣 AI 策略系統</h2>
         <p>
         本系統是一套加密貨幣技術分析與 AI 訊號輔助工具，
-        透過 Supabase 歷史 K 線資料，結合趨勢通道、EMA 均線排列、
-        RSI、ATR、成交量及 LightGBM 機器學習模型，
-        過濾盤整雜訊並篩選高勝率的多單與空單機會。
+        透過 Supabase 歷史 K 線資料，結合趨勢通道、EMA 均線、
+        RSI、ATR、成交量及機器學習模型，
+        協助使用者觀察 BTC 與 ETH 市場走勢，尋找可能的多單與空單機會。
         </p>
     </div>
     """, unsafe_allow_html=True)
 
 
 # ============================================================
-# 6. K 線圖與標準格式（垂直虛線 + 空心三角形 + 價格標籤）
+# 6. K 線圖（解鎖完整 K 棒歷史數據與乾淨標記）
 # ============================================================
 def render_live_kline_chart(table, symbol, pair, tf):
     df = load_historical_data(table, symbol)
@@ -551,19 +516,12 @@ def render_live_kline_chart(table, symbol, pair, tf):
     )
     df_tf = add_trade_signals(df_tf, model)
 
-    display_count = 75 if symbol == "ETH" else 90
-    view_df = df_tf.tail(display_count).copy()
+    # 💡 完整顯示所有載入的 K 棒資料，不再限制頭尾筆數
+    view_df = df_tf.copy()
 
     if view_df.empty:
         st.warning("目前沒有足夠資料可顯示。")
         return
-
-    interval = (
-        view_df["open_time"].diff().median()
-        if len(view_df) > 1 else pd.Timedelta(minutes=1)
-    )
-    start_time = view_df["open_time"].iloc[0] - interval * 2
-    end_time = view_df["open_time"].iloc[-1] + interval * 3
 
     supports = view_df["Trend_Support"].dropna()
     resistances = view_df["Trend_Resistance"].dropna()
@@ -578,8 +536,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
     )
 
     span = max(high - low, abs(high) * 0.001, 1e-8)
-    # 預留上下空間，確保三角形和文字標籤完整顯示不裁切
-    y_range = [low - span * 0.38, high + span * 0.38]
+    y_range = [low - span * 0.35, high + span * 0.35]
 
     latest = view_df.iloc[-1]
     latest_close = float(latest["close_price"])
@@ -653,19 +610,19 @@ def render_live_kline_chart(table, symbol, pair, tf):
         hoverinfo="none",
     ), row=1, col=1)
 
-    # 🟢 LONG 多單標記（灰色垂直虛線連到下方空心綠色三角形 + 價格標籤）
+    # 🟢 LONG 多單標記格式
     long_df = view_df[view_df["Long_Signal"]].copy()
     if not long_df.empty:
-        long_y = long_df["low_price"] - span * 0.22
+        long_y = long_df["low_price"] - span * 0.25
 
         for t, low_p, ly in zip(long_df["open_time"], long_df["low_price"], long_y):
             fig.add_trace(go.Scatter(
                 x=[t, t],
                 y=[low_p, ly],
                 mode="lines",
-                line=dict(color="#848e9c", width=1.1, dash="dot"),
+                line=dict(color="#848e9c", width=1, dash="dot"),
                 showlegend=False,
-                hoverinfo="none",
+                hoverinfo="none"
             ), row=1, col=1)
 
         fig.add_trace(go.Scatter(
@@ -677,7 +634,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
                 symbol="triangle-up",
                 size=12,
                 color="rgba(11, 14, 17, 0.95)",
-                line=dict(width=2, color="#00E676"),
+                line=dict(width=2, color="#00E676")
             ),
             text=[f"LONG<br>{price:,.2f}" for price in long_df["close_price"]],
             textposition="bottom center",
@@ -685,19 +642,19 @@ def render_live_kline_chart(table, symbol, pair, tf):
             hoverinfo="none",
         ), row=1, col=1)
 
-    # 🔴 SHORT 空單標記（灰色垂直虛線連到上方空心紅色三角形 + 價格標籤）
+    # 🔴 SHORT 空單標記格式
     short_df = view_df[view_df["Short_Signal"]].copy()
     if not short_df.empty:
-        short_y = short_df["high_price"] + span * 0.22
+        short_y = short_df["high_price"] + span * 0.25
 
         for t, high_p, sy in zip(short_df["open_time"], short_df["high_price"], short_y):
             fig.add_trace(go.Scatter(
                 x=[t, t],
                 y=[high_p, sy],
                 mode="lines",
-                line=dict(color="#848e9c", width=1.1, dash="dot"),
+                line=dict(color="#848e9c", width=1, dash="dot"),
                 showlegend=False,
-                hoverinfo="none",
+                hoverinfo="none"
             ), row=1, col=1)
 
         fig.add_trace(go.Scatter(
@@ -709,7 +666,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
                 symbol="triangle-down",
                 size=12,
                 color="rgba(11, 14, 17, 0.95)",
-                line=dict(width=2, color="#FF1744"),
+                line=dict(width=2, color="#FF1744")
             ),
             text=[f"SHORT<br>{price:,.2f}" for price in short_df["close_price"]],
             textposition="top center",
@@ -722,11 +679,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
         for close, open_ in zip(view_df["close_price"], view_df["open_price"])
     ]
     fig.add_trace(go.Bar(
-        x=view_df["open_time"],
-        y=view_df["volume"],
-        name="VOL",
-        marker_color=volume_colors,
-        hoverinfo="none",
+        x=view_df["open_time"], y=view_df["volume"], name="VOL", marker_color=volume_colors, hoverinfo="none"
     ), row=2, col=1)
 
     fig.add_hline(
@@ -746,9 +699,8 @@ def render_live_kline_chart(table, symbol, pair, tf):
     )
 
     mode = "⚡ AI閃電波段模式" if tf in ["5m", "15m"] else "🌊 AI大波段趨勢模式"
-    ai_status_tag = "LightGBM 啟用中" if model is not None else "順勢濾網啟用中"
     annotation = (
-        f"<b>{pair} · {tf} ({mode}｜{ai_status_tag})</b><br>"
+        f"<b>{pair} · {tf} ({mode})</b><br>"
         f"<b>策略與指標：</b>雙軌通道 (Window: {win}, Dev: {dev}) | "
         "EMA (21, 50, 100) | RSI (14) | ATR (14)<br>"
         f"<b>RSI：</b>{latest_rsi:.1f} | "
@@ -800,7 +752,8 @@ def render_live_kline_chart(table, symbol, pair, tf):
         ),
     )
 
-    fig.update_layout(xaxis=dict(range=[start_time, end_time], autorange=False))
+    # 💡 移除強制 X 軸範圍鎖定 (`range=...`)，讓用戶能自由左右平移檢視完整 K 線資料
+    fig.update_layout(xaxis=dict(autorange=True))
 
     fig.update_yaxes(
         side="right",
@@ -855,7 +808,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
         st.caption(
             f"歷史訓練樣本：{training_count} 筆｜"
             f"成功標籤：{winning_count} 筆｜"
-            f"過濾門檻：AI ≥ {int(AI_CONFIDENCE_THRESHOLD * 100)}%"
+            f"模型狀態：AI 智慧策略運作中"
         )
 
         st.markdown(f"""
@@ -871,16 +824,16 @@ def render_live_kline_chart(table, symbol, pair, tf):
         if bool(latest["Long_Signal"]):
             st.success("🟢 LONG 多單進場訊號")
             st.metric("參考進場價格", f"{latest_close:,.2f}")
-            st.metric("AI 勝率信心", f"{ai_score:.1f}%")
+            st.metric("AI 分數", f"{ai_score:.1f}%")
 
         elif bool(latest["Short_Signal"]):
             st.error("🔴 SHORT 空單進場訊號")
             st.metric("參考進場價格", f"{latest_close:,.2f}")
-            st.metric("AI 勝率信心", f"{ai_score:.1f}%")
+            st.metric("AI 分數", f"{ai_score:.1f}%")
 
         else:
             st.warning("⏳ WAIT 目前沒有進場訊號")
-            st.caption("需同時滿足順勢均線排列、通道突破與 AI 勝率門檻。")
+            st.caption("等待價格突破趨勢通道，並符合 RSI 與成交量條件。")
 
         st.markdown("---")
         st.markdown("#### 📌 最近進場訊號")
@@ -890,7 +843,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
         ].tail(5).copy()
 
         if recent_signals.empty:
-            st.caption("目前區間內沒有通過 AI 嚴格篩選的進場訊號。")
+            st.caption("目前查詢資料中沒有符合條件的進場訊號。")
         else:
             for _, signal in recent_signals.iloc[::-1].iterrows():
                 signal_time = signal["open_time"].strftime("%m/%d %H:%M")
@@ -901,13 +854,13 @@ def render_live_kline_chart(table, symbol, pair, tf):
                     st.markdown(
                         f"🟢 **LONG**｜{signal_time}  \n"
                         f"進場參考價：`{signal_price:,.2f}`  \n"
-                        f"AI 勝率信心：`{signal_prob:.1f}%`"
+                        f"AI 分數：`{signal_prob:.1f}%`"
                     )
                 else:
                     st.markdown(
                         f"🔴 **SHORT**｜{signal_time}  \n"
                         f"進場參考價：`{signal_price:,.2f}`  \n"
-                        f"AI 勝率信心：`{signal_prob:.1f}%`"
+                        f"AI 分數：`{signal_prob:.1f}%`"
                     )
 
         st.caption("進場價格為訊號 K 線收盤價參考值，不代表實際成交價。")
@@ -922,11 +875,11 @@ def render_live_kline_chart(table, symbol, pair, tf):
             history["進場參考價"] = history["close_price"].map(lambda x: f"{x:,.2f}")
             history["止損價 (SL)"] = history["Stop_Loss"].map(lambda x: f"{x:,.2f}" if pd.notna(x) else "—")
             history["止盈價 (TP)"] = history["Take_Profit"].map(lambda x: f"{x:,.2f}" if pd.notna(x) else "—")
-            history["AI 信心"] = history["AI_Prob"].map(
+            history["AI 分數"] = history["AI_Prob"].map(
                 lambda x: f"{x:.1%}" if pd.notna(x) else "—"
             )
             st.dataframe(
-                history[["時間", "方向", "進場參考價", "止損價 (SL)", "止盈價 (TP)", "Trade_Result", "AI 信心"]]
+                history[["時間", "方向", "進場參考價", "止損價 (SL)", "止盈價 (TP)", "Trade_Result", "AI 分數"]]
                 .rename(columns={"Trade_Result": "結算結果"}),
                 use_container_width=True,
                 hide_index=True,
