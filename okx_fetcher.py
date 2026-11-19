@@ -115,7 +115,7 @@ def background_worker():
             time.sleep(2)
         except Exception as e:
             print(f"背景迴圈錯誤: {e}")
-            time.sleep(5)
+            time.sleep(0.5)
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
