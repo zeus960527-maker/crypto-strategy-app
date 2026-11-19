@@ -9,6 +9,24 @@ from flask import Flask, jsonify
 
 app = Flask(__name__)
 
+# 用來確保背景執行緒只會被啟動一次的鎖與旗標
+_worker_started = False
+_worker_lock = threading.Lock()
+
+def ensure_background_worker_running():
+    global _worker_started
+    if not _worker_started:
+        with _worker_lock:
+            if not _worker_started:
+                t = threading.Thread(target=background_worker, daemon=True)
+                t.start()
+                _worker_started = True
+
+@app.before_request
+def before_request_func():
+    # 當任何 HTTP 請求（例如 Render 健康檢查或 cron-job.org Ping）進來時，自動安全啟動背景爬蟲
+    ensure_background_worker_running()
+
 @app.route("/")
 def home():
     return "BTC OKX Fetcher is running 24/7! 🚀"
@@ -99,7 +117,6 @@ def background_worker():
             print(f"背景迴圈錯誤: {e}")
             time.sleep(5)
 
-# 💡 確保 Gunicorn 載入時一定能觸發背景爬蟲執行緒（避免被多行程重複啟動，加上判斷）
-if not app.debug or os.environ.get("WERKZEUG_RUN_MAIN") == "true":
-    t = threading.Thread(target=background_worker, daemon=True)
-    t.start()
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
