@@ -153,7 +153,7 @@ st.markdown("---")
 
 
 # ============================================================
-# 2. Supabase 連線
+# 2. Supabase 連線與 Discord 佇列同步
 # ============================================================
 def get_database_url():
     url = os.getenv("SUPABASE_DB_URL", "").strip()
@@ -186,6 +186,7 @@ def get_db_engine():
 
 
 def ensure_signal_outbox_table():
+    """建立訊號佇列表；以唯一鍵與雲端背景 Worker 共享，避免重複通知。"""
     engine = get_db_engine()
     with engine.begin() as conn:
         conn.execute(text("""
@@ -209,13 +210,10 @@ def ensure_signal_outbox_table():
                 UNIQUE(symbol, timeframe, candle_open_time, direction)
             )
         """))
-        conn.execute(text("""
-            CREATE INDEX IF NOT EXISTS idx_strategy_signal_outbox_pending
-            ON strategy_signal_outbox(status, created_at)
-        """))
 
 
 def publish_latest_signal_to_outbox(df_tf, symbol, timeframe):
+    """當網頁開啟時，將最新已收盤 K 棒的有效進場訊號安全送入佇列。"""
     if df_tf.empty:
         return
 
@@ -291,7 +289,7 @@ def publish_latest_signal_to_outbox(df_tf, symbol, timeframe):
                 "atr": atr,
                 "ai_probability": ai_prob,
             })
-    except Exception as exc:
+    except Exception:
         pass
 
 
@@ -497,7 +495,7 @@ def train_or_get_ai_model(df, key):
             verbose=-1,
         )
         model.fit(train_df[feature_cols], train_df["target"])
-        return model, len(train_df), int(train_df["target"].sum())
+        return model, len(train_df), int((train_df["Trade_Result"] == "成功").sum())
     except Exception as e:
         return None, len(train_df), int((train_df["Trade_Result"] == "成功").sum())
 
@@ -517,16 +515,18 @@ def add_trade_signals(df, model):
             try:
                 probabilities = model.predict_proba(usable.loc[valid])[:, 1]
                 df.loc[usable.loc[valid].index, "AI_Prob"] = probabilities
-            except Exception as e:
+            except Exception:
                 pass
 
     if model is None:
         df["AI_Prob"] = np.where(candidates, 0.70, np.nan)
         df["Long_Signal"] = df["Base_Long"]
         df["Short_Signal"] = df["Base_Short"]
+        df["AI_Mode"] = "策略回退（歷史樣本不足）"
     else:
         df["Long_Signal"] = df["Base_Long"] & (df["AI_Prob"] >= 0.58)
         df["Short_Signal"] = df["Base_Short"] & (df["AI_Prob"] >= 0.58)
+        df["AI_Mode"] = "歷史結果訓練模型"
 
     return df
 
@@ -548,6 +548,105 @@ def render_homepage():
         </p>
     </div>
     """, unsafe_allow_html=True)
+
+    st.markdown("## ⚙️ 系統功能")
+    c1, c2, c3 = st.columns(3)
+
+    with c1:
+        st.markdown("""
+        <div class="feature-card" style="border:1px solid #0ECB81;">
+        <h3 style="color:#0ECB81;">📈 多空訊號</h3>
+        <p>分析趨勢通道突破情況，判斷可能的 LONG 多單與 SHORT 空單機會。</p>
+        </div>
+        """, unsafe_allow_html=True)
+
+    with c2:
+        st.markdown("""
+        <div class="feature-card" style="border:1px solid #2962FF;">
+        <h3 style="color:#66a3ff;">🤖 AI 模型分析</h3>
+        <p>使用 LightGBM 分析技術指標，提供 AI 模型信心分數，輔助觀察市場。</p>
+        </div>
+        """, unsafe_allow_html=True)
+
+    with c3:
+        st.markdown("""
+        <div class="feature-card" style="border:1px solid #f0b90b;">
+        <h3 style="color:#f0b90b;">📊 技術分析</h3>
+        <p>整合 EMA 21、50、100、RSI、ATR、成交量與趨勢通道，觀察市場變化。</p>
+        </div>
+        """, unsafe_allow_html=True)
+
+    st.markdown("---")
+    st.markdown("## 📖 使用說明")
+
+    with st.container(border=True):
+        st.markdown("### ① 輸入加密貨幣名稱")
+        st.write("在頁面最上方搜尋欄輸入 BTC 或 ETH。")
+        st.markdown("### ② 送出查詢")
+        st.write("按下「送出查詢」，系統會載入該幣種的歷史 K 線資料。")
+        st.markdown("### ③ 選擇時間週期")
+        st.write("""
+        - **5m：** 5 分鐘 K 線，觀察短線變化。
+        - **15m：** 15 分鐘 K 線，觀察短線趨勢。
+        - **1h：** 1 小時 K 線，觀察中期趨勢。
+        - **4h：** 4 小時 K 線，觀察較大波段。
+        """)
+        st.markdown("### ④ 查看 AI 分析結果")
+        st.write("""
+        - 🟢 **AI 多單（LONG）：** 符合多單訊號條件。
+        - 🔴 **AI 空單（SHORT）：** 符合空單訊號條件。
+        - 🟡 **AI 觀望（WAIT）：** 暫時沒有符合條件的訊號。
+        """)
+
+    st.markdown("---")
+    st.markdown("## 🧠 AI 策略判斷方式")
+
+    strategy_df = pd.DataFrame({
+        "技術指標": [
+            "趨勢通道", "RSI（14）", "成交量",
+            "K 線實體比例", "EMA（21、50、100）",
+            "ATR（14）", "LightGBM"
+        ],
+        "用途": [
+            "判斷價格是否突破壓力或支撐",
+            "判斷市場動能",
+            "確認成交量是否放大",
+            "評估 K 線實體強度",
+            "觀察短中期趨勢",
+            "衡量市場波動程度",
+            "提供模型預測分數"
+        ]
+    })
+    st.dataframe(strategy_df, use_container_width=True, hide_index=True)
+
+    with st.expander("查看不同週期的訊號條件"):
+        st.markdown("""
+        **5m、15m 小波段**
+
+        - 多單：收盤價高於趨勢通道上軌、RSI 42～85、
+          成交量大於 20 根均量的 1.05 倍、K 線實體比例大於 0.3。
+        - 空單：收盤價低於趨勢通道下軌、RSI 15～58、
+          成交量大於 20 根均量的 1.05 倍、K 線實體比例大於 0.3。
+
+        **1h、4h 大波段**
+
+        - 多單：收盤價高於趨勢通道上軌、RSI 45～80、
+          成交量大於 20 根均量。
+        - 空單：收盤價低於趨勢通道下軌、RSI 20～55、
+          成交量大於 20 根均量。
+
+        **AI 條件：** 模型分數達到 58% 才顯示訊號。模型使用歷史策略候選進場點，並以進場後 3 根 K 線的方向報酬建立成功／未達標標籤；歷史樣本不足時會退回原策略訊號。
+        """)
+
+    st.warning("""
+    ⚠️ **風險提醒**
+
+    本系統提供技術分析與 AI 模型輔助訊號，不保證交易獲利。
+    AI 模型分數不是實際勝率。市場可能因突發事件快速變動，
+    請自行評估風險並設定適當止損，不要只依賴單一指標或模型分數。
+    """)
+
+    st.caption("加密貨幣 AI 策略系統｜BTC / ETH｜5m / 15m / 1h / 4h")
 
 
 # ============================================================
@@ -578,6 +677,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
     )
     df_tf = add_trade_signals(df_tf, model)
 
+    # 網頁即時推播至 Supabase 佇列（與雲端 Worker 共同維護唯一鍵，防止重複）
     publish_latest_signal_to_outbox(df_tf, symbol, tf)
 
     display_count = 90 if symbol == "ETH" else 120
@@ -634,6 +734,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
         row_heights=[0.75, 0.25],
     )
 
+    # K 線
     fig.add_trace(go.Candlestick(
         x=df_tf["open_time"],
         open=df_tf["open_price"],
@@ -649,6 +750,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
         hoverinfo="none",
     ), row=1, col=1)
 
+    # EMA 均線
     for ema, color, width in [
         ("EMA_21", "#2962FF", 1.2),
         ("EMA_50", "#FFFFFF", 1.2),
@@ -663,6 +765,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
             hoverinfo="none",
         ), row=1, col=1)
 
+    # 趨勢通道
     fig.add_trace(go.Scatter(
         x=df_tf["open_time"],
         y=df_tf["Trend_Resistance"],
@@ -681,6 +784,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
         hoverinfo="none",
     ), row=1, col=1)
 
+    # 多單進場標記（歷史進場）
     long_df = view_df[view_df["Long_Signal"]].copy()
     if not long_df.empty:
         fig.add_trace(go.Scatter(
@@ -704,6 +808,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
             ),
         ), row=1, col=1)
 
+    # 空單進場標記（歷史進場）
     short_df = view_df[view_df["Short_Signal"]].copy()
     if not short_df.empty:
         fig.add_trace(go.Scatter(
@@ -727,6 +832,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
             ),
         ), row=1, col=1)
 
+    # 成交量
     volume_colors = [
         "rgba(14,203,129,.5)" if close >= open_ else "rgba(246,70,93,.5)"
         for close, open_ in zip(df_tf["close_price"], df_tf["open_price"])
@@ -735,48 +841,166 @@ def render_live_kline_chart(table, symbol, pair, tf):
         x=df_tf["open_time"], y=df_tf["volume"], name="VOL", marker_color=volume_colors, hoverinfo="none",
     ), row=2, col=1)
 
+    fig.add_hline(
+        y=latest_close,
+        line_dash="dot",
+        line_width=1,
+        line_color=status_color,
+        annotation_text=f" {latest_close:,.2f} ",
+        annotation_position="right",
+        annotation_font=dict(color="white", size=11, family="Arial Black"),
+        annotation_bgcolor=status_color,
+        annotation_bordercolor=status_color,
+        annotation_borderwidth=1,
+        annotation_borderpad=3,
+        row=1,
+        col=1,
+    )
+
+    mode = "⚡ AI小波段閃電模式" if tf in ["5m", "15m"] else "🌊 AI大波段趨勢模式"
+    annotation = (
+        f"<b>{pair} · {tf} ({mode})</b><br>"
+        f"<b>策略與指標：</b>雙軌通道 (Window: {win}, Dev: {dev}) | "
+        "EMA (21, 50, 100) | RSI (14) | ATR (14)<br>"
+        f"<b>RSI：</b>{latest_rsi:.1f} | "
+        f"<b>AI模型分數：</b><span style='color:#f0b90b'>{ai_score:.1f}%</span> | "
+        f"收：<span style='color:{status_color}'>{latest_close:,.2f} "
+        f"({change_pct:+.2f}%)</span>"
+    )
+
+    fig.add_annotation(
+        text=annotation,
+        xref="paper",
+        yref="paper",
+        x=0.01,
+        y=0.99,
+        xanchor="left",
+        yanchor="top",
+        showarrow=False,
+        align="left",
+        font=dict(size=11, color="#c2c8d0"),
+    )
+
     fig.update_layout(
         template="plotly_dark",
         paper_bgcolor="rgba(11,14,17,.6)",
         plot_bgcolor="rgba(11,14,17,.6)",
         hovermode="x",
+        hoverdistance=100,
+        spikedistance=1000,
         xaxis_rangeslider_visible=False,
         dragmode="pan",
         height=820,
+        bargap=0.15,
+        showlegend=True,
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="left",
+            x=0,
+            font=dict(size=10),
+        ),
         margin=dict(l=10, r=85, t=65, b=30),
+        uirevision=f"{symbol}_{tf}_chart",
+        hoverlabel=dict(
+            bgcolor="rgba(30,35,41,.95)",
+            font_size=12,
+            font_color="white",
+            bordercolor="#f0b90b",
+        ),
     )
+
     fig.update_layout(xaxis=dict(range=[start_time, end_time], autorange=False))
 
     chart_col, panel_col = st.columns([3.6, 1.2])
-    with chart_col:
-        st.plotly_chart(fig, use_container_width=True, key=f"{symbol.lower()}_{tf}_chart")
 
+    with chart_col:
+        st.plotly_chart(
+            fig,
+            use_container_width=True,
+            config={
+                "scrollZoom": True,
+                "displayModeBar": True,
+                "displaylogo": False,
+            },
+            key=f"{symbol.lower()}_{tf}_chart",
+        )
+
+    # 右側面板：AI 即時建議與完整歷史訊號紀錄表格
     with panel_col:
         st.markdown("### 🎯 AI 即時操作建議")
+        st.caption(
+            f"歷史訓練樣本：{training_count} 筆｜"
+            f"成功標籤：{winning_count} 筆｜"
+            f"模型狀態：{'已使用歷史結果訓練' if model is not None else '樣本不足，使用原策略'}"
+        )
+
         st.markdown(f"""
-        <div style="background:rgba(30,35,41,.9);border:1px solid #2b313a;padding:10px;border-radius:6px;margin-bottom:10px;">
+        <div style="background:rgba(30,35,41,.9);border:1px solid #2b313a;
+                    padding:10px;border-radius:6px;margin-bottom:10px;">
             <div style="font-size:13px;color:#848e9c;">當前 AI 模型信心分數</div>
-            <div style="font-size:20px;font-weight:bold;color:#f0b90b;">{ai_score:.1f}%</div>
+            <div style="font-size:20px;font-weight:bold;color:#f0b90b;">
+                {ai_score:.1f}%
+            </div>
         </div>
         """, unsafe_allow_html=True)
 
         if bool(latest["Long_Signal"]):
             st.success("🟢 LONG 多單進場訊號")
             st.metric("參考進場價格", f"{latest_close:,.2f}")
+            st.metric("AI 模型分數", f"{ai_score:.1f}%")
+
         elif bool(latest["Short_Signal"]):
             st.error("🔴 SHORT 空單進場訊號")
             st.metric("參考進場價格", f"{latest_close:,.2f}")
+            st.metric("AI 模型分數", f"{ai_score:.1f}%")
+
         else:
             st.warning("⏳ WAIT 目前沒有進場訊號")
+            st.caption("等待價格突破趨勢通道，並符合 RSI、成交量及 AI 條件。")
 
         st.markdown("---")
+        st.markdown("#### 📌 最近進場訊號")
+
+        recent_signals = df_tf[
+            df_tf["Long_Signal"] | df_tf["Short_Signal"]
+        ].tail(5).copy()
+
+        if recent_signals.empty:
+            st.caption("目前查詢資料中沒有符合條件的進場訊號。")
+        else:
+            for _, signal in recent_signals.iloc[::-1].iterrows():
+                signal_time = signal["open_time"].strftime("%m/%d %H:%M")
+                signal_price = float(signal["close_price"])
+                signal_prob = float(signal["AI_Prob"]) * 100
+
+                if bool(signal["Long_Signal"]):
+                    st.markdown(
+                        f"🟢 **LONG**｜{signal_time}  \n"
+                        f"進場參考價：`{signal_price:,.2f}`  \n"
+                        f"AI 分數：`{signal_prob:.1f}%`"
+                    )
+                else:
+                    st.markdown(
+                        f"🔴 **SHORT**｜{signal_time}  \n"
+                        f"進場參考價：`{signal_price:,.2f}`  \n"
+                        f"AI 分數：`{signal_prob:.1f}%`"
+                    )
+
+        st.caption("進場價格為訊號 K 線收盤價參考值，不代表實際成交價。")
+
         st.markdown("#### 🧠 歷史訊號學習紀錄")
         history = df_tf[df_tf["Base_Long"] | df_tf["Base_Short"]].tail(12).copy()
-        if not history.empty:
+        if history.empty:
+            st.caption("目前載入的 K 線中尚無歷史候選進場點。")
+        else:
             history["方向"] = np.where(history["Base_Long"], "LONG", "SHORT")
             history["時間"] = history["open_time"].dt.strftime("%m/%d %H:%M")
             history["進場參考價"] = history["close_price"].map(lambda x: f"{x:,.2f}")
-            history["AI 分數"] = history["AI_Prob"].map(lambda x: f"{x:.1%}" if pd.notna(x) else "—")
+            history["AI 分數"] = history["AI_Prob"].map(
+                lambda x: f"{x:.1%}" if pd.notna(x) else "—"
+            )
             st.dataframe(
                 history[["時間", "方向", "進場參考價", "Trade_Result", "AI 分數"]]
                 .rename(columns={"Trade_Result": "3 根 K 線後結果"}),
@@ -790,17 +1014,44 @@ def render_live_kline_chart(table, symbol, pair, tf):
 # ============================================================
 if st.session_state.is_searched:
     query = st.session_state.search_query.upper()
-    if "ETH" in query:
-        table_name, symbol_name, pair_name = "eth_contract_klines", "ETH", "ETH-USDT-SWAP"
-    else:
-        table_name, symbol_name, pair_name = "btc_contract_klines", "BTC", "BTC-USDT-SWAP"
 
-    selected_tf = st.radio("時間週期", ["5m", "15m", "1h", "4h"], horizontal=True, key="timeframe_select")
+    if "ETH" in query:
+        table_name, symbol_name, pair_name = (
+            "eth_contract_klines",
+            "ETH",
+            "ETH-USDT-SWAP",
+        )
+    else:
+        table_name, symbol_name, pair_name = (
+            "btc_contract_klines",
+            "BTC",
+            "BTC-USDT-SWAP",
+        )
+
+    selected_tf = st.radio(
+        "時間週期（小波段／大波段）",
+        ["5m", "15m", "1h", "4h"],
+        horizontal=True,
+        key="timeframe_select",
+    )
 
     @st.fragment(run_every=5)
     def render_live_fragment(tbl, sym, pair, timeframe):
         render_live_kline_chart(tbl, sym, pair, timeframe)
 
-    render_live_fragment(table_name, symbol_name, pair_name, selected_tf)
+    render_live_fragment(
+        table_name,
+        symbol_name,
+        pair_name,
+        selected_tf,
+    )
+
+elif st.session_state.search_query:
+    st.warning(
+        f"找不到與「{st.session_state.search_query}」相關的圖表，"
+        "請嘗試輸入 BTC 或 ETH。"
+    )
+    render_homepage()
+
 else:
     render_homepage()
