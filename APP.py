@@ -488,7 +488,7 @@ def render_homepage():
 
 
 # ============================================================
-# 6. K 線圖（適度放大 K 棒尺寸、預設顯示 40 根並支援往左滑動）
+# 6. K 線圖（不改變圖表大小，收緊 Y 軸範圍使 K 棒在視覺上更高大飽滿）
 # ============================================================
 def render_live_kline_chart(table, symbol, pair, tf):
     df = load_historical_data(table, symbol)
@@ -521,8 +521,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
         st.warning("目前沒有足夠資料可顯示。")
         return
 
-    # 💡 關鍵調整：預設在畫面中顯示最近的 40 根 K 棒（K棒會變得非常飽滿清晰），其餘歷史資料往左隱藏，可隨時左右滑動
-    display_len = 40
+    display_len = 85
     if len(view_df) > display_len:
         start_time = view_df["open_time"].iloc[-display_len]
         end_time = view_df["open_time"].iloc[-1] + pd.Timedelta(minutes=5)
@@ -530,20 +529,17 @@ def render_live_kline_chart(table, symbol, pair, tf):
         start_time = view_df["open_time"].iloc[0]
         end_time = view_df["open_time"].iloc[-1]
 
-    supports = view_df["Trend_Support"].dropna()
-    resistances = view_df["Trend_Resistance"].dropna()
+    # 💡 僅針對畫面上顯示的範圍計算高低點，讓 Y 軸更集中，K 棒視覺高度自動放大
+    visible_df = view_df[(view_df["open_time"] >= start_time) & (view_df["open_time"] <= end_time)]
+    if visible_df.empty:
+        visible_df = view_df
 
-    low = min(
-        view_df["low_price"].min(),
-        supports.min() if not supports.empty else view_df["low_price"].min()
-    )
-    high = max(
-        view_df["high_price"].max(),
-        resistances.max() if not resistances.empty else view_df["high_price"].max()
-    )
+    low = visible_df["low_price"].min()
+    high = visible_df["high_price"].max()
 
     span = max(high - low, abs(high) * 0.001, 1e-8)
-    y_range = [low - span * 0.35, high + span * 0.35]
+    # 💡 縮小上下留白比例 (從 0.35 降為 0.12)，使 K 棒高度在不改變圖表大小的情況下顯著拉高放大
+    y_range = [low - span * 0.12, high + span * 0.12]
 
     latest = view_df.iloc[-1]
     latest_close = float(latest["close_price"])
@@ -577,7 +573,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
         low=view_df["low_price"],
         close=view_df["close_price"],
         name=symbol,
-        line=dict(width=1.5),
+        line=dict(width=1.3),
         increasing_line_color="#0ECB81",
         increasing_fillcolor="#0ECB81",
         decreasing_line_color="#F6465D",
@@ -586,9 +582,9 @@ def render_live_kline_chart(table, symbol, pair, tf):
     ), row=1, col=1)
 
     for ema, color, width in [
-        ("EMA_21", "#2962FF", 1.8),
-        ("EMA_50", "#FFFFFF", 1.8),
-        ("EMA_100", "#FF5252", 2.1),
+        ("EMA_21", "#2962FF", 1.5),
+        ("EMA_50", "#FFFFFF", 1.5),
+        ("EMA_100", "#FF5252", 1.8),
     ]:
         fig.add_trace(go.Scatter(
             x=view_df["open_time"],
@@ -604,7 +600,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
         y=view_df["Trend_Resistance"],
         mode="lines",
         name="壓力趨勢線",
-        line=dict(color="rgba(246,70,93,.7)", width=1.8, dash="dash"),
+        line=dict(color="rgba(246,70,93,.7)", width=1.5, dash="dash"),
         hoverinfo="none",
     ), row=1, col=1)
 
@@ -613,14 +609,14 @@ def render_live_kline_chart(table, symbol, pair, tf):
         y=view_df["Trend_Support"],
         mode="lines",
         name="支撐趨勢線",
-        line=dict(color="rgba(14,203,129,.7)", width=1.8, dash="dash"),
+        line=dict(color="rgba(14,203,129,.7)", width=1.5, dash="dash"),
         hoverinfo="none",
     ), row=1, col=1)
 
     # 🟢 LONG 多單標記格式
     long_df = view_df[view_df["Long_Signal"]].copy()
     if not long_df.empty:
-        long_y = long_df["low_price"] - span * 0.25
+        long_y = long_df["low_price"] - span * 0.08
 
         for t, low_p, ly in zip(long_df["open_time"], long_df["low_price"], long_y):
             fig.add_trace(go.Scatter(
@@ -639,7 +635,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
             name="LONG 多單進場",
             marker=dict(
                 symbol="triangle-up",
-                size=14,
+                size=13,
                 color="rgba(11, 14, 17, 0.95)",
                 line=dict(width=2, color="#00E676")
             ),
@@ -652,7 +648,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
     # 🔴 SHORT 空單標記格式
     short_df = view_df[view_df["Short_Signal"]].copy()
     if not short_df.empty:
-        short_y = short_df["high_price"] + span * 0.25
+        short_y = short_df["high_price"] + span * 0.08
 
         for t, high_p, sy in zip(short_df["open_time"], short_df["high_price"], short_y):
             fig.add_trace(go.Scatter(
@@ -671,7 +667,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
             name="SHORT 空單進場",
             marker=dict(
                 symbol="triangle-down",
-                size=14,
+                size=13,
                 color="rgba(11, 14, 17, 0.95)",
                 line=dict(width=2, color="#FF1744")
             ),
@@ -739,7 +735,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
         xaxis_rangeslider_visible=False,
         dragmode="pan",
         height=880,
-        bargap=0.15,  # 💡 優化 K 棒寬度與間距比例
+        bargap=0.08,
         showlegend=True,
         legend=dict(
             orientation="h",
