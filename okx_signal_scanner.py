@@ -229,7 +229,7 @@ def process_outbox_and_notify(engine, webhook_url):
                         {"name": "🛡️ 建議止損價 (SL)", "value": f"`{sl:,.2f}`", "inline": True},
                         {"name": "🎯 建議止盈價 (TP)", "value": f"`{tp:,.2f}`", "inline": True},
                     ],
-                    "footer": {"text": "OKX AI Strategy Scanner Bot"}
+                    "footer": {"text": f"OKX AI Strategy Scanner Bot | 執行時間: {datetime.now(TAIWAN_TZ).strftime('%Y-%m-%d %H:%M:%S')}"}
                 }]
             }
 
@@ -245,6 +245,9 @@ def process_outbox_and_notify(engine, webhook_url):
                 print(f"⚠️ 訊號 ID {sig_id} 發送失敗，HTTP Status: {res.status_code}")
 
 def main():
+    now_taipei = datetime.now(TAIWAN_TZ).strftime('%Y-%m-%d %H:%M:%S')
+    print(f"🕒 [台灣時間 {now_taipei}] OKX 策略訊號掃描與派送系統啟動（涵蓋 BTC 與 ETH）...")
+
     db_url = get_database_url()
     webhook_url = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
 
@@ -257,7 +260,6 @@ def main():
 
     engine = create_engine(db_url)
     ensure_signal_outbox_table(engine)
-    print("🚀 OKX 策略訊號掃描與派送系統啟動（涵蓋 BTC 與 ETH）...")
 
     pairs = [
         ("btc_contract_klines", "BTC"),
@@ -270,7 +272,7 @@ def main():
             scan_and_import_historical_signals(engine, table_name, symbol, tf)
 
     process_outbox_and_notify(engine, webhook_url)
-    print("✨ 本次 BTC 與 ETH 掃描與派送任務執行完畢。")
+    print(f"✨ [台灣時間 {datetime.now(TAIWAN_TZ).strftime('%Y-%m-%d %H:%M:%S')}] 本次掃描與派送任務執行完畢。")
 
 if __name__ == "__main__":
     main()
