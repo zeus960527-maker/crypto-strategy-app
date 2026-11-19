@@ -632,7 +632,8 @@ def render_live_kline_chart(table, symbol, pair, tf):
     )
 
     span = max(high - low, abs(high) * 0.001, 1e-8)
-    y_range = [low - span * 0.25, high + span * 0.25]
+    # 預留更大的上下範圍，容納更遠距離的三角形與文字標籤
+    y_range = [low - span * 0.50, high + span * 0.50]
 
     latest = df_tf.iloc[-1]
     latest_close = float(latest["close_price"])
@@ -659,7 +660,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
         row_heights=[0.75, 0.25],
     )
 
-    # K線（bargap=0 確保 K 棒與 K 棒間距為 0）
+    # K線（bargap=0 確保 K 棒與 K 棒緊密貼合、間距為 0）
     fig.add_trace(go.Candlestick(
         x=df_tf["open_time"],
         open=df_tf["open_price"],
@@ -710,11 +711,12 @@ def render_live_kline_chart(table, symbol, pair, tf):
     ), row=1, col=1)
 
     # ========================================================
-    # 三角形距離拉大（1000cm 視覺比例）、縮小、虛線連接
+    # 三角形距離再次加倍拉遠（模擬 +1000cm）、縮小、虛線連接
     # ========================================================
     long_df = view_df[view_df["Long_Signal"]].copy()
     if not long_df.empty:
-        long_y = long_df["low_price"] - span * 0.14
+        # 將向下位移係數從 0.14 提升至 0.35（更遠的距離）
+        long_y = long_df["low_price"] - span * 0.35
 
         for t, low_p, ly in zip(long_df["open_time"], long_df["low_price"], long_y):
             fig.add_trace(go.Scatter(
@@ -749,7 +751,8 @@ def render_live_kline_chart(table, symbol, pair, tf):
 
     short_df = view_df[view_df["Short_Signal"]].copy()
     if not short_df.empty:
-        short_y = short_df["high_price"] + span * 0.14
+        # 將向上位移係數從 0.14 提升至 0.35（更遠的距離）
+        short_y = short_df["high_price"] + span * 0.35
 
         for t, high_p, sy in zip(short_df["open_time"], short_df["high_price"], short_y):
             fig.add_trace(go.Scatter(
@@ -864,7 +867,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
     fig.update_layout(xaxis=dict(range=[start_time, end_time], autorange=False))
 
     # ========================================================
-    # 關鍵修正：將主圖與副圖的 Y 軸座標軸設定在「右側」 (side="right")
+    # Y 軸座標軸設定在「右側」 (side="right")
     # ========================================================
     fig.update_yaxes(
         side="right",
