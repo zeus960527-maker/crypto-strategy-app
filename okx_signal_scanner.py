@@ -115,9 +115,7 @@ def calculate_indicators_and_signals(df, tf):
     return df
 
 def scan_and_import_historical_signals(engine, table_name, symbol, timeframe):
-    """
-    從歷史 K 線中找出從上一次到最新一次的所有訊號，並批次匯入資料表 (ON CONFLICT DO NOTHING)
-    """
+    """從歷史 K 線中找出訊號，並批次匯入佇列 (ON CONFLICT DO NOTHING)"""
     try:
         query = text(f"""
             SELECT timeframe, open_time, open_price, high_price,
@@ -139,8 +137,6 @@ def scan_and_import_historical_signals(engine, table_name, symbol, timeframe):
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
         df = calculate_indicators_and_signals(df, timeframe)
-        
-        # 篩選出所有符合 LONG 或 SHORT 條件的歷史 K 線
         signal_rows = df[df["Long_Signal"] | df["Short_Signal"]]
         if signal_rows.empty:
             return
@@ -169,7 +165,6 @@ def scan_and_import_historical_signals(engine, table_name, symbol, timeframe):
                 else:
                     candle_time = candle_time.astimezone(TAIWAN_TZ)
 
-                # 使用當前執行的台灣時間作為訊號時間
                 current_taipei_time = datetime.now(TAIWAN_TZ)
                 signal_time_text = current_taipei_time.strftime("%Y-%m-%d %H:%M:%S")
 
@@ -207,9 +202,7 @@ def scan_and_import_historical_signals(engine, table_name, symbol, timeframe):
         print(f"[{symbol} {timeframe}] 歷史訊號掃描匯入發生錯誤: {e}")
 
 def process_outbox_and_notify(engine, webhook_url):
-    """
-    讀取 strategy_signal_outbox 中狀態為 pending 的訊號，發送到 Discord 並更新為 sent
-    """
+    """讀取佇列中 pending 的訊號，發送到 Discord 並更新為 sent"""
     with engine.begin() as conn:
         result = conn.execute(text("""
             SELECT id, symbol, timeframe, direction, signal_time_taipei,
@@ -266,7 +259,6 @@ def main():
     ensure_signal_outbox_table(engine)
     print("🚀 OKX 策略訊號掃描與派送系統啟動（涵蓋 BTC 與 ETH）...")
 
-    # 同時對 BTC 與 ETH 各時間週期進行掃描
     pairs = [
         ("btc_contract_klines", "BTC"),
         ("eth_contract_klines", "ETH")
@@ -277,7 +269,6 @@ def main():
         for tf in timeframes:
             scan_and_import_historical_signals(engine, table_name, symbol, tf)
 
-    # 處理 Outbox 佇列中所有待發送的訊號並推送到 Discord
     process_outbox_and_notify(engine, webhook_url)
     print("✨ 本次 BTC 與 ETH 掃描與派送任務執行完畢。")
 
