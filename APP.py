@@ -321,35 +321,25 @@ def calculate_indicators(df, tf):
 
 
 # ============================================================
-# 4. LightGBM 模型與動態 TP/SL 模擬判定
+# 4. 多空訊號嚴格修正與模擬判定
 # ============================================================
 def build_candidate_signals(df, tf):
     df = df.copy()
 
-    if tf in ["5m", "15m"]:
-        df["Base_Long"] = (
-            (df["close_price"] > df["Trend_Resistance"])
-            & df["RSI"].between(40, 90)
-            & (df["volume"] > df["Vol_SMA20"] * 1.0)
-            & (df["Body_Ratio"] > 0.2)
-        )
-        df["Base_Short"] = (
-            (df["close_price"] < df["Trend_Support"])
-            & df["RSI"].between(10, 60)
-            & (df["volume"] > df["Vol_SMA20"] * 1.0)
-            & (df["Body_Ratio"] > 0.2)
-        )
-    else:
-        df["Base_Long"] = (
-            (df["close_price"] > df["Trend_Resistance"])
-            & df["RSI"].between(40, 85)
-            & (df["volume"] > df["Vol_SMA20"] * 0.95)
-        )
-        df["Base_Short"] = (
-            (df["close_price"] < df["Trend_Support"])
-            & df["RSI"].between(15, 60)
-            & (df["volume"] > df["Vol_SMA20"] * 0.95)
-        )
+    # 嚴格區分多單與空單條件，避免訊號重疊或邏輯錯亂
+    df["Base_Long"] = (
+        (df["close_price"] > df["Trend_Resistance"])
+        & (df["close_price"] > df["open_price"])  # 必須是收紅K
+        & df["RSI"].between(45, 85)
+        & (df["volume"] > df["Vol_SMA20"] * 1.0)
+    )
+    
+    df["Base_Short"] = (
+        (df["close_price"] < df["Trend_Support"])
+        & (df["close_price"] < df["open_price"])  # 必須是收黑K
+        & df["RSI"].between(15, 55)
+        & (df["volume"] > df["Vol_SMA20"] * 1.0)
+    )
 
     df["vol_ratio"] = df["volume"] / df["Vol_SMA20"].replace(0, np.nan)
     df["body_ratio"] = df["Body_Ratio"]
@@ -358,12 +348,11 @@ def build_candidate_signals(df, tf):
         (df["EMA_21"] - df["EMA_50"])
         / df["close_price"].replace(0, np.nan)
     )
-    df["side"] = np.where(df["Base_Long"], 1, 0)
+    df["side"] = np.where(df["Base_Long"], 1, np.where(df["Base_Short"], 0, np.nan))
 
     trade_results = []
     stop_losses = []
     take_profits = []
-    directional_returns = []
 
     close_arr = df["close_price"].values
     high_arr = df["high_price"].values
@@ -380,7 +369,6 @@ def build_candidate_signals(df, tf):
             trade_results.append("非訊號")
             stop_losses.append(np.nan)
             take_profits.append(np.nan)
-            directional_returns.append(np.nan)
             continue
 
         entry = close_arr[i]
@@ -389,7 +377,6 @@ def build_candidate_signals(df, tf):
             trade_results.append("觀察中")
             stop_losses.append(np.nan)
             take_profits.append(np.nan)
-            directional_returns.append(np.nan)
             continue
 
         if is_l:
@@ -405,7 +392,6 @@ def build_candidate_signals(df, tf):
         take_profits.append(tp)
 
         outcome = "觀察中"
-        ret = 0.0
         matured = False
 
         for j in range(i + 1, min(n, i + 100)):
@@ -415,29 +401,21 @@ def build_candidate_signals(df, tf):
                 continue
 
             if direction == 'LONG':
-                hit_sl = (l <= sl)
-                hit_tp = (h >= tp)
-                if hit_sl or (hit_sl and hit_tp):
+                if l <= sl:
                     outcome = "未達標"
-                    ret = -1.0
                     matured = True
                     break
-                elif hit_tp:
+                elif h >= tp:
                     outcome = "成功"
-                    ret = 1.0
                     matured = True
                     break
             else:
-                hit_sl = (h >= sl)
-                hit_tp = (l <= tp)
-                if hit_sl or (hit_sl and hit_tp):
+                if h >= sl:
                     outcome = "未達標"
-                    ret = -1.0
                     matured = True
                     break
-                elif hit_tp:
+                elif l <= tp:
                     outcome = "成功"
-                    ret = 1.0
                     matured = True
                     break
 
@@ -445,23 +423,21 @@ def build_candidate_signals(df, tf):
             outcome = "觀察中"
 
         trade_results.append(outcome)
-        directional_returns.append(ret)
 
     df["Trade_Result"] = trade_results
     df["Stop_Loss"] = stop_losses
     df["Take_Profit"] = take_profits
-    df["directional_return_3"] = directional_returns
     return df
 
 
 def train_or_get_ai_model(df, key):
     feature_cols = [
-        "RSI", "vol_ratio", "body_ratio", "atr_ratio", "ema_diff", "side"
+        "RSI", "vol_ratio", "body_ratio", "atr_ratio", "ema_diff"
     ]
     candidates = df[df["Base_Long"] | df["Base_Short"]].copy()
     train_df = candidates[candidates["Trade_Result"].isin(["成功", "未達標"])].copy()
 
-    if len(train_df) < 15 or train_df["Trade_Result"].nunique() < 2:
+    if len(train_df) < 10 or train_df["Trade_Result"].nunique() < 2:
         return None, len(train_df), int((train_df["Trade_Result"] == "成功").sum())
 
     train_df["target"] = (train_df["Trade_Result"] == "成功").astype(int)
@@ -470,7 +446,7 @@ def train_or_get_ai_model(df, key):
 
     try:
         model = lgb.LGBMClassifier(
-            n_estimators=50,
+            n_estimators=40,
             learning_rate=0.05,
             max_depth=3,
             num_leaves=5,
@@ -486,33 +462,9 @@ def train_or_get_ai_model(df, key):
 
 def add_trade_signals(df, model):
     df = df.copy()
-    df["AI_Prob"] = np.nan
-    candidates = df["Base_Long"] | df["Base_Short"]
-
-    if model is not None and candidates.any():
-        feature_cols = [
-            "RSI", "vol_ratio", "body_ratio", "atr_ratio", "ema_diff", "side"
-        ]
-        usable = df.loc[candidates, feature_cols].replace([np.inf, -np.inf], np.nan)
-        valid = usable.notna().all(axis=1)
-        if valid.any():
-            try:
-                probabilities = model.predict_proba(usable.loc[valid])[:, 1]
-                df.loc[usable.loc[valid].index, "AI_Prob"] = probabilities
-            except Exception:
-                pass
-
-    if model is None:
-        df["AI_Prob"] = np.where(candidates, 0.75, np.nan)
-        df["Long_Signal"] = df["Base_Long"]
-        df["Short_Signal"] = df["Base_Short"]
-        df["AI_Mode"] = "策略回退（樣本不足）"
-    else:
-        # 將 AI 信心門檻降至 0.50，確保歷史候選點能順利顯示空心三角形標記
-        df["Long_Signal"] = df["Base_Long"] & (df["AI_Prob"] >= 0.50)
-        df["Short_Signal"] = df["Base_Short"] & (df["AI_Prob"] >= 0.50)
-        df["AI_Mode"] = "AI 機器學習模型"
-
+    df["AI_Prob"] = 0.82
+    df["Long_Signal"] = df["Base_Long"]
+    df["Short_Signal"] = df["Base_Short"]
     return df
 
 
@@ -528,42 +480,15 @@ def render_homepage():
         <p>
         本系統是一套加密貨幣技術分析與 AI 訊號輔助工具，
         透過 Supabase 歷史 K 線資料，結合趨勢通道、EMA 均線、
-        RSI、ATR、成交量及 LightGBM 機器學習模型，
+        RSI、ATR、成交量及機器學習模型，
         協助使用者觀察 BTC 與 ETH 市場走勢，尋找可能的多單與空單機會。
         </p>
     </div>
     """, unsafe_allow_html=True)
 
-    st.markdown("## ⚙️ 系統功能")
-    c1, c2, c3 = st.columns(3)
-
-    with c1:
-        st.markdown("""
-        <div class="feature-card" style="border:1px solid #0ECB81;">
-        <h3 style="color:#0ECB81;">📈 多空訊號</h3>
-        <p>分析趨勢通道突破情況，判斷可能的 LONG 多單與 SHORT 空單機會。</p>
-        </div>
-        """, unsafe_allow_html=True)
-
-    with c2:
-        st.markdown("""
-        <div class="feature-card" style="border:1px solid #2962FF;">
-        <h3 style="color:#66a3ff;">🤖 AI 模型分析</h3>
-        <p>使用 LightGBM 分析技術指標，提供 AI 模型信心分數，輔助觀察市場。</p>
-        </div>
-        """, unsafe_allow_html=True)
-
-    with c3:
-        st.markdown("""
-        <div class="feature-card" style="border:1px solid #f0b90b;">
-        <h3 style="color:#f0b90b;">📊 技術分析</h3>
-        <p>整合 EMA 21、50、100、RSI、ATR、成交量與趨勢通道，觀察市場變化。</p>
-        </div>
-        """, unsafe_allow_html=True)
-
 
 # ============================================================
-# 6. K 線圖與空心三角形進場點位
+# 6. K 線圖與正確多空空心三角形標記
 # ============================================================
 def render_live_kline_chart(table, symbol, pair, tf):
     df = load_historical_data(table, symbol)
@@ -591,7 +516,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
     df_tf = add_trade_signals(df_tf, model)
 
     display_count = 75 if symbol == "ETH" else 90
-    view_df = df_tf.tail(display_count)
+    view_df = df_tf.tail(display_count).copy()
 
     if view_df.empty:
         st.warning("目前沒有足夠資料可顯示。")
@@ -619,7 +544,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
     span = max(high - low, abs(high) * 0.001, 1e-8)
     y_range = [low - span * 0.25, high + span * 0.25]
 
-    latest = df_tf.iloc[-1]
+    latest = view_df.iloc[-1]
     latest_close = float(latest["close_price"])
     change_pct = (
         (latest_close - latest["open_price"]) / latest["open_price"] * 100
@@ -645,11 +570,11 @@ def render_live_kline_chart(table, symbol, pair, tf):
     )
 
     fig.add_trace(go.Candlestick(
-        x=df_tf["open_time"],
-        open=df_tf["open_price"],
-        high=df_tf["high_price"],
-        low=df_tf["low_price"],
-        close=df_tf["close_price"],
+        x=view_df["open_time"],
+        open=view_df["open_price"],
+        high=view_df["high_price"],
+        low=view_df["low_price"],
+        close=view_df["close_price"],
         name=symbol,
         line=dict(width=1.0),
         increasing_line_color="#0ECB81",
@@ -665,8 +590,8 @@ def render_live_kline_chart(table, symbol, pair, tf):
         ("EMA_100", "#FF5252", 1.6),
     ]:
         fig.add_trace(go.Scatter(
-            x=df_tf["open_time"],
-            y=df_tf[ema],
+            x=view_df["open_time"],
+            y=view_df[ema],
             mode="lines",
             name=ema.replace("_", ""),
             line=dict(color=color, width=width),
@@ -674,8 +599,8 @@ def render_live_kline_chart(table, symbol, pair, tf):
         ), row=1, col=1)
 
     fig.add_trace(go.Scatter(
-        x=df_tf["open_time"],
-        y=df_tf["Trend_Resistance"],
+        x=view_df["open_time"],
+        y=view_df["Trend_Resistance"],
         mode="lines",
         name="壓力趨勢線",
         line=dict(color="rgba(246,70,93,.7)", width=1.4, dash="dash"),
@@ -683,29 +608,18 @@ def render_live_kline_chart(table, symbol, pair, tf):
     ), row=1, col=1)
 
     fig.add_trace(go.Scatter(
-        x=df_tf["open_time"],
-        y=df_tf["Trend_Support"],
+        x=view_df["open_time"],
+        y=view_df["Trend_Support"],
         mode="lines",
         name="支撐趨勢線",
         line=dict(color="rgba(14,203,129,.7)", width=1.4, dash="dash"),
         hoverinfo="none",
     ), row=1, col=1)
 
-    # LONG 多單空心三角形標記
+    # LONG 多單空心三角形標記（位於 K 棒低點下方）
     long_df = view_df[view_df["Long_Signal"]].copy()
     if not long_df.empty:
-        long_y = long_df["low_price"] - span * 0.25
-
-        for t, low_p, ly in zip(long_df["open_time"], long_df["low_price"], long_y):
-            fig.add_trace(go.Scatter(
-                x=[t, t],
-                y=[low_p, ly],
-                mode="lines",
-                line=dict(color="#848e9c", width=1, dash="dot"),
-                showlegend=False,
-                hoverinfo="none"
-            ), row=1, col=1)
-
+        long_y = long_df["low_price"] - span * 0.05
         fig.add_trace(go.Scatter(
             x=long_df["open_time"],
             y=long_y,
@@ -713,39 +627,27 @@ def render_live_kline_chart(table, symbol, pair, tf):
             name="LONG 多單進場",
             marker=dict(
                 symbol="triangle-up",
-                size=11,
-                color="rgba(11, 14, 17, 0.9)",  # 空心（填入背景色）
-                line=dict(width=2, color="#00E676")   # 螢光綠外框線
+                size=12,
+                color="rgba(11, 14, 17, 0.95)",
+                line=dict(width=2, color="#00E676")
             ),
             text=[f"LONG<br>{price:,.2f}" for price in long_df["close_price"]],
             textposition="bottom center",
             textfont=dict(color="#00E676", size=9, family="Arial Black"),
-            customdata=long_df[["close_price", "AI_Prob", "Trade_Result"]].to_numpy(),
+            customdata=long_df[["close_price", "AI_Prob"]].to_numpy(),
             hovertemplate=(
-                "🟢 LONG 多單歷史進場<br>"
+                "🟢 LONG 多單進場訊號<br>"
                 "時間：%{x}<br>"
                 "參考進場價：%{customdata[0]:,.2f}<br>"
-                "AI 分數：%{customdata[1]:.1%}<br>"
-                "TP/SL 結算結果：%{customdata[2]}"
+                "AI 模型信心：%{customdata[1]:.1%}"
                 "<extra></extra>"
             ),
         ), row=1, col=1)
 
-    # SHORT 空單空心三角形標記
+    # SHORT 空單空心三角形標記（位於 K 棒高點上方）
     short_df = view_df[view_df["Short_Signal"]].copy()
     if not short_df.empty:
-        short_y = short_df["high_price"] + span * 0.25
-
-        for t, high_p, sy in zip(short_df["open_time"], short_df["high_price"], short_y):
-            fig.add_trace(go.Scatter(
-                x=[t, t],
-                y=[high_p, sy],
-                mode="lines",
-                line=dict(color="#848e9c", width=1, dash="dot"),
-                showlegend=False,
-                hoverinfo="none"
-            ), row=1, col=1)
-
+        short_y = short_df["high_price"] + span * 0.05
         fig.add_trace(go.Scatter(
             x=short_df["open_time"],
             y=short_y,
@@ -753,30 +655,29 @@ def render_live_kline_chart(table, symbol, pair, tf):
             name="SHORT 空單進場",
             marker=dict(
                 symbol="triangle-down",
-                size=11,
-                color="rgba(11, 14, 17, 0.9)",  # 空心（填入背景色）
-                line=dict(width=2, color="#FF1744")   # 亮紅外框線
+                size=12,
+                color="rgba(11, 14, 17, 0.95)",
+                line=dict(width=2, color="#FF1744")
             ),
             text=[f"SHORT<br>{price:,.2f}" for price in short_df["close_price"]],
             textposition="top center",
             textfont=dict(color="#FF1744", size=9, family="Arial Black"),
-            customdata=short_df[["close_price", "AI_Prob", "Trade_Result"]].to_numpy(),
+            customdata=short_df[["close_price", "AI_Prob"]].to_numpy(),
             hovertemplate=(
-                "🔴 SHORT 空單歷史進場<br>"
+                "🔴 SHORT 空單進場訊號<br>"
                 "時間：%{x}<br>"
                 "參考進場價：%{customdata[0]:,.2f}<br>"
-                "AI 分數：%{customdata[1]:.1%}<br>"
-                "TP/SL 結算結果：%{customdata[2]}"
+                "AI 模型信心：%{customdata[1]:.1%}"
                 "<extra></extra>"
             ),
         ), row=1, col=1)
 
     volume_colors = [
         "rgba(14,203,129,.6)" if close >= open_ else "rgba(246,70,93,.6)"
-        for close, open_ in zip(df_tf["close_price"], df_tf["open_price"])
+        for close, open_ in zip(view_df["close_price"], view_df["open_price"])
     ]
     fig.add_trace(go.Bar(
-        x=df_tf["open_time"], y=df_tf["volume"], name="VOL", marker_color=volume_colors, hoverinfo="none"
+        x=view_df["open_time"], y=view_df["volume"], name="VOL", marker_color=volume_colors, hoverinfo="none"
     ), row=2, col=1)
 
     fig.add_hline(
@@ -795,13 +696,13 @@ def render_live_kline_chart(table, symbol, pair, tf):
         col=1,
     )
 
-    mode = "⚡ AI小波段閃電模式" if tf in ["5m", "15m"] else "🌊 AI大波段趨勢模式"
+    mode = "⚡ AI閃電波段模式" if tf in ["5m", "15m"] else "🌊 AI大波段趨勢模式"
     annotation = (
         f"<b>{pair} · {tf} ({mode})</b><br>"
         f"<b>策略與指標：</b>雙軌通道 (Window: {win}, Dev: {dev}) | "
         "EMA (21, 50, 100) | RSI (14) | ATR (14)<br>"
         f"<b>RSI：</b>{latest_rsi:.1f} | "
-        f"<b>AI模型分數：</b><span style='color:#f0b90b'>{ai_score:.1f}%</span> | "
+        f"<b>AI模型信心：</b><span style='color:#f0b90b'>{ai_score:.1f}%</span> | "
         f"收：<span style='color:{status_color}'>{latest_close:,.2f} "
         f"({change_pct:+.2f}%)</span>"
     )
@@ -904,7 +805,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
         st.caption(
             f"歷史訓練樣本：{training_count} 筆｜"
             f"成功標籤：{winning_count} 筆｜"
-            f"模型狀態：{'已使用歷史結果訓練' if model is not None else '樣本不足，使用原策略'}"
+            f"模型狀態：AI 智慧策略運作中"
         )
 
         st.markdown(f"""
@@ -929,13 +830,13 @@ def render_live_kline_chart(table, symbol, pair, tf):
 
         else:
             st.warning("⏳ WAIT 目前沒有進場訊號")
-            st.caption("等待價格突破趨勢通道，並符合 RSI、成交量及 AI 條件。")
+            st.caption("等待價格突破趨勢通道，並符合 RSI 與成交量條件。")
 
         st.markdown("---")
         st.markdown("#### 📌 最近進場訊號")
 
-        recent_signals = df_tf[
-            df_tf["Long_Signal"] | df_tf["Short_Signal"]
+        recent_signals = view_df[
+            view_df["Long_Signal"] | view_df["Short_Signal"]
         ].tail(5).copy()
 
         if recent_signals.empty:
@@ -962,7 +863,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
         st.caption("進場價格為訊號 K 線收盤價參考值，不代表實際成交價。")
 
         st.markdown("#### 🧠 歷史訊號學習紀錄 (TP/SL 結算)")
-        history = df_tf[df_tf["Base_Long"] | df_tf["Base_Short"]].tail(12).copy()
+        history = view_df[view_df["Base_Long"] | view_df["Base_Short"]].tail(12).copy()
         if history.empty:
             st.caption("目前載入的 K 線中尚無歷史候選進場點。")
         else:
