@@ -192,7 +192,7 @@ def background_worker():
             start_time = time.time()
             run_sync_task(fetch_single_timeframe_realtime)
             elapsed = time.time() - start_time
-            sleep_time = max(1.0, 3.0 - elapsed)
+            sleep_time = max(1.0, 3.0 - elapsed-1)
             time.sleep(sleep_time)
         except Exception as e:
             print(f"背景迴圈錯誤: {e}")
