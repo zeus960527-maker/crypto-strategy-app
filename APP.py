@@ -20,31 +20,11 @@ RISK_REWARD_RATIO = 2.5
 
 
 # ============================================================
-# 0. 頁面設定、圖片與背景（含手機 RWD 響應式 CSS）
+# 0. 頁面設定、圖片與背景（含手機 RWD 響應式 CSS）與 Flask 路由
 # ============================================================
 BASE_DIR = Path(__file__).resolve().parent
 
-
-def load_image_safe(filename):
-    try:
-        return Image.open(BASE_DIR / filename)
-    except Exception:
-        return None
-
-
-def get_base64_image(filename):
-    try:
-        with open(BASE_DIR / filename, "rb") as f:
-            return base64.b64encode(f.read()).decode("utf-8")
-    except Exception:
-        return None
-
-
-icon_img = load_image_safe("hacker_icon.png")
-bg_base64 = get_base64_image("background.png")
-
-# 判斷是否為 Flask 背景 Web Service 啟動（非 Streamlit 執行緒）
-# 這裡採用共存架構，如果是透過 Gunicorn 啟動 app:app，Flask 路由會正常運作
+# 建立 Flask 應用實例，供 Render Web Service 背景 / 路由使用
 app = Flask(__name__)
 
 @app.route("/")
@@ -65,7 +45,24 @@ def manual_run():
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
-# 設定 Streamlit 頁面
+def load_image_safe(filename):
+    try:
+        return Image.open(BASE_DIR / filename)
+    except Exception:
+        return None
+
+
+def get_base64_image(filename):
+    try:
+        with open(BASE_DIR / filename, "rb") as f:
+            return base64.b64encode(f.read()).decode("utf-8")
+    except Exception:
+        return None
+
+
+icon_img = load_image_safe("hacker_icon.png")
+bg_base64 = get_base64_image("background.png")
+
 st.set_page_config(
     page_title="加密貨幣 AI 策略系統",
     page_icon=icon_img if icon_img else "💻",
@@ -189,7 +186,7 @@ st.markdown("---")
 
 
 # ============================================================
-# 2. Supabase 連線
+# 2. Supabase 連線與 Outbox 寫入
 # ============================================================
 def get_database_url():
     url = os.getenv("SUPABASE_DB_URL", "").strip()
@@ -252,18 +249,6 @@ def publish_latest_signal_to_outbox(df_tf, symbol, timeframe):
         return
 
     latest = df_tf.iloc[-1]
-    timeframe_delta = {
-        "5m": pd.Timedelta(minutes=5),
-        "15m": pd.Timedelta(minutes=15),
-        "1h": pd.Timedelta(hours=1),
-        "4h": pd.Timedelta(hours=4),
-    }.get(timeframe)
-    if timeframe_delta is None:
-        return
-
-    candle_open = pd.Timestamp(latest["open_time"])
-    now_taipei = pd.Timestamp.now(tz="Asia/Taipei").tz_localize(None)
-
     is_long = bool(latest.get("Long_Signal", False))
     is_short = bool(latest.get("Short_Signal", False))
     if not (is_long or is_short) or (is_long and is_short):
@@ -288,7 +273,7 @@ def publish_latest_signal_to_outbox(df_tf, symbol, timeframe):
     else:
         candle_time = candle_time.astimezone(TAIWAN_TZ)
 
-    signal_time_text = candle_time.strftime("%Y-%m-%d %H:%M:%S")
+    signal_time_text = datetime.now(TAIWAN_TZ).strftime("%Y-%m-%d %H:%M:%S")
     ai_prob = latest.get("AI_Prob")
     ai_prob = float(ai_prob) if pd.notna(ai_prob) else None
 
