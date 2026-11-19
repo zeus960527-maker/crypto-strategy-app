@@ -16,4 +16,3 @@ plotly
 python-dotenv
 flask
 gunicorn
-zoneinfo
