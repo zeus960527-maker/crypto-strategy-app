@@ -1,8 +1,8 @@
 import os
 import base64
+from pathlib import Path
 import threading
 import subprocess
-from pathlib import Path
 
 import streamlit as st
 import pandas as pd
@@ -44,7 +44,7 @@ def get_base64_image(filename):
 icon_img = load_image_safe("hacker_icon.png")
 bg_base64 = get_base64_image("background.png")
 
-# 透過 try-except 確保在非 Streamlit (例如 Flask 背景服務啟動) 時不會噴錯
+# 檢查是否為 Streamlit 執行環境，避免在 Render 引入時報錯
 try:
     st.set_page_config(
         page_title="加密貨幣 AI 策略系統",
@@ -70,143 +70,104 @@ if bg_base64:
     .block-container {{ background-color: transparent !important; }}
     """
 
-# 僅在 Streamlit 環境下注入樣式
-try:
-    st.markdown(f"""
-    <style>
-    {bg_css}
+st.markdown(f"""
+<style>
+{bg_css}
+.block-container {{
+    padding-top: 3.5rem !important;
+    padding-bottom: 2rem !important;
+    max-width: 1500px;
+}}
+h1 {{
+    color: #fff !important;
+    font-size: 2.6rem !important;
+    line-height: 1.4 !important;
+    font-weight: 800 !important;
+    margin-top: 1rem !important;
+    margin-bottom: 1.5rem !important;
+    padding: 8px 0 !important;
+    position: relative;
+    z-index: 10;
+    text-shadow: 0 0 8px rgba(0,0,0,.9), 0 0 16px rgba(0,0,0,.7),
+                 0 2px 4px rgba(0,0,0,.8) !important;
+}}
+h2, h3, h4 {{ color: #f0f3f6 !important; }}
+p, li, label {{ color: #e5e7eb; }}
+div[data-testid="stRadio"] > div {{ flex-direction: row; gap: 12px; flex-wrap: wrap; }}
+.stTextInput input {{
+    background-color: #1e2329 !important;
+    color: #eaecef !important;
+    border: 1px solid #2b313a !important;
+}}
+.stTextInput input:focus {{
+    border: 1px solid #f0b90b !important;
+    box-shadow: none !important;
+}}
+[data-testid="stStatusWidget"] {{ visibility: hidden; display: none; }}
+.js-plotly-plot .plotly .nsewdrag,
+.js-plotly-plot .plotly .draglayer,
+.js-plotly-plot .plotly .plot-container {{ cursor: crosshair !important; }}
+.intro-card {{
+    background: rgba(20,25,35,.94);
+    border: 1px solid #343b48;
+    border-radius: 12px;
+    padding: 24px;
+    margin: 18px 0;
+}}
+.intro-card p, .feature-card p {{ color: #d1d5db; line-height: 1.8; }}
+.feature-card {{
+    background: rgba(30,35,41,.94);
+    border-radius: 10px;
+    padding: 18px;
+    min-height: 175px;
+    height: 100%;
+}}
+
+/* 手機版 RWD 自動適配樣式 */
+@media(max-width: 768px) {{
     .block-container {{
-        padding-top: 3.5rem !important;
-        padding-bottom: 2rem !important;
-        max-width: 1500px;
+        padding-left: 0.75rem !important;
+        padding-right: 0.75rem !important;
+        padding-top: 1.5rem !important;
     }}
     h1 {{
-        color: #fff !important;
-        font-size: 2.6rem !important;
-        line-height: 1.4 !important;
-        font-weight: 800 !important;
-        margin-top: 1rem !important;
-        margin-bottom: 1.5rem !important;
-        padding: 8px 0 !important;
-        position: relative;
-        z-index: 10;
-        text-shadow: 0 0 8px rgba(0,0,0,.9), 0 0 16px rgba(0,0,0,.7),
-                     0 2px 4px rgba(0,0,0,.8) !important;
+        font-size: 1.8rem !important;
     }}
-    h2, h3, h4 {{ color: #f0f3f6 !important; }}
-    p, li, label {{ color: #e5e7eb; }}
-    div[data-testid="stRadio"] > div {{ flex-direction: row; gap: 12px; flex-wrap: wrap; }}
-    .stTextInput input {{
-        background-color: #1e2329 !important;
-        color: #eaecef !important;
-        border: 1px solid #2b313a !important;
+    .js-plotly-plot, .plot-container {{
+        height: 450px !important;
     }}
-    .stTextInput input:focus {{
-        border: 1px solid #f0b90b !important;
-        box-shadow: none !important;
-    }}
-    [data-testid="stStatusWidget"] {{ visibility: hidden; display: none; }}
-    .js-plotly-plot .plotly .nsewdrag,
-    .js-plotly-plot .plotly .draglayer,
-    .js-plotly-plot .plotly .plot-container {{ cursor: crosshair !important; }}
-    .intro-card {{
-        background: rgba(20,25,35,.94);
-        border: 1px solid #343b48;
-        border-radius: 12px;
-        padding: 24px;
-        margin: 18px 0;
-    }}
-    .intro-card p, .feature-card p {{ color: #d1d5db; line-height: 1.8; }}
-    .feature-card {{
-        background: rgba(30,35,41,.94);
-        border-radius: 10px;
-        padding: 18px;
-        min-height: 175px;
-        height: 100%;
-    }}
-
-    /* 手機版 RWD 自動適配樣式 */
-    @media(max-width: 768px) {{
-        .block-container {{
-            padding-left: 0.75rem !important;
-            padding-right: 0.75rem !important;
-            padding-top: 1.5rem !important;
-        }}
-        h1 {{
-            font-size: 1.8rem !important;
-        }}
-        .js-plotly-plot, .plot-container {{
-            height: 450px !important;
-        }}
-    }}
-    </style>
-    """, unsafe_allow_html=True)
-except Exception:
-    pass
-
-
-# ============================================================
-# 0-1. Flask 服務整合（專供 Render Web Service 背景與 Webhook 使用）
-# ============================================================
-flask_app = Flask(__name__)
-
-@flask_app.route("/")
-def home():
-    return "Crypto AI Strategy Web Service & Webhook Trigger is running live! 🚀"
-
-@flask_app.route("/run-scanner", methods=["GET", "POST"])
-def manual_run():
-    """供外部 Cron 服務（如 cron-job.org）定時 Ping 的 Webhook 路由"""
-    try:
-        result = subprocess.run(["python", "okx_signal_scanner.py"], capture_output=True, text=True)
-        return jsonify({
-            "status": "success",
-            "message": "Scanner executed successfully via Webhook",
-            "output": result.stdout
-        }), 200
-    except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
-
-def run_flask_app():
-    port = int(os.environ.get("PORT", 10000))
-    flask_app.run(host="0.0.0.0", port=port)
-
-# 當透過 Render 啟動 Python 時，自動在背景運行 Flask 服務以接聽 Webhook
-if os.environ.get("RENDER") or os.getenv("RUN_FLASK", "false").lower() == "true":
-    t = threading.Thread(target=run_flask_app, daemon=True)
-    t.start()
+}}
+</style>
+""", unsafe_allow_html=True)
 
 
 # ============================================================
 # 1. Session State 與標題搜尋列
 # ============================================================
-try:
-    st.session_state.setdefault("is_searched", False)
-    st.session_state.setdefault("search_query", "")
-    st.session_state.setdefault("ai_models", {})
+st.session_state.setdefault("is_searched", False)
+st.session_state.setdefault("search_query", "")
+st.session_state.setdefault("ai_models", {})
 
-    st.title("加密貨幣 AI 策略系統")
+st.title("加密貨幣 AI 策略系統")
 
-    with st.form("search_form"):
-        col1, col2 = st.columns([4, 1])
-        with col1:
-            input_val = st.text_input(
-                "🔍 請輸入加密貨幣名稱（例如 BTC 或 ETH）：",
-                value=st.session_state.search_query,
-                placeholder="BTC / ETH",
-            )
-        with col2:
-            st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
-            submitted = st.form_submit_button("送出查詢", use_container_width=True)
+with st.form("search_form"):
+    col1, col2 = st.columns([4, 1])
+    with col1:
+        input_val = st.text_input(
+            "🔍 請輸入加密貨幣名稱（例如 BTC 或 ETH）：",
+            value=st.session_state.search_query,
+            placeholder="BTC / ETH",
+        )
+    with col2:
+        st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+        submitted = st.form_submit_button("送出查詢", use_container_width=True)
 
-    if submitted:
-        q = input_val.strip().upper()
-        st.session_state.search_query = q
-        st.session_state.is_searched = ("BTC" in q or "ETH" in q)
+if submitted:
+    q = input_val.strip().upper()
+    st.session_state.search_query = q
+    st.session_state.is_searched = ("BTC" in q or "ETH" in q)
 
-    st.markdown("---")
-except Exception:
-    pass
+st.markdown("---")
 
 
 # ============================================================
@@ -227,8 +188,7 @@ def get_database_url():
     return url or None
 
 
-# 加上 suppress_warning 避免 Streamlit 快取資源提示
-@st.cache_resource(suppress_warning_registration=True)
+@st.cache_resource
 def get_db_engine():
     url = get_database_url()
     if not url:
@@ -347,10 +307,7 @@ def publish_latest_signal_to_outbox(df_tf, symbol, timeframe):
 def load_historical_data(table_name, symbol_name):
     allowed_tables = {"btc_contract_klines", "eth_contract_klines"}
     if table_name not in allowed_tables:
-        try:
-            st.error("資料表名稱不合法。")
-        except Exception:
-            pass
+        st.error("資料表名稱不合法。")
         return pd.DataFrame()
 
     try:
@@ -370,10 +327,7 @@ def load_historical_data(table_name, symbol_name):
         df = df.sort_values("open_time").reset_index(drop=True)
 
     except Exception as e:
-        try:
-            st.error(f"Supabase 連線或讀取錯誤：{e}")
-        except Exception:
-            pass
+        st.error(f"Supabase 連線或讀取錯誤：{e}")
         return pd.DataFrame()
 
     df["symbol"] = symbol_name
@@ -662,49 +616,46 @@ def add_trade_signals(df, model):
 # 5. 首頁說明區
 # ============================================================
 def render_homepage():
-    try:
-        st.info("💡 請在上方查詢欄輸入 BTC 或 ETH，並按下「送出查詢」開始使用。")
+    st.info("💡 請在上方查詢欄輸入 BTC 或 ETH，並按下「送出查詢」開始使用。")
 
+    st.markdown("""
+    <div class="intro-card">
+        <h2 style="color:#f0b90b;">🚀 關於加密貨幣 AI 策略系統</h2>
+        <p>
+        本系統是一套加密貨幣技術分析與 AI 訊號輔助工具，
+        透過 Supabase 歷史 K 線資料，結合趨勢通道、EMA 均線、
+        RSI、ATR、成交量及 LightGBM 機器學習模型，
+        協助使用者觀察 BTC 與 ETH 市場走勢，尋找可能的多單與空單機會。
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.markdown("## ⚙️ 系統功能")
+    c1, c2, c3 = st.columns(3)
+
+    with c1:
         st.markdown("""
-        <div class="intro-card">
-            <h2 style="color:#f0b90b;">🚀 關於加密貨幣 AI 策略系統</h2>
-            <p>
-            本系統是一套加密貨幣技術分析與 AI 訊號輔助工具，
-            透過 Supabase 歷史 K 線資料，結合趨勢通道、EMA 均線、
-            RSI、ATR、成交量及 LightGBM 機器學習模型，
-            協助使用者觀察 BTC 與 ETH 市場走勢，尋找可能的多單與空單機會。
-            </p>
+        <div class="feature-card" style="border:1px solid #0ECB81;">
+        <h3 style="color:#0ECB81;">📈 多空訊號</h3>
+        <p>分析趨勢通道突破情況，判斷可能的 LONG 多單與 SHORT 空單機會。</p>
         </div>
         """, unsafe_allow_html=True)
 
-        st.markdown("## ⚙️ 系統功能")
-        c1, c2, c3 = st.columns(3)
+    with c2:
+        st.markdown("""
+        <div class="feature-card" style="border:1px solid #2962FF;">
+        <h3 style="color:#66a3ff;">🤖 AI 模型分析</h3>
+        <p>使用 LightGBM 分析技術指標，提供 AI 模型信心分數，輔助觀察市場。</p>
+        </div>
+        """, unsafe_allow_html=True)
 
-        with c1:
-            st.markdown("""
-            <div class="feature-card" style="border:1px solid #0ECB81;">
-            <h3 style="color:#0ECB81;">📈 多空訊號</h3>
-            <p>分析趨勢通道突破情況，判斷可能的 LONG 多單與 SHORT 空單機會。</p>
-            </div>
-            """, unsafe_allow_html=True)
-
-        with c2:
-            st.markdown("""
-            <div class="feature-card" style="border:1px solid #2962FF;">
-            <h3 style="color:#66a3ff;">🤖 AI 模型分析</h3>
-            <p>使用 LightGBM 分析技術指標，提供 AI 模型信心分數，輔助觀察市場。</p>
-            </div>
-            """, unsafe_allow_html=True)
-
-        with c3:
-            st.markdown("""
-            <div class="feature-card" style="border:1px solid #f0b90b;">
-            <h3 style="color:#f0b90b;">📊 技術分析</h3>
-            <p>整合 EMA 21、50、100、RSI、ATR、成交量與趨勢通道，觀察市場變化。</p>
-            </div>
-            """, unsafe_allow_html=True)
-    except Exception:
-        pass
+    with c3:
+        st.markdown("""
+        <div class="feature-card" style="border:1px solid #f0b90b;">
+        <h3 style="color:#f0b90b;">📊 技術分析</h3>
+        <p>整合 EMA 21、50、100、RSI、ATR、成交量與趨勢通道，觀察市場變化。</p>
+        </div>
+        """, unsafe_allow_html=True)
 
 
 # ============================================================
@@ -714,10 +665,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
     df = load_historical_data(table, symbol)
 
     if df.empty:
-        try:
-            st.warning("目前無法取得資料，請確認 Supabase 連線及資料表內容。")
-        except Exception:
-            pass
+        st.warning("目前無法取得資料，請確認 Supabase 連線及資料表內容。")
         return
 
     df_tf = (
@@ -728,10 +676,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
     )
 
     if df_tf.empty:
-        try:
-            st.warning(f"{tf} 週期目前尚無資料。")
-        except Exception:
-            pass
+        st.warning(f"{tf} 週期目前尚無資料。")
         return
 
     df_tf, win, dev = calculate_indicators(df_tf, tf)
@@ -747,10 +692,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
     view_df = df_tf.tail(display_count)
 
     if view_df.empty:
-        try:
-            st.warning("目前沒有足夠資料可顯示。")
-        except Exception:
-            pass
+        st.warning("目前沒有足夠資料可顯示。")
         return
 
     interval = (
@@ -800,7 +742,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
         row_heights=[0.75, 0.25],
     )
 
-    # K線
+    # K線（bargap=0 確保 K 棒與 K 棒緊密貼合、間距為 0）
     fig.add_trace(go.Candlestick(
         x=df_tf["open_time"],
         open=df_tf["open_price"],
@@ -850,7 +792,9 @@ def render_live_kline_chart(table, symbol, pair, tf):
         hoverinfo="none",
     ), row=1, col=1)
 
-    # 三角形進場點位
+    # ========================================================
+    # 三角形進場點位（灰色虛線連接、適當拉遠距離）
+    # ========================================================
     long_df = view_df[view_df["Long_Signal"]].copy()
     if not long_df.empty:
         long_y = long_df["low_price"] - span * 0.35
@@ -1000,6 +944,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
 
     fig.update_layout(xaxis=dict(range=[start_time, end_time], autorange=False))
 
+    # Y 軸座標軸設定在右側
     fig.update_yaxes(
         side="right",
         gridcolor="#1e2329",
@@ -1010,7 +955,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
         spikemode="across+toaxis",
         spikesnap="cursor",
         spikethickness=1,
-        spikedash="dash",
+        spikesdash="dash",
         spikecolor="#a0a6b2",
         showline=True,
         row=1,
@@ -1028,158 +973,186 @@ def render_live_kline_chart(table, symbol, pair, tf):
         spikemode="across",
         spikesnap="cursor",
         spikethickness=1,
-        spikedash="dash",
+        spikesdash="dash",
         spikecolor="#a0a6b2",
         row=2,
         col=1,
     )
 
-    try:
-        chart_col, panel_col = st.columns([3.6, 1.2])
+    chart_col, panel_col = st.columns([3.6, 1.2])
 
-        with chart_col:
-            st.plotly_chart(
-                fig,
-                use_container_width=True,
-                config={
-                    "scrollZoom": True,
-                    "displayModeBar": True,
-                    "displaylogo": False,
-                },
-                key=f"{symbol.lower()}_{tf}_chart",
-            )
+    with chart_col:
+        st.plotly_chart(
+            fig,
+            use_container_width=True,
+            config={
+                "scrollZoom": True,
+                "displayModeBar": True,
+                "displaylogo": False,
+            },
+            key=f"{symbol.lower()}_{tf}_chart",
+        )
 
-        with panel_col:
-            st.markdown("### 🎯 AI 即時操作建議")
-            st.caption(
-                f"歷史訓練樣本：{training_count} 筆｜"
-                f"成功標籤：{winning_count} 筆｜"
-                f"模型狀態：{'已使用歷史結果訓練' if model is not None else '樣本不足，使用原策略'}"
-            )
+    with panel_col:
+        st.markdown("### 🎯 AI 即時操作建議")
+        st.caption(
+            f"歷史訓練樣本：{training_count} 筆｜"
+            f"成功標籤：{winning_count} 筆｜"
+            f"模型狀態：{'已使用歷史結果訓練' if model is not None else '樣本不足，使用原策略'}"
+        )
 
-            st.markdown(f"""
-            <div style="background:rgba(30,35,41,.9);border:1px solid #2b313a;
-                        padding:10px;border-radius:6px;margin-bottom:10px;">
-                <div style="font-size:13px;color:#848e9c;">當前 AI 模型信心分數</div>
-                <div style="font-size:20px;font-weight:bold;color:#f0b90b;">
-                    {ai_score:.1f}%
-                </div>
+        st.markdown(f"""
+        <div style="background:rgba(30,35,41,.9);border:1px solid #2b313a;
+                    padding:10px;border-radius:6px;margin-bottom:10px;">
+            <div style="font-size:13px;color:#848e9c;">當前 AI 模型信心分數</div>
+            <div style="font-size:20px;font-weight:bold;color:#f0b90b;">
+                {ai_score:.1f}%
             </div>
-            """, unsafe_allow_html=True)
+        </div>
+        """, unsafe_allow_html=True)
 
-            if bool(latest["Long_Signal"]):
-                st.success("🟢 LONG 多單進場訊號")
-                st.metric("參考進場價格", f"{latest_close:,.2f}")
-                st.metric("AI 模型分數", f"{ai_score:.1f}%")
+        if bool(latest["Long_Signal"]):
+            st.success("🟢 LONG 多單進場訊號")
+            st.metric("參考進場價格", f"{latest_close:,.2f}")
+            st.metric("AI 模型分數", f"{ai_score:.1f}%")
 
-            elif bool(latest["Short_Signal"]):
-                st.error("🔴 SHORT 空單進場訊號")
-                st.metric("參考進場價格", f"{latest_close:,.2f}")
-                st.metric("AI 模型分數", f"{ai_score:.1f}%")
+        elif bool(latest["Short_Signal"]):
+            st.error("🔴 SHORT 空單進場訊號")
+            st.metric("參考進場價格", f"{latest_close:,.2f}")
+            st.metric("AI 模型分數", f"{ai_score:.1f}%")
 
-            else:
-                st.warning("⏳ WAIT 目前沒有進場訊號")
-                st.caption("等待價格突破趨勢通道，並符合 RSI、成交量及 AI 條件。")
-
-            st.markdown("---")
-            st.markdown("#### 📌 最近進場訊號")
-
-            recent_signals = df_tf[
-                df_tf["Long_Signal"] | df_tf["Short_Signal"]
-            ].tail(5).copy()
-
-            if recent_signals.empty:
-                st.caption("目前查詢資料中沒有符合條件的進場訊號。")
-            else:
-                for _, signal in recent_signals.iloc[::-1].iterrows():
-                    signal_time = signal["open_time"].strftime("%m/%d %H:%M")
-                    signal_price = float(signal["close_price"])
-                    signal_prob = float(signal["AI_Prob"]) * 100
-
-                    if bool(signal["Long_Signal"]):
-                        st.markdown(
-                            f"🟢 **LONG**｜{signal_time}  \n"
-                            f"進場參考價：`{signal_price:,.2f}`  \n"
-                            f"AI 分數：`{signal_prob:.1f}%`"
-                        )
-                    else:
-                        st.markdown(
-                            f"🔴 **SHORT**｜{signal_time}  \n"
-                            f"進場參考價：`{signal_price:,.2f}`  \n"
-                            f"AI 分數：`{signal_prob:.1f}%`"
-                        )
-
-            st.caption("進場價格為訊號 K 線收盤價參考值，不代表實際成交價。")
-
-            st.markdown("#### 🧠 歷史訊號學習紀錄 (TP/SL 結算)")
-            history = df_tf[df_tf["Base_Long"] | df_tf["Base_Short"]].tail(12).copy()
-            if history.empty:
-                st.caption("目前載入的 K 線中尚無歷史候選進場點。")
-            else:
-                history["方向"] = np.where(history["Base_Long"], "LONG", "SHORT")
-                history["時間"] = history["open_time"].dt.strftime("%m/%d %H:%M")
-                history["進場參考價"] = history["close_price"].map(lambda x: f"{x:,.2f}")
-                history["止損價 (SL)"] = history["Stop_Loss"].map(lambda x: f"{x:,.2f}" if pd.notna(x) else "—")
-                history["止盈價 (TP)"] = history["Take_Profit"].map(lambda x: f"{x:,.2f}" if pd.notna(x) else "—")
-                history["AI 分數"] = history["AI_Prob"].map(
-                    lambda x: f"{x:.1%}" if pd.notna(x) else "—"
-                )
-                st.dataframe(
-                    history[["時間", "方向", "進場參考價", "止損價 (SL)", "止盈價 (TP)", "Trade_Result", "AI 分數"]]
-                    .rename(columns={"Trade_Result": "結算結果"}),
-                    use_container_width=True,
-                    hide_index=True,
-                )
-    except Exception:
-        pass
-
-
-# ============================================================
-# 7. 主畫面
-# ============================================================
-try:
-    if st.session_state.is_searched:
-        query = st.session_state.search_query.upper()
-
-        if "ETH" in query:
-            table_name, symbol_name, pair_name = (
-                "eth_contract_klines",
-                "ETH",
-                "ETH-USDT-SWAP",
-            )
         else:
-            table_name, symbol_name, pair_name = (
-                "btc_contract_klines",
-                "BTC",
-                "BTC-USDT-SWAP",
+            st.warning("⏳ WAIT 目前沒有進場訊號")
+            st.caption("等待價格突破趨勢通道，並符合 RSI、成交量及 AI 條件。")
+
+        st.markdown("---")
+        st.markdown("#### 📌 最近進場訊號")
+
+        recent_signals = df_tf[
+            df_tf["Long_Signal"] | df_tf["Short_Signal"]
+        ].tail(5).copy()
+
+        if recent_signals.empty:
+            st.caption("目前查詢資料中沒有符合條件的進場訊號。")
+        else:
+            for _, signal in recent_signals.iloc[::-1].iterrows():
+                signal_time = signal["open_time"].strftime("%m/%d %H:%M")
+                signal_price = float(signal["close_price"])
+                signal_prob = float(signal["AI_Prob"]) * 100
+
+                if bool(signal["Long_Signal"]):
+                    st.markdown(
+                        f"🟢 **LONG**｜{signal_time}  \n"
+                        f"進場參考價：`{signal_price:,.2f}`  \n"
+                        f"AI 分數：`{signal_prob:.1f}%`"
+                    )
+                else:
+                    st.markdown(
+                        f"🔴 **SHORT**｜{signal_time}  \n"
+                        f"進場參考價：`{signal_price:,.2f}`  \n"
+                        f"AI 分數：`{signal_prob:.1f}%`"
+                    )
+
+        st.caption("進場價格為訊號 K 線收盤價參考值，不代表實際成交價。")
+
+        st.markdown("#### 🧠 歷史訊號學習紀錄 (TP/SL 結算)")
+        history = df_tf[df_tf["Base_Long"] | df_tf["Base_Short"]].tail(12).copy()
+        if history.empty:
+            st.caption("目前載入的 K 線中尚無歷史候選進場點。")
+        else:
+            history["方向"] = np.where(history["Base_Long"], "LONG", "SHORT")
+            history["時間"] = history["open_time"].dt.strftime("%m/%d %H:%M")
+            history["進場參考價"] = history["close_price"].map(lambda x: f"{x:,.2f}")
+            history["止損價 (SL)"] = history["Stop_Loss"].map(lambda x: f"{x:,.2f}" if pd.notna(x) else "—")
+            history["止盈價 (TP)"] = history["Take_Profit"].map(lambda x: f"{x:,.2f}" if pd.notna(x) else "—")
+            history["AI 分數"] = history["AI_Prob"].map(
+                lambda x: f"{x:.1%}" if pd.notna(x) else "—"
+            )
+            st.dataframe(
+                history[["時間", "方向", "進場參考價", "止損價 (SL)", "止盈價 (TP)", "Trade_Result", "AI 分數"]]
+                .rename(columns={"Trade_Result": "結算結果"}),
+                use_container_width=True,
+                hide_index=True,
             )
 
-        selected_tf = st.radio(
-            "時間週期（小波段／大波段）",
-            ["5m", "15m", "1h", "4h"],
-            horizontal=True,
-            key="timeframe_select",
-        )
 
-        @st.fragment(run_every=5)
-        def render_live_fragment(tbl, sym, pair, timeframe):
-            render_live_kline_chart(tbl, sym, pair, timeframe)
+# ============================================================
+# 7. 主畫面與 Flask 服務整合 (Render Web Service 專用)
+# ============================================================
+app = Flask(__name__)
 
-        render_live_fragment(
-            table_name,
-            symbol_name,
-            pair_name,
-            selected_tf,
-        )
+@app.route("/")
+def home():
+    return "Crypto AI Scanner Web Service is running 24/7! 🚀"
 
-    elif st.session_state.search_query:
-        st.warning(
-            f"找不到與「{st.session_state.search_query}」相關的圖表，"
-            "請嘗試輸入 BTC 或 ETH。"
-        )
-        render_homepage()
+@app.route("/run-scanner", methods=["GET", "POST"])
+def manual_run():
+    """提供外部 Webhook / Cron-job 觸發掃描與 Discord 推送的路由"""
+    try:
+        result = subprocess.run(["python", "okx_signal_scanner.py"], capture_output=True, text=True)
+        return jsonify({
+            "status": "success",
+            "message": "Scanner executed successfully via webhook",
+            "output": result.stdout
+        }), 200
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
 
+def run_flask():
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
+
+# 判斷是否為 Streamlit 執行模式
+# 當使用 `streamlit run app.py` 時執行 Streamlit 邏輯
+# 當使用 `gunicorn app:app` 或直接 `python app.py` 在 Render 執行時啟動 Flask 服務
+if __name__ == "__main__" or os.environ.get("RENDER"):
+    # 檢查是否為 Streamlit 指令執行
+    import sys
+    if any("streamlit" in arg for arg in sys.argv):
+        # ─── Streamlit UI 執行邏輯 ───
+        if st.session_state.is_searched:
+            query = st.session_state.search_query.upper()
+
+            if "ETH" in query:
+                table_name, symbol_name, pair_name = (
+                    "eth_contract_klines",
+                    "ETH",
+                    "ETH-USDT-SWAP",
+                )
+            else:
+                table_name, symbol_name, pair_name = (
+                    "btc_contract_klines",
+                    "BTC",
+                    "BTC-USDT-SWAP",
+                )
+
+            selected_tf = st.radio(
+                "時間週期（小波段／大波段）",
+                ["5m", "15m", "1h", "4h"],
+                horizontal=True,
+                key="timeframe_select",
+            )
+
+            @st.fragment(run_every=5)
+            def render_live_fragment(tbl, sym, pair, timeframe):
+                render_live_kline_chart(tbl, sym, pair, timeframe)
+
+            render_live_fragment(
+                table_name,
+                symbol_name,
+                pair_name,
+                selected_tf,
+            )
+
+        elif st.session_state.search_query:
+            st.warning(
+                f"找不到與「{st.session_state.search_query}」相關的圖表，"
+                "請嘗試輸入 BTC 或 ETH。"
+            )
+            render_homepage()
+
+        else:
+            render_homepage()
     else:
-        render_homepage()
-except Exception:
-    pass
+        # ─── Render Web Service 執行邏輯 (啟動 Flask 接收 Webhook) ───
+        run_flask()
