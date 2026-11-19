@@ -488,7 +488,7 @@ def render_homepage():
 
 
 # ============================================================
-# 6. K 線圖（不改變圖表大小，收緊 Y 軸範圍使 K 棒在視覺上更高大飽滿）
+# 6. K 線圖（主副圖之間加入粗灰分隔線、K 棒高度放大、支援左側滑動）
 # ============================================================
 def render_live_kline_chart(table, symbol, pair, tf):
     df = load_historical_data(table, symbol)
@@ -529,7 +529,6 @@ def render_live_kline_chart(table, symbol, pair, tf):
         start_time = view_df["open_time"].iloc[0]
         end_time = view_df["open_time"].iloc[-1]
 
-    # 💡 僅針對畫面上顯示的範圍計算高低點，讓 Y 軸更集中，K 棒視覺高度自動放大
     visible_df = view_df[(view_df["open_time"] >= start_time) & (view_df["open_time"] <= end_time)]
     if visible_df.empty:
         visible_df = view_df
@@ -538,7 +537,6 @@ def render_live_kline_chart(table, symbol, pair, tf):
     high = visible_df["high_price"].max()
 
     span = max(high - low, abs(high) * 0.001, 1e-8)
-    # 💡 縮小上下留白比例 (從 0.35 降為 0.12)，使 K 棒高度在不改變圖表大小的情況下顯著拉高放大
     y_range = [low - span * 0.12, high + span * 0.12]
 
     latest = view_df.iloc[-1]
@@ -564,6 +562,15 @@ def render_live_kline_chart(table, symbol, pair, tf):
         shared_xaxes=True,
         vertical_spacing=0.015,
         row_heights=[0.75, 0.25],
+    )
+
+    # 💡 在主圖和副圖之間加入一條橫向的粗灰分隔線
+    fig.add_shape(
+        type="line",
+        xref="paper", yref="paper",
+        x0=0, x1=1,
+        y0=0.25, y1=0.25,
+        line=dict(color="#474f5d", width=2.5)
     )
 
     fig.add_trace(go.Candlestick(
