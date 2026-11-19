@@ -55,7 +55,6 @@ def ensure_table(conn):
 
 
 def load_historical_data_from_supabase(conn, table_name, symbol_name):
-    """與 dashboard_app.py 完全一致的資料讀取與時區轉換邏輯"""
     allowed_tables = {"btc_contract_klines", "eth_contract_klines"}
     if table_name not in allowed_tables:
         raise ValueError(f"不合法的資料表名稱: {table_name}")
@@ -246,7 +245,6 @@ def train_and_score(df):
 
 
 def enqueue_latest_closed_signal(conn, df_tf, symbol, timeframe):
-    """與 dashboard_app.py 完全相同的最新已收盤 K 棒寫入條件"""
     if df_tf.empty:
         return False
 
