@@ -115,9 +115,8 @@ def calculate_indicators_and_signals(df, tf):
     return df
 
 def scan_and_import_latest_signal(engine, table_name, symbol, timeframe):
-    """只抓取最近幾根 K 線來計算指標，並僅對最新產生的訊號進行匯入"""
+    """只抓取最新 K 線計算指標，並使用當下臺灣時間記錄訊號"""
     try:
-        # 為了計算指標需要足夠的歷史回溯長度（例如取最近 100 筆），但我們只檢查最後一根 K 線
         query = text(f"""
             SELECT timeframe, open_time, open_price, high_price,
                    low_price, close_price, volume
@@ -132,7 +131,6 @@ def scan_and_import_latest_signal(engine, table_name, symbol, timeframe):
         if df.empty:
             return
 
-        # 轉回時間正序以正確計算移動平均與 ATR
         df = df.sort_values("open_time", ascending=True).reset_index(drop=True)
 
         df["open_time"] = pd.to_datetime(df["open_time"], errors="coerce", utc=True)
@@ -146,7 +144,7 @@ def scan_and_import_latest_signal(engine, table_name, symbol, timeframe):
         if df.empty:
             return
 
-        # 🔥 核心修改：只取最上面（最新）的一根 K 線來判斷是否有訊號
+        # 僅取最末端（最新）的一根 K 線
         latest_row = df.iloc[-1]
         is_long = bool(latest_row["Long_Signal"])
         is_short = bool(latest_row["Short_Signal"])
@@ -173,8 +171,8 @@ def scan_and_import_latest_signal(engine, table_name, symbol, timeframe):
         else:
             candle_time = candle_time.astimezone(TAIWAN_TZ)
 
-        current_taipei_time = datetime.now(TAIWAN_TZ)
-        signal_time_text = current_taipei_time.strftime("%Y-%m-%d %H:%M:%S")
+        # 强制使用臺灣目前時間作為訊號時間
+        signal_time_text = datetime.now(TAIWAN_TZ).strftime("%Y-%m-%d %H:%M:%S")
 
         with engine.begin() as conn:
             result = conn.execute(text("""
@@ -202,7 +200,7 @@ def scan_and_import_latest_signal(engine, table_name, symbol, timeframe):
                 "atr": atr,
             })
             if result.rowcount > 0:
-                print(f"[{symbol} {timeframe}] 偵測到最新即時訊號 ({direction})，已成功加入佇列！")
+                print(f"[{symbol} {timeframe}] 偵測到最新即時訊號 ({direction})，已成功加入佇列！時間: {signal_time_text}")
 
     except Exception as e:
         print(f"[{symbol} {timeframe}] 最新訊號掃描發生錯誤: {e}")
@@ -235,7 +233,7 @@ def process_outbox_and_notify(engine, webhook_url):
                         {"name": "🛡️ 建議止損價 (SL)", "value": f"`{sl:,.2f}`", "inline": True},
                         {"name": "🎯 建議止盈價 (TP)", "value": f"`{tp:,.2f}`", "inline": True},
                     ],
-                    "footer": {"text": f"OKX AI Strategy Scanner Bot | 執行時間: {datetime.now(TAIWAN_TZ).strftime('%Y-%m-%d %H:%M:%S')}"}
+                    "footer": {"text": f"OKX AI Strategy Scanner Bot | 臺灣時間: {datetime.now(TAIWAN_TZ).strftime('%Y-%m-%d %H:%M:%S')}"}
                 }]
             }
 
@@ -252,7 +250,7 @@ def process_outbox_and_notify(engine, webhook_url):
 
 def main():
     now_taipei = datetime.now(TAIWAN_TZ).strftime('%Y-%m-%d %H:%M:%S')
-    print(f"🕒 [台灣時間 {now_taipei}] OKX 即時策略訊號掃描與派送系統啟動（涵蓋 BTC 與 ETH）...")
+    print(f"🕒 [臺灣時間 {now_taipei}] OKX 即時策略訊號掃描與派送系統啟動（涵蓋 BTC 與 ETH）...")
 
     db_url = get_database_url()
     webhook_url = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
@@ -278,7 +276,7 @@ def main():
             scan_and_import_latest_signal(engine, table_name, symbol, tf)
 
     process_outbox_and_notify(engine, webhook_url)
-    print(f"✨ [台灣時間 {datetime.now(TAIWAN_TZ).strftime('%Y-%m-%d %H:%M:%S')}] 本次即時掃描與派送任務執行完畢。")
+    print(f"✨ [臺灣時間 {datetime.now(TAIWAN_TZ).strftime('%Y-%m-%d %H:%M:%S')}] 本次即時掃描與派送任務執行完畢。")
 
 if __name__ == "__main__":
     main()
