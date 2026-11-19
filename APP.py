@@ -1,8 +1,6 @@
 import os
 import base64
 from pathlib import Path
-import threading
-import subprocess
 
 import streamlit as st
 import pandas as pd
@@ -13,6 +11,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import lightgbm as lgb
 from zoneinfo import ZoneInfo
+import subprocess
 from flask import Flask, jsonify
 
 TAIWAN_TZ = ZoneInfo('Asia/Taipei')
@@ -44,15 +43,34 @@ def get_base64_image(filename):
 icon_img = load_image_safe("hacker_icon.png")
 bg_base64 = get_base64_image("background.png")
 
-# 檢查是否為 Streamlit 執行環境，避免在 Render 引入時報錯
-try:
-    st.set_page_config(
-        page_title="加密貨幣 AI 策略系統",
-        page_icon=icon_img if icon_img else "💻",
-        layout="wide",
-    )
-except Exception:
-    pass
+# 判斷是否為 Flask 背景 Web Service 啟動（非 Streamlit 執行緒）
+# 這裡採用共存架構，如果是透過 Gunicorn 啟動 app:app，Flask 路由會正常運作
+app = Flask(__name__)
+
+@app.route("/")
+def home():
+    return "Crypto AI Scanner Web Service is running 24/7! 🚀"
+
+@app.route("/run-scanner", methods=["GET", "POST"])
+def manual_run():
+    """提供外部 Webhook / Cron-job 觸發掃描的路由"""
+    try:
+        result = subprocess.run(["python", "okx_signal_scanner.py"], capture_output=True, text=True)
+        return jsonify({
+            "status": "success",
+            "message": "Scanner executed successfully via Webhook",
+            "output": result.stdout
+        }), 200
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+# 設定 Streamlit 頁面
+st.set_page_config(
+    page_title="加密貨幣 AI 策略系統",
+    page_icon=icon_img if icon_img else "💻",
+    layout="wide",
+)
 
 bg_css = ""
 if bg_base64:
@@ -242,6 +260,9 @@ def publish_latest_signal_to_outbox(df_tf, symbol, timeframe):
     }.get(timeframe)
     if timeframe_delta is None:
         return
+
+    candle_open = pd.Timestamp(latest["open_time"])
+    now_taipei = pd.Timestamp.now(tz="Asia/Taipei").tz_localize(None)
 
     is_long = bool(latest.get("Long_Signal", False))
     is_short = bool(latest.get("Short_Signal", False))
@@ -742,7 +763,6 @@ def render_live_kline_chart(table, symbol, pair, tf):
         row_heights=[0.75, 0.25],
     )
 
-    # K線（bargap=0 確保 K 棒與 K 棒緊密貼合、間距為 0）
     fig.add_trace(go.Candlestick(
         x=df_tf["open_time"],
         open=df_tf["open_price"],
@@ -758,7 +778,6 @@ def render_live_kline_chart(table, symbol, pair, tf):
         hoverinfo="none",
     ), row=1, col=1)
 
-    # EMA 均線
     for ema, color, width in [
         ("EMA_21", "#2962FF", 1.5),
         ("EMA_50", "#FFFFFF", 1.5),
@@ -773,7 +792,6 @@ def render_live_kline_chart(table, symbol, pair, tf):
             hoverinfo="none",
         ), row=1, col=1)
 
-    # 趨勢通道
     fig.add_trace(go.Scatter(
         x=df_tf["open_time"],
         y=df_tf["Trend_Resistance"],
@@ -792,9 +810,6 @@ def render_live_kline_chart(table, symbol, pair, tf):
         hoverinfo="none",
     ), row=1, col=1)
 
-    # ========================================================
-    # 三角形進場點位（灰色虛線連接、適當拉遠距離）
-    # ========================================================
     long_df = view_df[view_df["Long_Signal"]].copy()
     if not long_df.empty:
         long_y = long_df["low_price"] - span * 0.35
@@ -863,7 +878,6 @@ def render_live_kline_chart(table, symbol, pair, tf):
             ),
         ), row=1, col=1)
 
-    # 成交量
     volume_colors = [
         "rgba(14,203,129,.5)" if close >= open_ else "rgba(246,70,93,.5)"
         for close, open_ in zip(df_tf["close_price"], df_tf["open_price"])
@@ -944,7 +958,6 @@ def render_live_kline_chart(table, symbol, pair, tf):
 
     fig.update_layout(xaxis=dict(range=[start_time, end_time], autorange=False))
 
-    # Y 軸座標軸設定在右側
     fig.update_yaxes(
         side="right",
         gridcolor="#1e2329",
@@ -955,7 +968,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
         spikemode="across+toaxis",
         spikesnap="cursor",
         spikethickness=1,
-        spikesdash="dash",
+        spikedash="dash",
         spikecolor="#a0a6b2",
         showline=True,
         row=1,
@@ -973,7 +986,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
         spikemode="across",
         spikesnap="cursor",
         spikethickness=1,
-        spikesdash="dash",
+        spikedash="dash",
         spikecolor="#a0a6b2",
         row=2,
         col=1,
@@ -1077,82 +1090,49 @@ def render_live_kline_chart(table, symbol, pair, tf):
 
 
 # ============================================================
-# 7. 主畫面與 Flask 服務整合 (Render Web Service 專用)
+# 7. 主畫面
 # ============================================================
-app = Flask(__name__)
+if __name__ == "__main__":
+    if st.session_state.is_searched:
+        query = st.session_state.search_query.upper()
 
-@app.route("/")
-def home():
-    return "Crypto AI Scanner Web Service is running 24/7! 🚀"
-
-@app.route("/run-scanner", methods=["GET", "POST"])
-def manual_run():
-    """提供外部 Webhook / Cron-job 觸發掃描與 Discord 推送的路由"""
-    try:
-        result = subprocess.run(["python", "okx_signal_scanner.py"], capture_output=True, text=True)
-        return jsonify({
-            "status": "success",
-            "message": "Scanner executed successfully via webhook",
-            "output": result.stdout
-        }), 200
-    except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
-
-def run_flask():
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
-
-# 判斷是否為 Streamlit 執行模式
-# 當使用 `streamlit run app.py` 時執行 Streamlit 邏輯
-# 當使用 `gunicorn app:app` 或直接 `python app.py` 在 Render 執行時啟動 Flask 服務
-if __name__ == "__main__" or os.environ.get("RENDER"):
-    # 檢查是否為 Streamlit 指令執行
-    import sys
-    if any("streamlit" in arg for arg in sys.argv):
-        # ─── Streamlit UI 執行邏輯 ───
-        if st.session_state.is_searched:
-            query = st.session_state.search_query.upper()
-
-            if "ETH" in query:
-                table_name, symbol_name, pair_name = (
-                    "eth_contract_klines",
-                    "ETH",
-                    "ETH-USDT-SWAP",
-                )
-            else:
-                table_name, symbol_name, pair_name = (
-                    "btc_contract_klines",
-                    "BTC",
-                    "BTC-USDT-SWAP",
-                )
-
-            selected_tf = st.radio(
-                "時間週期（小波段／大波段）",
-                ["5m", "15m", "1h", "4h"],
-                horizontal=True,
-                key="timeframe_select",
+        if "ETH" in query:
+            table_name, symbol_name, pair_name = (
+                "eth_contract_klines",
+                "ETH",
+                "ETH-USDT-SWAP",
             )
-
-            @st.fragment(run_every=5)
-            def render_live_fragment(tbl, sym, pair, timeframe):
-                render_live_kline_chart(tbl, sym, pair, timeframe)
-
-            render_live_fragment(
-                table_name,
-                symbol_name,
-                pair_name,
-                selected_tf,
-            )
-
-        elif st.session_state.search_query:
-            st.warning(
-                f"找不到與「{st.session_state.search_query}」相關的圖表，"
-                "請嘗試輸入 BTC 或 ETH。"
-            )
-            render_homepage()
-
         else:
-            render_homepage()
+            table_name, symbol_name, pair_name = (
+                "btc_contract_klines",
+                "BTC",
+                "BTC-USDT-SWAP",
+            )
+
+        selected_tf = st.radio(
+            "時間週期（小波段／大波段）",
+            ["5m", "15m", "1h", "4h"],
+            horizontal=True,
+            key="timeframe_select",
+        )
+
+        @st.fragment(run_every=5)
+        def render_live_fragment(tbl, sym, pair, timeframe):
+            render_live_kline_chart(tbl, sym, pair, timeframe)
+
+        render_live_fragment(
+            table_name,
+            symbol_name,
+            pair_name,
+            selected_tf,
+        )
+
+    elif st.session_state.search_query:
+        st.warning(
+            f"找不到與「{st.session_state.search_query}」相關的圖表，"
+            "請嘗試輸入 BTC 或 ETH。"
+        )
+        render_homepage()
+
     else:
-        # ─── Render Web Service 執行邏輯 (啟動 Flask 接收 Webhook) ───
-        run_flask()
+        render_homepage()
