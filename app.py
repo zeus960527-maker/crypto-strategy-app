@@ -1,40 +1,56 @@
 import os
-from flask import Flask, jsonify
+import time
+import threading
 import subprocess
+from flask import Flask, jsonify
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
+TAIWAN_TZ = ZoneInfo('Asia/Taipei')
 app = Flask(__name__)
+
+def background_scanner_loop():
+    """背景持續執行的無限迴圈，每 60 秒自動執行一次掃描與發送"""
+    print("🚀 背景自動掃描續跑執行緒已啟動...")
+    while True:
+        current_time = datetime.now(TAIWAN_TZ).strftime('%Y-%m-%d %H:%M:%S')
+        print(f"[{current_time}] 開始執行自動排程掃描...")
+        try:
+            result = subprocess.run(["python", "okx_signal_scanner.py"], capture_output=True, text=True)
+            if result.returncode == 0:
+                print(f"[{current_time}] ✅ 自動掃描執行成功:\n{result.stdout.strip()}")
+            else:
+                print(f"[{current_time}] ⚠️ 自動掃描執行出錯:\n{result.stderr.strip()}")
+        except Exception as e:
+            print(f"[{current_time}] ❌ 背景執行例外錯誤: {e}")
+        
+        # 每 60 秒執行一次
+        time.sleep(60)
+
+# 當 Flask 啟動時，自動在背景開一個執行緒跑迴圈
+def start_background_task():
+    thread = threading.Thread(target=background_scanner_loop, daemon=True)
+    thread.start()
+
+# 啟動背景執行緒
+start_background_task()
 
 @app.route("/")
 def home():
-    return "Crypto AI Scanner Web Service is running successfully! 🚀"
+    return "Crypto AI Scanner Web Service with Background Worker is running 24/7! 🚀"
 
 @app.route("/run-scanner", methods=["GET", "POST"])
-def run_scanner():
+def manual_run():
+    """保留手動觸發的路由，供外部備用"""
     try:
-        # 執行你原本寫好的 okx_signal_scanner.py 腳本
         result = subprocess.run(["python", "okx_signal_scanner.py"], capture_output=True, text=True)
-        
-        if result.returncode == 0:
-            print("✅ 掃描任務執行成功:", result.stdout)
-            return jsonify({
-                "status": "success",
-                "message": "Scanner executed successfully",
-                "output": result.stdout
-            }), 200
-        else:
-            print("⚠️ 掃描任務執行出錯:", result.stderr)
-            return jsonify({
-                "status": "error",
-                "message": "Scanner failed",
-                "error": result.stderr
-            }), 500
-            
-    except Exception as e:
-        print(f"❌ 執行例外錯誤: {e}")
         return jsonify({
-            "status": "error",
-            "message": str(e)
-        }), 500
+            "status": "success",
+            "message": "Manual scanner executed",
+            "output": result.stdout
+        }), 200
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
