@@ -574,81 +574,9 @@ def render_homepage():
         </div>
         """, unsafe_allow_html=True)
 
-    st.markdown("---")
-    st.markdown("## 📖 使用說明")
-
-    with st.container(border=True):
-        st.markdown("### ① 輸入加密貨幣名稱")
-        st.write("在頁面最上方搜尋欄輸入 BTC 或 ETH。")
-        st.markdown("### ② 送出查詢")
-        st.write("按下「送出查詢」，系統會載入該幣種的歷史 K 線資料。")
-        st.markdown("### ③ 選擇時間週期")
-        st.write("""
-        - **5m：** 5 分鐘 K 線，觀察短線變化。
-        - **15m：** 15 分鐘 K 線，觀察短線趨勢。
-        - **1h：** 1 小時 K 線，觀察中期趨勢。
-        - **4h：** 4 小時 K 線，觀察較大波段。
-        """)
-        st.markdown("### ④ 查看 AI 分析結果")
-        st.write("""
-        - 🟢 **AI 多單（LONG）：** 符合多單訊號條件。
-        - 🔴 **AI 空單（SHORT）：** 符合空單訊號條件。
-        - 🟡 **AI 觀望（WAIT）：** 暫時沒有符合條件的訊號。
-        """)
-
-    st.markdown("---")
-    st.markdown("## 🧠 AI 策略判斷方式")
-
-    strategy_df = pd.DataFrame({
-        "技術指標": [
-            "趨勢通道", "RSI（14）", "成交量",
-            "K 線實體比例", "EMA（21、50、100）",
-            "ATR（14）", "LightGBM"
-        ],
-        "用途": [
-            "判斷價格是否突破壓力或支撐",
-            "判斷市場動能",
-            "確認成交量是否放大",
-            "評估 K 線實體強度",
-            "觀察短中期趨勢",
-            "衡量市場波動程度",
-            "提供模型預測分數"
-        ]
-    })
-    st.dataframe(strategy_df, use_container_width=True, hide_index=True)
-
-    with st.expander("查看不同週期的訊號條件"):
-        st.markdown("""
-        **5m、15m 小波段**
-
-        - 多單：收盤價高於趨勢通道上軌、RSI 42～85、
-          成交量大於 20 根均量的 1.05 倍、K 線實體比例大於 0.3。
-        - 空單：收盤價低於趨勢通道下軌、RSI 15～58、
-          成交量大於 20 根均量的 1.05 倍、K 線實體比例大於 0.3。
-
-        **1h、4h 大波段**
-
-        - 多單：收盤價高於趨勢通道上軌、RSI 45～80、
-          成交量大於 20 根均量。
-        - 空單：收盤價低於趨勢通道下軌、RSI 20～55、
-          成交量大於 20 根均量。
-
-        **AI 條件：** 模型分數達到 58% 才顯示訊號。模型使用歷史策略候選進場點，並以進場後 3 根 K 線的方向報酬建立成功／未達標標籤；歷史樣本不足時會退回原策略訊號。
-        """)
-
-    st.warning("""
-    ⚠️ **風險提醒**
-
-    本系統提供技術分析與 AI 模型輔助訊號，不保證交易獲利。
-    AI 模型分數不是實際勝率。市場可能因突發事件快速變動，
-    請自行評估風險並設定適當止損，不要只依賴單一指標或模型分數。
-    """)
-
-    st.caption("加密貨幣 AI 策略系統｜BTC / ETH｜5m / 15m / 1h / 4h")
-
 
 # ============================================================
-# 7. K 線圖與進場點位
+# 6. K 線圖與進場點位
 # ============================================================
 def render_live_kline_chart(table, symbol, pair, tf):
     df = load_historical_data(table, symbol)
@@ -704,7 +632,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
     )
 
     span = max(high - low, abs(high) * 0.001, 1e-8)
-    y_range = [low - span * 0.12, high + span * 0.12]
+    y_range = [low - span * 0.25, high + span * 0.25]
 
     latest = df_tf.iloc[-1]
     latest_close = float(latest["close_price"])
@@ -731,7 +659,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
         row_heights=[0.75, 0.25],
     )
 
-    # 1. K線：bar_width 設定與緊密貼合（間距為 0）
+    # K線（bargap=0 確保 K 棒與 K 棒間距為 0）
     fig.add_trace(go.Candlestick(
         x=df_tf["open_time"],
         open=df_tf["open_price"],
@@ -782,14 +710,12 @@ def render_live_kline_chart(table, symbol, pair, tf):
     ), row=1, col=1)
 
     # ========================================================
-    # 2. 三角形縮小、遠離 K 棒，並用虛線連接 K 棒與三角形
+    # 三角形距離拉大（1000cm 視覺比例）、縮小、虛線連接
     # ========================================================
     long_df = view_df[view_df["Long_Signal"]].copy()
     if not long_df.empty:
-        # 計算遠離位置 (往下偏移)
-        long_y = long_df["low_price"] - span * 0.045
-        
-        # 繪製虛線連接 K 棒與三角形
+        long_y = long_df["low_price"] - span * 0.14
+
         for t, low_p, ly in zip(long_df["open_time"], long_df["low_price"], long_y):
             fig.add_trace(go.Scatter(
                 x=[t, t],
@@ -800,7 +726,6 @@ def render_live_kline_chart(table, symbol, pair, tf):
                 hoverinfo="none"
             ), row=1, col=1)
 
-        # 縮小三角形並遠離顯示
         fig.add_trace(go.Scatter(
             x=long_df["open_time"],
             y=long_y,
@@ -824,10 +749,8 @@ def render_live_kline_chart(table, symbol, pair, tf):
 
     short_df = view_df[view_df["Short_Signal"]].copy()
     if not short_df.empty:
-        # 計算遠離位置 (往上偏移)
-        short_y = short_df["high_price"] + span * 0.045
+        short_y = short_df["high_price"] + span * 0.14
 
-        # 繪製虛線連接 K 棒與三角形
         for t, high_p, sy in zip(short_df["open_time"], short_df["high_price"], short_y):
             fig.add_trace(go.Scatter(
                 x=[t, t],
@@ -838,7 +761,6 @@ def render_live_kline_chart(table, symbol, pair, tf):
                 hoverinfo="none"
             ), row=1, col=1)
 
-        # 縮小三角形並遠離顯示
         fig.add_trace(go.Scatter(
             x=short_df["open_time"],
             y=short_y,
@@ -919,7 +841,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
         xaxis_rangeslider_visible=False,
         dragmode="pan",
         height=820,
-        bargap=0.0,  # 關鍵：設定間距為 0，讓 K 棒與 K 棒之間沒有空隙
+        bargap=0.0,
         showlegend=True,
         legend=dict(
             orientation="h",
@@ -940,6 +862,43 @@ def render_live_kline_chart(table, symbol, pair, tf):
     )
 
     fig.update_layout(xaxis=dict(range=[start_time, end_time], autorange=False))
+
+    # ========================================================
+    # 關鍵修正：將主圖與副圖的 Y 軸座標軸設定在「右側」 (side="right")
+    # ========================================================
+    fig.update_yaxes(
+        side="right",
+        gridcolor="#1e2329",
+        zeroline=False,
+        linecolor="#2b313a",
+        tickformat=",.2f",
+        showspikes=True,
+        spikemode="across+toaxis",
+        spikesnap="cursor",
+        spikethickness=1,
+        spikedash="dash",
+        spikecolor="#a0a6b2",
+        showline=True,
+        row=1,
+        col=1,
+        range=y_range,
+    )
+
+    fig.update_yaxes(
+        side="right",
+        gridcolor="#1e2329",
+        zeroline=False,
+        linecolor="#2b313a",
+        tickformat=",.2f",
+        showspikes=True,
+        spikemode="across",
+        spikesnap="cursor",
+        spikethickness=1,
+        spikedash="dash",
+        spikecolor="#a0a6b2",
+        row=2,
+        col=1,
+    )
 
     chart_col, panel_col = st.columns([3.6, 1.2])
 
