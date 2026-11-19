@@ -496,7 +496,7 @@ def train_or_get_ai_model(df, key):
         )
         model.fit(train_df[feature_cols], train_df["target"])
         return model, len(train_df), int((train_df["Trade_Result"] == "成功").sum())
-    except Exception as e:
+    except Exception:
         return None, len(train_df), int((train_df["Trade_Result"] == "成功").sum())
 
 
@@ -707,7 +707,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
     )
 
     span = max(high - low, abs(high) * 0.001, 1e-8)
-    y_range = [low - span * 0.08, high + span * 0.08]
+    y_range = [low - span * 0.12, high + span * 0.12]
 
     latest = df_tf.iloc[-1]
     latest_close = float(latest["close_price"])
@@ -742,7 +742,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
         low=df_tf["low_price"],
         close=df_tf["close_price"],
         name=symbol,
-        line=dict(width=1.5),
+        line=dict(width=1.2),
         increasing_line_color="#0ECB81",
         increasing_fillcolor="#0ECB81",
         decreasing_line_color="#F6465D",
@@ -784,18 +784,18 @@ def render_live_kline_chart(table, symbol, pair, tf):
         hoverinfo="none",
     ), row=1, col=1)
 
-    # 多單進場標記（歷史進場）
+    # 多單進場標記（歷史進場：縮小三角形並拉開與 K 棒距離）
     long_df = view_df[view_df["Long_Signal"]].copy()
     if not long_df.empty:
         fig.add_trace(go.Scatter(
             x=long_df["open_time"],
-            y=long_df["low_price"] - span * 0.018,
+            y=long_df["low_price"] - span * 0.045,
             mode="markers+text",
             name="LONG 多單進場",
-            marker=dict(symbol="triangle-up", size=16, color="#00E676", line=dict(width=1.5, color="white")),
+            marker=dict(symbol="triangle-up", size=10, color="#00E676", line=dict(width=1, color="white")),
             text=[f"LONG<br>{price:,.2f}" for price in long_df["close_price"]],
             textposition="bottom center",
-            textfont=dict(color="#00E676", size=10, family="Arial Black"),
+            textfont=dict(color="#00E676", size=9, family="Arial Black"),
             customdata=long_df[["close_price", "AI_Prob", "Trade_Result", "directional_return_3"]].to_numpy(),
             hovertemplate=(
                 "🟢 LONG 多單歷史進場<br>"
@@ -808,18 +808,18 @@ def render_live_kline_chart(table, symbol, pair, tf):
             ),
         ), row=1, col=1)
 
-    # 空單進場標記（歷史進場）
+    # 空單進場標記（歷史進場：縮小三角形並拉開與 K 棒距離）
     short_df = view_df[view_df["Short_Signal"]].copy()
     if not short_df.empty:
         fig.add_trace(go.Scatter(
             x=short_df["open_time"],
-            y=short_df["high_price"] + span * 0.018,
+            y=short_df["high_price"] + span * 0.045,
             mode="markers+text",
             name="SHORT 空單進場",
-            marker=dict(symbol="triangle-down", size=16, color="#FF1744", line=dict(width=1.5, color="white")),
+            marker=dict(symbol="triangle-down", size=10, color="#FF1744", line=dict(width=1, color="white")),
             text=[f"SHORT<br>{price:,.2f}" for price in short_df["close_price"]],
             textposition="top center",
-            textfont=dict(color="#FF1744", size=10, family="Arial Black"),
+            textfont=dict(color="#FF1744", size=9, family="Arial Black"),
             customdata=short_df[["close_price", "AI_Prob", "Trade_Result", "directional_return_3"]].to_numpy(),
             hovertemplate=(
                 "🔴 SHORT 空單歷史進場<br>"
@@ -891,7 +891,8 @@ def render_live_kline_chart(table, symbol, pair, tf):
         xaxis_rangeslider_visible=False,
         dragmode="pan",
         height=820,
-        bargap=0.15,
+        bargap=0,
+        bargroupgap=0,
         showlegend=True,
         legend=dict(
             orientation="h",
@@ -912,6 +913,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
     )
 
     fig.update_layout(xaxis=dict(range=[start_time, end_time], autorange=False))
+    fig.update_yaxes(range=y_range, row=1, col=1)
 
     chart_col, panel_col = st.columns([3.6, 1.2])
 
