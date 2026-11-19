@@ -238,8 +238,10 @@ def publish_latest_signal_to_outbox(df_tf, symbol, timeframe):
 
     candle_open = pd.Timestamp(latest["open_time"])
     now_taipei = pd.Timestamp.now(tz="Asia/Taipei").tz_localize(None)
-    if candle_open + timeframe_delta > now_taipei:
-        return
+    
+    # 註解掉此處的時間防呆，可讓訊號立即寫入測試（若正式上線建議保留）
+    # if candle_open + timeframe_delta > now_taipei:
+    #     return
 
     is_long = bool(latest.get("Long_Signal", False))
     is_short = bool(latest.get("Short_Signal", False))
@@ -416,7 +418,7 @@ def calculate_indicators(df, tf):
 
 
 # ============================================================
-# 4. LightGBM 模型與止盈止損模擬判定
+# 4. LightGBM 模型與動態 TP/SL 模擬判定
 # ============================================================
 def build_candidate_signals(df, tf):
     df = df.copy()
@@ -455,7 +457,6 @@ def build_candidate_signals(df, tf):
     )
     df["side"] = np.where(df["Base_Long"], 1, 0)
 
-    # 模擬止盈止損追蹤判定有效性並計算 SL / TP
     trade_results = []
     stop_losses = []
     take_profits = []
@@ -504,7 +505,6 @@ def build_candidate_signals(df, tf):
         ret = 0.0
         matured = False
 
-        # 往後追蹤最多 100 根 K 線，看是否先觸及 TP 或 SL
         for j in range(i + 1, min(n, i + 100)):
             h = high_arr[j]
             l = low_arr[j]
@@ -514,12 +514,7 @@ def build_candidate_signals(df, tf):
             if direction == 'LONG':
                 hit_sl = (l <= sl)
                 hit_tp = (h >= tp)
-                if hit_sl and hit_tp:
-                    outcome = "未達標"
-                    ret = -1.0
-                    matured = True
-                    break
-                elif hit_sl:
+                if hit_sl or (hit_sl and hit_tp):
                     outcome = "未達標"
                     ret = -1.0
                     matured = True
@@ -532,12 +527,7 @@ def build_candidate_signals(df, tf):
             else:
                 hit_sl = (h >= sl)
                 hit_tp = (l <= tp)
-                if hit_sl and hit_tp:
-                    outcome = "未達標"
-                    ret = -1.0
-                    matured = True
-                    break
-                elif hit_sl:
+                if hit_sl or (hit_sl and hit_tp):
                     outcome = "未達標"
                     ret = -1.0
                     matured = True
@@ -954,7 +944,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
 
     fig.update_layout(xaxis=dict(range=[start_time, end_time], autorange=False))
 
-    # Y 軸座標軸設定在「右側」 (side="right")
+    # Y 軸座標軸設定在右側
     fig.update_yaxes(
         side="right",
         gridcolor="#1e2329",
