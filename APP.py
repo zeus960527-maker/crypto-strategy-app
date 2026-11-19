@@ -474,12 +474,10 @@ def train_or_get_ai_model(df, key):
 
     try:
         model = lgb.LGBMClassifier(
-            n_estimators=120,
-            learning_rate=0.02,
-            max_depth=4,
-            num_leaves=15,
-            subsample=0.8,
-            colsample_bytree=0.8,
+            n_estimators=60,
+            learning_rate=0.04,
+            max_depth=3,
+            num_leaves=7,
             class_weight="balanced",
             random_state=42,
             verbose=-1,
@@ -514,7 +512,7 @@ def add_trade_signals(df, model):
         df["Short_Signal"] = df["Base_Short"]
         df["AI_Mode"] = "策略回退（歷史樣本不足）"
     else:
-        # 門檻調回 0.58，確保圖表上的進場標記正常顯示
+        # 將門檻設回平衡的 0.58，確保圖表上能順利顯示進場三角形標記
         df["Long_Signal"] = df["Base_Long"] & (df["AI_Prob"] >= 0.58)
         df["Short_Signal"] = df["Base_Short"] & (df["AI_Prob"] >= 0.58)
         df["AI_Mode"] = "歷史結果訓練模型"
