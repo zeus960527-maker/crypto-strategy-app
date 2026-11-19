@@ -488,7 +488,7 @@ def render_homepage():
 
 
 # ============================================================
-# 6. K 線圖（固定每根 K 棒大小，歷史資料往左隱藏可滑動）
+# 6. K 線圖（飽滿寬大的 K 棒視覺與左側隱藏滑動）
 # ============================================================
 def render_live_kline_chart(table, symbol, pair, tf):
     df = load_historical_data(table, symbol)
@@ -521,7 +521,6 @@ def render_live_kline_chart(table, symbol, pair, tf):
         st.warning("目前沒有足夠資料可顯示。")
         return
 
-    # 💡 關鍵設定：預設只顯示最近的 85 根 K 棒在畫面中，其餘歷史資料自動往左隱藏，可隨時左右滑動檢視
     display_len = 85
     if len(view_df) > display_len:
         start_time = view_df["open_time"].iloc[-display_len]
@@ -577,7 +576,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
         low=view_df["low_price"],
         close=view_df["close_price"],
         name=symbol,
-        line=dict(width=1.0),
+        line=dict(width=1.2),
         increasing_line_color="#0ECB81",
         increasing_fillcolor="#0ECB81",
         decreasing_line_color="#F6465D",
@@ -586,9 +585,9 @@ def render_live_kline_chart(table, symbol, pair, tf):
     ), row=1, col=1)
 
     for ema, color, width in [
-        ("EMA_21", "#2962FF", 1.4),
-        ("EMA_50", "#FFFFFF", 1.4),
-        ("EMA_100", "#FF5252", 1.6),
+        ("EMA_21", "#2962FF", 1.5),
+        ("EMA_50", "#FFFFFF", 1.5),
+        ("EMA_100", "#FF5252", 1.8),
     ]:
         fig.add_trace(go.Scatter(
             x=view_df["open_time"],
@@ -604,7 +603,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
         y=view_df["Trend_Resistance"],
         mode="lines",
         name="壓力趨勢線",
-        line=dict(color="rgba(246,70,93,.7)", width=1.4, dash="dash"),
+        line=dict(color="rgba(246,70,93,.7)", width=1.5, dash="dash"),
         hoverinfo="none",
     ), row=1, col=1)
 
@@ -613,7 +612,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
         y=view_df["Trend_Support"],
         mode="lines",
         name="支撐趨勢線",
-        line=dict(color="rgba(14,203,129,.7)", width=1.4, dash="dash"),
+        line=dict(color="rgba(14,203,129,.7)", width=1.5, dash="dash"),
         hoverinfo="none",
     ), row=1, col=1)
 
@@ -639,7 +638,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
             name="LONG 多單進場",
             marker=dict(
                 symbol="triangle-up",
-                size=12,
+                size=13,
                 color="rgba(11, 14, 17, 0.95)",
                 line=dict(width=2, color="#00E676")
             ),
@@ -671,7 +670,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
             name="SHORT 空單進場",
             marker=dict(
                 symbol="triangle-down",
-                size=12,
+                size=13,
                 color="rgba(11, 14, 17, 0.95)",
                 line=dict(width=2, color="#FF1744")
             ),
@@ -682,7 +681,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
         ), row=1, col=1)
 
     volume_colors = [
-        "rgba(14,203,129,.6)" if close >= open_ else "rgba(246,70,93,.6)"
+        "rgba(14,203,129,.7)" if close >= open_ else "rgba(246,70,93,.7)"
         for close, open_ in zip(view_df["close_price"], view_df["open_price"])
     ]
     fig.add_trace(go.Bar(
@@ -739,7 +738,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
         xaxis_rangeslider_visible=False,
         dragmode="pan",
         height=880,
-        bargap=0.0,
+        bargap=0.08,  # 💡 調整 K 棒間距，使 K 棒看起來更飽滿有力
         showlegend=True,
         legend=dict(
             orientation="h",
@@ -759,7 +758,6 @@ def render_live_kline_chart(table, symbol, pair, tf):
         ),
     )
 
-    # 💡 鎖定初始 X 軸預設範圍在最近的 85 根 K 棒，其餘歷史資料往左隱藏，支援手動滑動檢視
     fig.update_layout(xaxis=dict(range=[start_time, end_time], autorange=False))
 
     fig.update_yaxes(
