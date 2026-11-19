@@ -358,10 +358,6 @@ def build_candidate_signals(df, tf):
         (df["EMA_21"] - df["EMA_50"])
         / df["close_price"].replace(0, np.nan)
     )
-    df["ema_trend_align"] = np.where(
-        (df["close_price"] > df["EMA_21"]) & (df["EMA_21"] > df["EMA_50"]), 1,
-        np.where((df["close_price"] < df["EMA_21"]) & (df["EMA_21"] < df["EMA_50"]), -1, 0)
-    )
     df["side"] = np.where(df["Base_Long"], 1, 0)
 
     trade_results = []
@@ -460,12 +456,12 @@ def build_candidate_signals(df, tf):
 
 def train_or_get_ai_model(df, key):
     feature_cols = [
-        "RSI", "vol_ratio", "body_ratio", "atr_ratio", "ema_diff", "ema_trend_align", "side"
+        "RSI", "vol_ratio", "body_ratio", "atr_ratio", "ema_diff", "side"
     ]
     candidates = df[df["Base_Long"] | df["Base_Short"]].copy()
     train_df = candidates[candidates["Trade_Result"].isin(["成功", "未達標"])].copy()
 
-    if len(train_df) < 15 or train_df["Trade_Result"].nunique() < 2:
+    if len(train_df) < 30 or train_df["Trade_Result"].nunique() < 2:
         return None, len(train_df), int((train_df["Trade_Result"] == "成功").sum())
 
     train_df["target"] = (train_df["Trade_Result"] == "成功").astype(int)
@@ -495,7 +491,7 @@ def add_trade_signals(df, model):
 
     if model is not None and candidates.any():
         feature_cols = [
-            "RSI", "vol_ratio", "body_ratio", "atr_ratio", "ema_diff", "ema_trend_align", "side"
+            "RSI", "vol_ratio", "body_ratio", "atr_ratio", "ema_diff", "side"
         ]
         usable = df.loc[candidates, feature_cols].replace([np.inf, -np.inf], np.nan)
         valid = usable.notna().all(axis=1)
@@ -512,9 +508,9 @@ def add_trade_signals(df, model):
         df["Short_Signal"] = df["Base_Short"]
         df["AI_Mode"] = "策略回退（歷史樣本不足）"
     else:
-        # 將門檻設回平衡的 0.58，確保圖表上能順利顯示進場三角形標記
-        df["Long_Signal"] = df["Base_Long"] & (df["AI_Prob"] >= 0.58)
-        df["Short_Signal"] = df["Base_Short"] & (df["AI_Prob"] >= 0.58)
+        # 調整門檻至 0.60，確保訊號能正常觸發並繪製三角形標記
+        df["Long_Signal"] = df["Base_Long"] & (df["AI_Prob"] >= 0.60)
+        df["Short_Signal"] = df["Base_Short"] & (df["AI_Prob"] >= 0.60)
         df["AI_Mode"] = "歷史結果訓練模型"
 
     return df
@@ -912,12 +908,12 @@ def render_live_kline_chart(table, symbol, pair, tf):
         if bool(latest["Long_Signal"]):
             st.success("🟢 LONG 多單進場訊號")
             st.metric("參考進場價格", f"{latest_close:,.2f}")
-            st.metric("AI 模型分數", f"{ai_score:.1f}%")
+            st.metric("AI 分數", f"{ai_score:.1f}%")
 
         elif bool(latest["Short_Signal"]):
             st.error("🔴 SHORT 空單進場訊號")
             st.metric("參考進場價格", f"{latest_close:,.2f}")
-            st.metric("AI 模型分數", f"{ai_score:.1f}%")
+            st.metric("AI 分數", f"{ai_score:.1f}%")
 
         else:
             st.warning("⏳ WAIT 目前沒有進場訊號")
