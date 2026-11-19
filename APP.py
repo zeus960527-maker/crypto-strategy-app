@@ -18,7 +18,7 @@ RISK_REWARD_RATIO = 2.5
 
 
 # ============================================================
-# 0. 頁面設定、圖片與背景
+# 0. 頁面設定、圖片與背景（含手機 RWD 響應式 CSS）
 # ============================================================
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -86,7 +86,7 @@ h1 {{
 }}
 h2, h3, h4 {{ color: #f0f3f6 !important; }}
 p, li, label {{ color: #e5e7eb; }}
-div[data-testid="stRadio"] > div {{ flex-direction: row; gap: 12px; }}
+div[data-testid="stRadio"] > div {{ flex-direction: row; gap: 12px; flex-wrap: wrap; }}
 .stTextInput input {{
     background-color: #1e2329 !important;
     color: #eaecef !important;
@@ -115,9 +115,20 @@ div[data-testid="stRadio"] > div {{ flex-direction: row; gap: 12px; }}
     min-height: 175px;
     height: 100%;
 }}
-@media(max-width:768px) {{
-    .block-container {{ padding-top: 2rem !important; }}
-    h1 {{ font-size: 2rem !important; }}
+
+/* 手機版 RWD 自動適配樣式 */
+@media(max-width: 768px) {{
+    .block-container {{
+        padding-left: 0.75rem !important;
+        padding-right: 0.75rem !important;
+        padding-top: 1.5rem !important;
+    }}
+    h1 {{
+        font-size: 1.8rem !important;
+    }}
+    .js-plotly-plot, .plot-container {{
+        height: 450px !important;
+    }}
 }}
 </style>
 """, unsafe_allow_html=True)
@@ -405,7 +416,7 @@ def calculate_indicators(df, tf):
 
 
 # ============================================================
-# 4. LightGBM 模型
+# 4. LightGBM 模型（觀察窗口改為 20 根 K 棒）
 # ============================================================
 def build_candidate_signals(df, tf):
     df = df.copy()
@@ -443,21 +454,23 @@ def build_candidate_signals(df, tf):
         / df["close_price"].replace(0, np.nan)
     )
 
-    df["future_close_3"] = df["close_price"].shift(-3)
-    df["future_return_3"] = (
-        df["future_close_3"] / df["close_price"] - 1
+    # 觀察窗口從 3 根 K 棒擴大為 20 根 K 棒判斷
+    df["future_close_20"] = df["close_price"].shift(-20)
+    df["future_return_20"] = (
+        df["future_close_20"] / df["close_price"] - 1
     )
 
     df["side"] = np.where(df["Base_Long"], 1, 0)
-    df["directional_return_3"] = df["future_return_3"] * np.where(df["side"] == 1, 1, -1)
+    df["directional_return_20"] = df["future_return_20"] * np.where(df["side"] == 1, 1, -1)
 
     df["Trade_Result"] = "非訊號"
     candidate = df["Base_Long"] | df["Base_Short"]
-    matured = candidate & df["future_close_3"].notna()
-    pending = candidate & df["future_close_3"].isna()
+    matured = candidate & df["future_close_20"].notna()
+    pending = candidate & df["future_close_20"].isna()
     df.loc[pending, "Trade_Result"] = "觀察中"
 
-    successful = matured & (df["directional_return_3"] > 0.003)
+    # 20 根 K 棒後的止盈標準（設定方向報酬大於 0.8% 視為成功止盈）
+    successful = matured & (df["directional_return_20"] > 0.008)
     long_win = successful & df["Base_Long"]
     short_win = successful & df["Base_Short"]
     df.loc[long_win | short_win, "Trade_Result"] = "成功"
@@ -472,7 +485,7 @@ def train_or_get_ai_model(df, key):
     ]
     candidates = df[df["Base_Long"] | df["Base_Short"]].copy()
     train_df = candidates.dropna(
-        subset=feature_cols + ["future_return_3"]
+        subset=feature_cols + ["future_return_20"]
     ).copy()
 
     if len(train_df) < 30 or train_df["Trade_Result"].nunique() < 2:
@@ -605,7 +618,6 @@ def render_live_kline_chart(table, symbol, pair, tf):
 
     publish_latest_signal_to_outbox(df_tf, symbol, tf)
 
-    # 調整顯示根數（調少顯示數量可讓單根 K 棒在圖表中自動變寬、更飽滿）
     display_count = 55 if symbol == "ETH" else 70
     view_df = df_tf.tail(display_count)
 
@@ -660,7 +672,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
         row_heights=[0.75, 0.25],
     )
 
-    # K線（bargap=0 確保 K 棒與 K 棒緊密貼合、間距為 0）
+    # K線
     fig.add_trace(go.Candlestick(
         x=df_tf["open_time"],
         open=df_tf["open_price"],
@@ -736,13 +748,13 @@ def render_live_kline_chart(table, symbol, pair, tf):
             text=[f"LONG<br>{price:,.2f}" for price in long_df["close_price"]],
             textposition="bottom center",
             textfont=dict(color="#00E676", size=9, family="Arial Black"),
-            customdata=long_df[["close_price", "AI_Prob", "Trade_Result", "directional_return_3"]].to_numpy(),
+            customdata=long_df[["close_price", "AI_Prob", "Trade_Result", "directional_return_20"]].to_numpy(),
             hovertemplate=(
                 "🟢 LONG 多單歷史進場<br>"
                 "時間：%{x}<br>"
                 "參考進場價：%{customdata[0]:,.2f}<br>"
                 "AI 分數：%{customdata[1]:.1%}<br>"
-                "3 根 K 線後結果：%{customdata[2]}<br>"
+                "20 根 K 線後結果：%{customdata[2]}<br>"
                 "方向報酬：%{customdata[3]:.2%}"
                 "<extra></extra>"
             ),
@@ -771,13 +783,13 @@ def render_live_kline_chart(table, symbol, pair, tf):
             text=[f"SHORT<br>{price:,.2f}" for price in short_df["close_price"]],
             textposition="top center",
             textfont=dict(color="#FF1744", size=9, family="Arial Black"),
-            customdata=short_df[["close_price", "AI_Prob", "Trade_Result", "directional_return_3"]].to_numpy(),
+            customdata=short_df[["close_price", "AI_Prob", "Trade_Result", "directional_return_20"]].to_numpy(),
             hovertemplate=(
                 "🔴 SHORT 空單歷史進場<br>"
                 "時間：%{x}<br>"
                 "參考進場價：%{customdata[0]:,.2f}<br>"
                 "AI 分數：%{customdata[1]:.1%}<br>"
-                "3 根 K 線後結果：%{customdata[2]}<br>"
+                "20 根 K 線後結果：%{customdata[2]}<br>"
                 "方向報酬：%{customdata[3]:.2%}"
                 "<extra></extra>"
             ),
@@ -975,7 +987,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
 
         st.caption("進場價格為訊號 K 線收盤價參考值，不代表實際成交價。")
 
-        st.markdown("#### 🧠 歷史訊號學習紀錄")
+        st.markdown("#### 🧠 歷史訊號學習紀錄（20根K線視窗）")
         history = df_tf[df_tf["Base_Long"] | df_tf["Base_Short"]].tail(12).copy()
         if history.empty:
             st.caption("目前載入的 K 線中尚無歷史候選進場點。")
@@ -988,7 +1000,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
             )
             st.dataframe(
                 history[["時間", "方向", "進場參考價", "Trade_Result", "AI 分數"]]
-                .rename(columns={"Trade_Result": "3 根 K 線後結果"}),
+                .rename(columns={"Trade_Result": "20 根 K 線後結果"}),
                 use_container_width=True,
                 hide_index=True,
             )
