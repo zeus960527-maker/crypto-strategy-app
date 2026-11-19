@@ -28,4 +28,4 @@ jobs:
         env:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-        run: python discord_worker.py  # 請依你的實際檔案存放路徑調整（例如 crypto_signal_bridge/discord_worker.py）
+        run: python trader_bot.py  # 請依你的實際檔案存放路徑調整（例如 crypto_signal_bridge/discord_worker.py）
