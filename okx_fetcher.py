@@ -99,11 +99,7 @@ def background_worker():
             print(f"背景迴圈錯誤: {e}")
             time.sleep(5)
 
-if __name__ == "__main__":
-    # 啟動背景爬蟲執行緒
+# 💡 確保 Gunicorn 載入時一定能觸發背景爬蟲執行緒（避免被多行程重複啟動，加上判斷）
+if not app.debug or os.environ.get("WERKZEUG_RUN_MAIN") == "true":
     t = threading.Thread(target=background_worker, daemon=True)
     t.start()
-    
-    # 啟動 Flask 伺服器供 Render 檢測
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
