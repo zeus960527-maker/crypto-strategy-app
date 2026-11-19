@@ -488,7 +488,7 @@ def render_homepage():
 
 
 # ============================================================
-# 6. K 線圖（主副圖之間加入粗灰分隔線、K 棒高度放大、支援左側滑動）
+# 6. K 線圖（主副圖之間具備延伸至價格軸的粗灰分隔線）
 # ============================================================
 def render_live_kline_chart(table, symbol, pair, tf):
     df = load_historical_data(table, symbol)
@@ -562,15 +562,6 @@ def render_live_kline_chart(table, symbol, pair, tf):
         shared_xaxes=True,
         vertical_spacing=0.015,
         row_heights=[0.75, 0.25],
-    )
-
-    # 💡 在主圖和副圖之間加入一條橫向的粗灰分隔線
-    fig.add_shape(
-        type="line",
-        xref="paper", yref="paper",
-        x0=0, x1=1,
-        y0=0.25, y1=0.25,
-        line=dict(color="#474f5d", width=2.5)
     )
 
     fig.add_trace(go.Candlestick(
@@ -763,6 +754,17 @@ def render_live_kline_chart(table, symbol, pair, tf):
     )
 
     fig.update_layout(xaxis=dict(range=[start_time, end_time], autorange=False))
+
+    # 💡 關鍵設定：透過設定副圖 X 軸 (`xaxis2`) 的 linecolor 與 linewidth，
+    # 在主副圖之間完美畫出延伸至右側價格軸（Y軸）的粗灰分隔線
+    fig.update_xaxes(
+        showline=True,
+        linewidth=2,
+        linecolor="#434c5e",  # 粗灰色分隔線
+        mirror=True,
+        row=2,
+        col=1
+    )
 
     fig.update_yaxes(
         side="right",
