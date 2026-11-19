@@ -289,7 +289,7 @@ def publish_latest_signal_to_outbox(df_tf, symbol, timeframe):
                 )
                 VALUES (
                     :symbol, :timeframe, :direction, :candle_open_time,
-                    :signal_time_text, :entry_price, :stop_loss, :take_profit,
+                    :signal_time_taipei, :entry_price, :stop_loss, :take_profit,
                     :atr, :ai_probability, 'pending'
                 )
                 ON CONFLICT (symbol, timeframe, candle_open_time, direction)
@@ -722,8 +722,8 @@ def render_live_kline_chart(table, symbol, pair, tf):
 
     span = max(high - low, abs(high) * 0.001, 1e-8)
     
-    # 🔥 調整此處：將上下範圍係數縮小（例如從 0.50 改為 0.25），使每根 K 棒的視覺高度與上下長度被垂直拉長放大
-    y_range = [low - span * 0.25, high + span * 0.25]
+    # 🔽 這裡將上下留白縮小（從原本 0.50 縮減至 0.18），使價格軸軸距縮短、圖表更緊湊
+    y_range = [low - span * 0.18, high + span * 0.18]
 
     latest = df_tf.iloc[-1]
     latest_close = float(latest["close_price"])
@@ -757,7 +757,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
         low=df_tf["low_price"],
         close=df_tf["close_price"],
         name=symbol,
-        line=dict(width=1.8),  # 稍微加粗 K 棒邊線讓視覺更飽滿
+        line=dict(width=1.5),
         increasing_line_color="#0ECB81",
         increasing_fillcolor="#0ECB81",
         decreasing_line_color="#F6465D",
@@ -799,7 +799,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
 
     long_df = view_df[view_df["Long_Signal"]].copy()
     if not long_df.empty:
-        long_y = long_df["low_price"] - span * 0.20
+        long_y = long_df["low_price"] - span * 0.15
 
         for t, low_p, ly in zip(long_df["open_time"], long_df["low_price"], long_y):
             fig.add_trace(go.Scatter(
@@ -833,7 +833,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
 
     short_df = view_df[view_df["Short_Signal"]].copy()
     if not short_df.empty:
-        short_y = short_df["high_price"] + span * 0.20
+        short_y = short_df["high_price"] + span * 0.15
 
         for t, high_p, sy in zip(short_df["open_time"], short_df["high_price"], short_y):
             fig.add_trace(go.Scatter(
@@ -955,7 +955,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
         spikemode="across+toaxis",
         spikesnap="cursor",
         spikethickness=1,
-        spikedash="dash",
+        spikesdash="dash",
         spikecolor="#a0a6b2",
         showline=True,
         row=1,
@@ -973,7 +973,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
         spikemode="across",
         spikesnap="cursor",
         spikethickness=1,
-        spikedash="dash",
+        spikesdash="dash",
         spikecolor="#a0a6b2",
         row=2,
         col=1,
