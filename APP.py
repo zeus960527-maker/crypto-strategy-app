@@ -321,26 +321,25 @@ def calculate_indicators(df, tf):
 
 
 # ============================================================
-# 4. 高度嚴謹的突破策略與訊號判定
+# 4. 精確策略訊號判定
 # ============================================================
 def build_candidate_signals(df, tf):
     df = df.copy()
 
-    # 嚴格過濾：必須量能顯著放大 (1.2倍以上)、且實體K棒夠大、RSI 位於明確強勢區間
+    # 多頭突破：收盤價突破壓力通道且收紅 K，且成交量放大
     df["Base_Long"] = (
         (df["close_price"] > df["Trend_Resistance"])
         & (df["close_price"] > df["open_price"])
-        & (df["Body_Ratio"] > 0.35)
-        & df["RSI"].between(52, 78)
-        & (df["volume"] > df["Vol_SMA20"] * 1.2)
+        & df["RSI"].between(45, 80)
+        & (df["volume"] > df["Vol_SMA20"] * 1.05)
     )
 
+    # 空頭跌破：收盤價跌破支撐通道且收黑 K，且成交量放大
     df["Base_Short"] = (
         (df["close_price"] < df["Trend_Support"])
         & (df["close_price"] < df["open_price"])
-        & (df["Body_Ratio"] > 0.35)
-        & df["RSI"].between(22, 48)
-        & (df["volume"] > df["Vol_SMA20"] * 1.2)
+        & df["RSI"].between(20, 55)
+        & (df["volume"] > df["Vol_SMA20"] * 1.05)
     )
 
     df["vol_ratio"] = df["volume"] / df["Vol_SMA20"].replace(0, np.nan)
@@ -489,7 +488,7 @@ def render_homepage():
 
 
 # ============================================================
-# 6. K 線圖（解鎖完整 K 棒歷史數據與乾淨標記）
+# 6. K 線圖（維持完整歷史 K 棒資料，不調整大小）
 # ============================================================
 def render_live_kline_chart(table, symbol, pair, tf):
     df = load_historical_data(table, symbol)
@@ -516,7 +515,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
     )
     df_tf = add_trade_signals(df_tf, model)
 
-    # 💡 完整顯示所有載入的 K 棒資料，不再限制頭尾筆數
+    # 💡 完整使用載入的全部 K 棒資料，不進行任何裁切縮放
     view_df = df_tf.copy()
 
     if view_df.empty:
@@ -610,10 +609,10 @@ def render_live_kline_chart(table, symbol, pair, tf):
         hoverinfo="none",
     ), row=1, col=1)
 
-    # 🟢 LONG 多單標記格式
+    # 🟢 LONG 多單標記格式（帶垂直虛線與乾淨的下方三角形）
     long_df = view_df[view_df["Long_Signal"]].copy()
     if not long_df.empty:
-        long_y = long_df["low_price"] - span * 0.25
+        long_y = long_df["low_price"] - span * 0.20
 
         for t, low_p, ly in zip(long_df["open_time"], long_df["low_price"], long_y):
             fig.add_trace(go.Scatter(
@@ -642,10 +641,10 @@ def render_live_kline_chart(table, symbol, pair, tf):
             hoverinfo="none",
         ), row=1, col=1)
 
-    # 🔴 SHORT 空單標記格式
+    # 🔴 SHORT 空單標記格式（帶垂直虛線與乾淨的上方三角形）
     short_df = view_df[view_df["Short_Signal"]].copy()
     if not short_df.empty:
-        short_y = short_df["high_price"] + span * 0.25
+        short_y = short_df["high_price"] + span * 0.20
 
         for t, high_p, sy in zip(short_df["open_time"], short_df["high_price"], short_y):
             fig.add_trace(go.Scatter(
@@ -752,7 +751,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
         ),
     )
 
-    # 💡 移除強制 X 軸範圍鎖定 (`range=...`)，讓用戶能自由左右平移檢視完整 K 線資料
+    # 💡 允許完整 X 軸自動調整與自由左右滑動
     fig.update_layout(xaxis=dict(autorange=True))
 
     fig.update_yaxes(
