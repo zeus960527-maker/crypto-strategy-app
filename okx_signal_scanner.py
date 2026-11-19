@@ -297,5 +297,5 @@ def run_scanner_job():
 
 
 if __name__ == "__main__":
-    # 本地測試直接執行
-    run_scanner_job()
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
