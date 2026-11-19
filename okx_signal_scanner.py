@@ -5,10 +5,27 @@ import numpy as np
 from sqlalchemy import create_engine, text
 from datetime import datetime
 from zoneinfo import ZoneInfo
+from flask import Flask, jsonify
 
 TAIWAN_TZ = ZoneInfo('Asia/Taipei')
 ATR_STOP_MULTIPLIER = 1.5
 RISK_REWARD_RATIO = 2.5
+
+# 建立獨立的 Flask 伺服器，供 Render Web Service 常駐與定時 Ping 觸發
+app = Flask(__name__)
+
+@app.route("/")
+def home():
+    return "OKX Signal Scanner Worker is running 24/7! 🚀"
+
+@app.route("/run-scanner", methods=["GET", "POST"])
+def webhook_trigger():
+    try:
+        run_scanner_job()
+        return jsonify({"status": "success", "message": "Scanner executed successfully via Webhook!"}), 200
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
 
 def get_database_url():
     url = os.getenv("SUPABASE_DB_URL", "").strip()
@@ -17,6 +34,7 @@ def get_database_url():
     if url.startswith("postgresql://"):
         url = "postgresql+psycopg2://" + url[len("postgresql://"):]
     return url or None
+
 
 def ensure_signal_outbox_table(engine):
     """確保 strategy_signal_outbox 資料表存在"""
@@ -42,6 +60,7 @@ def ensure_signal_outbox_table(engine):
                 CONSTRAINT unique_signal_outbox UNIQUE(symbol, timeframe, candle_open_time, direction)
             )
         """))
+
 
 def calculate_indicators_and_signals(df, tf):
     df = df.copy()
@@ -114,6 +133,7 @@ def calculate_indicators_and_signals(df, tf):
 
     return df
 
+
 def scan_and_import_latest_signal(engine, table_name, symbol, timeframe):
     """只抓取最新 K 線計算指標，並使用當下臺灣時間記錄訊號"""
     try:
@@ -144,7 +164,6 @@ def scan_and_import_latest_signal(engine, table_name, symbol, timeframe):
         if df.empty:
             return
 
-        # 僅取最末端（最新）的一根 K 線
         latest_row = df.iloc[-1]
         is_long = bool(latest_row["Long_Signal"])
         is_short = bool(latest_row["Short_Signal"])
@@ -171,7 +190,6 @@ def scan_and_import_latest_signal(engine, table_name, symbol, timeframe):
         else:
             candle_time = candle_time.astimezone(TAIWAN_TZ)
 
-        # 强制使用臺灣目前時間作為訊號時間
         signal_time_text = datetime.now(TAIWAN_TZ).strftime("%Y-%m-%d %H:%M:%S")
 
         with engine.begin() as conn:
@@ -205,6 +223,7 @@ def scan_and_import_latest_signal(engine, table_name, symbol, timeframe):
     except Exception as e:
         print(f"[{symbol} {timeframe}] 最新訊號掃描發生錯誤: {e}")
 
+
 def process_outbox_and_notify(engine, webhook_url):
     """讀取佇列中 pending 的訊號，發送到 Discord 並更新為 sent"""
     with engine.begin() as conn:
@@ -223,7 +242,7 @@ def process_outbox_and_notify(engine, webhook_url):
             emoji = "🟢" if direction == "LONG" else "🔴"
             
             payload = {
-                "content": f"🚨 **加密貨幣 AI 策略新訊號** 🚨",
+                "content": f"🚨 **加密貨幣技術分析 AI 策略新訊號** 🚨",
                 "embeds": [{
                     "title": f"{emoji} {symbol} ({tf}) - {direction}",
                     "color": 3066993 if direction == "LONG" else 15158332,
@@ -233,7 +252,7 @@ def process_outbox_and_notify(engine, webhook_url):
                         {"name": "🛡️ 建議止損價 (SL)", "value": f"`{sl:,.2f}`", "inline": True},
                         {"name": "🎯 建議止盈價 (TP)", "value": f"`{tp:,.2f}`", "inline": True},
                     ],
-                    "footer": {"text": f"OKX AI Strategy Scanner Bot | 臺灣時間: {datetime.now(TAIWAN_TZ).strftime('%Y-%m-%d %H:%M:%S')}"}
+                    "footer": {"text": f"OKX Strategy Scanner Bot | 臺灣時間: {datetime.now(TAIWAN_TZ).strftime('%Y-%m-%d %H:%M:%S')}"}
                 }]
             }
 
@@ -248,18 +267,16 @@ def process_outbox_and_notify(engine, webhook_url):
             else:
                 print(f"⚠️ 訊號 ID {sig_id} 發送失敗，HTTP Status: {res.status_code}")
 
-def main():
+
+def run_scanner_job():
     now_taipei = datetime.now(TAIWAN_TZ).strftime('%Y-%m-%d %H:%M:%S')
-    print(f"🕒 [臺灣時間 {now_taipei}] OKX 即時策略訊號掃描與派送系統啟動（涵蓋 BTC 與 ETH）...")
+    print(f"🕒 [臺灣時間 {now_taipei}] OKX 技術分析策略訊號掃描與派送執行中...")
 
     db_url = get_database_url()
     webhook_url = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
 
-    if not db_url:
-        print("❌ 錯誤：未設定 SUPABASE_DB_URL")
-        return
-    if not webhook_url:
-        print("❌ 錯誤：未設定 DISCORD_WEBHOOK_URL")
+    if not db_url or not webhook_url:
+        print("❌ 錯誤：未設定 SUPABASE_DB_URL 或 DISCORD_WEBHOOK_URL")
         return
 
     engine = create_engine(db_url)
@@ -276,7 +293,9 @@ def main():
             scan_and_import_latest_signal(engine, table_name, symbol, tf)
 
     process_outbox_and_notify(engine, webhook_url)
-    print(f"✨ [臺灣時間 {datetime.now(TAIWAN_TZ).strftime('%Y-%m-%d %H:%M:%S')}] 本次即時掃描與派送任務執行完畢。")
+    print(f"✨ [臺灣時間 {datetime.now(TAIWAN_TZ).strftime('%Y-%m-%d %H:%M:%S')}] 本次掃描與派送任務執行完畢。")
+
 
 if __name__ == "__main__":
-    main()
+    # 本地測試直接執行
+    run_scanner_job()
