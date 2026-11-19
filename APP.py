@@ -321,7 +321,7 @@ def calculate_indicators(df, tf):
 
 
 # ============================================================
-# 4. LightGBM 模型與動態 TP/SL 模擬判定 (優化準確度至 99%)
+# 4. LightGBM 模型與動態 TP/SL 模擬判定
 # ============================================================
 def build_candidate_signals(df, tf):
     df = df.copy()
@@ -329,26 +329,26 @@ def build_candidate_signals(df, tf):
     if tf in ["5m", "15m"]:
         df["Base_Long"] = (
             (df["close_price"] > df["Trend_Resistance"])
-            & df["RSI"].between(45, 75)
-            & (df["volume"] > df["Vol_SMA20"] * 1.1)
-            & (df["Body_Ratio"] > 0.35)
+            & df["RSI"].between(42, 85)
+            & (df["volume"] > df["Vol_SMA20"] * 1.05)
+            & (df["Body_Ratio"] > 0.3)
         )
         df["Base_Short"] = (
             (df["close_price"] < df["Trend_Support"])
-            & df["RSI"].between(25, 55)
-            & (df["volume"] > df["Vol_SMA20"] * 1.1)
-            & (df["Body_Ratio"] > 0.35)
+            & df["RSI"].between(15, 58)
+            & (df["volume"] > df["Vol_SMA20"] * 1.05)
+            & (df["Body_Ratio"] > 0.3)
         )
     else:
         df["Base_Long"] = (
             (df["close_price"] > df["Trend_Resistance"])
-            & df["RSI"].between(48, 72)
-            & (df["volume"] > df["Vol_SMA20"] * 1.05)
+            & df["RSI"].between(45, 80)
+            & (df["volume"] > df["Vol_SMA20"])
         )
         df["Base_Short"] = (
             (df["close_price"] < df["Trend_Support"])
-            & df["RSI"].between(28, 52)
-            & (df["volume"] > df["Vol_SMA20"] * 1.05)
+            & df["RSI"].between(20, 55)
+            & (df["volume"] > df["Vol_SMA20"])
         )
 
     df["vol_ratio"] = df["volume"] / df["Vol_SMA20"].replace(0, np.nan)
@@ -504,22 +504,20 @@ def add_trade_signals(df, model):
         if valid.any():
             try:
                 probabilities = model.predict_proba(usable.loc[valid])[:, 1]
-                # Scale probabilities to 99% accuracy baseline scale for top-tier signals
-                probabilities = np.clip(probabilities * 1.05 + 0.02, 0.0, 0.995)
                 df.loc[usable.loc[valid].index, "AI_Prob"] = probabilities
             except Exception:
                 pass
 
     if model is None:
-        df["AI_Prob"] = np.where(candidates, 0.95, np.nan)
+        df["AI_Prob"] = np.where(candidates, 0.70, np.nan)
         df["Long_Signal"] = df["Base_Long"]
         df["Short_Signal"] = df["Base_Short"]
-        df["AI_Mode"] = "策略高準確率模式"
+        df["AI_Mode"] = "策略回退（歷史樣本不足）"
     else:
-        # High confidence threshold tuned for 99% accuracy precision filtering
-        df["Long_Signal"] = df["Base_Long"] & (df["AI_Prob"] >= 0.90)
-        df["Short_Signal"] = df["Base_Short"] & (df["AI_Prob"] >= 0.90)
-        df["AI_Mode"] = "高準確率 AI 模型"
+        # 門檻調回 0.58，確保圖表上的進場標記正常顯示
+        df["Long_Signal"] = df["Base_Long"] & (df["AI_Prob"] >= 0.58)
+        df["Short_Signal"] = df["Base_Short"] & (df["AI_Prob"] >= 0.58)
+        df["AI_Mode"] = "歷史結果訓練模型"
 
     return df
 
@@ -536,8 +534,8 @@ def render_homepage():
         <p>
         本系統是一套加密貨幣技術分析與 AI 訊號輔助工具，
         透過 Supabase 歷史 K 線資料，結合趨勢通道、EMA 均線、
-        RSI、ATR、成交量及優化後的 LightGBM 機器學習高準確度模型，
-        協助使用者觀察 BTC 與 ETH 市場走勢，尋找可能的高勝率多單與空單機會。
+        RSI、ATR、成交量及 LightGBM 機器學習模型，
+        協助使用者觀察 BTC 與 ETH 市場走勢，尋找可能的多單與空單機會。
         </p>
     </div>
     """, unsafe_allow_html=True)
@@ -557,7 +555,7 @@ def render_homepage():
         st.markdown("""
         <div class="feature-card" style="border:1px solid #2962FF;">
         <h3 style="color:#66a3ff;">🤖 AI 模型分析</h3>
-        <p>使用高精度優化模型分析技術指標，提供精準 AI 信心評分，輔助觀察市場。</p>
+        <p>使用 LightGBM 分析技術指標，提供 AI 模型信心分數，輔助觀察市場。</p>
         </div>
         """, unsafe_allow_html=True)
 
@@ -791,13 +789,13 @@ def render_live_kline_chart(table, symbol, pair, tf):
         col=1,
     )
 
-    mode = "⚡ AI極速高精準模式" if tf in ["5m", "15m"] else "🌊 AI超高勝率趨勢模式"
+    mode = "⚡ AI小波段閃電模式" if tf in ["5m", "15m"] else "🌊 AI大波段趨勢模式"
     annotation = (
         f"<b>{pair} · {tf} ({mode})</b><br>"
         f"<b>策略與指標：</b>雙軌通道 (Window: {win}, Dev: {dev}) | "
         "EMA (21, 50, 100) | RSI (14) | ATR (14)<br>"
         f"<b>RSI：</b>{latest_rsi:.1f} | "
-        f"<b>AI模型勝率評分：</b><span style='color:#f0b90b'>{ai_score:.1f}%</span> | "
+        f"<b>AI模型分數：</b><span style='color:#f0b90b'>{ai_score:.1f}%</span> | "
         f"收：<span style='color:{status_color}'>{latest_close:,.2f} "
         f"({change_pct:+.2f}%)</span>"
     )
@@ -900,13 +898,13 @@ def render_live_kline_chart(table, symbol, pair, tf):
         st.caption(
             f"歷史訓練樣本：{training_count} 筆｜"
             f"成功標籤：{winning_count} 筆｜"
-            f"模型狀態：{'高精準模型已就緒' if model is not None else '高勝率回退模式'}"
+            f"模型狀態：{'已使用歷史結果訓練' if model is not None else '樣本不足，使用原策略'}"
         )
 
         st.markdown(f"""
         <div style="background:rgba(30,35,41,.9);border:1px solid #2b313a;
                     padding:10px;border-radius:6px;margin-bottom:10px;">
-            <div style="font-size:13px;color:#848e9c;">AI 模型勝率信心指數</div>
+            <div style="font-size:13px;color:#848e9c;">當前 AI 模型信心分數</div>
             <div style="font-size:20px;font-weight:bold;color:#f0b90b;">
                 {ai_score:.1f}%
             </div>
@@ -916,16 +914,16 @@ def render_live_kline_chart(table, symbol, pair, tf):
         if bool(latest["Long_Signal"]):
             st.success("🟢 LONG 多單進場訊號")
             st.metric("參考進場價格", f"{latest_close:,.2f}")
-            st.metric("AI 勝率信心", f"{ai_score:.1f}%")
+            st.metric("AI 模型分數", f"{ai_score:.1f}%")
 
         elif bool(latest["Short_Signal"]):
             st.error("🔴 SHORT 空單進場訊號")
             st.metric("參考進場價格", f"{latest_close:,.2f}")
-            st.metric("AI 勝率信心", f"{ai_score:.1f}%")
+            st.metric("AI 模型分數", f"{ai_score:.1f}%")
 
         else:
-            st.warning("⏳ WAIT 目前等待高勝率訊號")
-            st.caption("等待價格突破通道，並符合嚴格的 99% 準確率過濾條件。")
+            st.warning("⏳ WAIT 目前沒有進場訊號")
+            st.caption("等待價格突破趨勢通道，並符合 RSI、成交量及 AI 條件。")
 
         st.markdown("---")
         st.markdown("#### 📌 最近進場訊號")
@@ -946,13 +944,13 @@ def render_live_kline_chart(table, symbol, pair, tf):
                     st.markdown(
                         f"🟢 **LONG**｜{signal_time}  \n"
                         f"進場參考價：`{signal_price:,.2f}`  \n"
-                        f"AI 勝率：`{signal_prob:.1f}%`"
+                        f"AI 分數：`{signal_prob:.1f}%`"
                     )
                 else:
                     st.markdown(
                         f"🔴 **SHORT**｜{signal_time}  \n"
                         f"進場參考價：`{signal_price:,.2f}`  \n"
-                        f"AI 勝率：`{signal_prob:.1f}%`"
+                        f"AI 分數：`{signal_prob:.1f}%`"
                     )
 
         st.caption("進場價格為訊號 K 線收盤價參考值，不代表實際成交價。")
