@@ -127,7 +127,7 @@ div[data-testid="stRadio"] > div {{ flex-direction: row; gap: 12px; flex-wrap: w
     height: 100%;
 }}
 
-/* 手機版 RWD 自動適配樣式（允許雙指觸控縮放與防止截斷） */
+/* 手機版 RWD 自動適配樣式（支援雙指縮放與防截斷） */
 @media(max-width: 768px) {{
     .block-container {{
         padding-left: 0.5rem !important;
@@ -746,7 +746,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
         hoverdistance=100,
         spikedistance=1000,
         xaxis_rangeslider_visible=False,
-        dragmode="zoom",  # 💡 允許手機雙指進行縮放
+        dragmode="zoom",  # 💡 啟用原生縮放與雙指捏合手勢
         height=880,
         bargap=0.08,
         showlegend=True,
@@ -776,7 +776,8 @@ def render_live_kline_chart(table, symbol, pair, tf):
         linecolor="#434c5e",
         mirror=True,
         row=2,
-        col=1
+        col=1,
+        fixedrange=False,  # 💡 允許自由縮放時間軸寬度
     )
 
     fig.update_yaxes(
@@ -795,7 +796,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
         row=1,
         col=1,
         range=y_range,
-        fixedrange=False,  # 💡 允許手機上下滑動/雙指縮放價格高度
+        fixedrange=False,  # 💡 允許自由縮放高度
     )
 
     fig.update_yaxes(
@@ -812,7 +813,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
         spikecolor="#a0a6b2",
         row=2,
         col=1,
-        fixedrange=False,
+        fixedrange=False,  # 💡 允許副圖成交量高度縮放
     )
 
     chart_col, panel_col = st.columns([3.6, 1.2])
