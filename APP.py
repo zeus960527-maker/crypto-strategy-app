@@ -821,7 +821,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
         spikemode="across+toaxis",
         spikesnap="cursor",
         spikethickness=1,
-        spikesched="dash",
+        spikedash="dash",
         spikecolor="#a0a6b2",
         showline=True,
         row=1,
@@ -840,7 +840,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
         spikemode="across",
         spikesnap="cursor",
         spikethickness=1,
-        spikedsah="dash",
+        spikedash="dash",
         spikecolor="#a0a6b2",
         row=2,
         col=1,
@@ -926,11 +926,11 @@ def render_live_kline_chart(table, symbol, pair, tf):
         st.caption("進場價格為訊號 K 線收盤價參考值，不代表實際成交價。")
 
     # ============================================================
-    # 💡 將「歷史訊號學習紀錄」移至上方左右分欄下方，變成橫跨全寬的下方區塊
+    # 移至下方區塊的：🧠 歷史訊號學習紀錄 (動態 TP/SL 結算)
     # ============================================================
     st.markdown("---")
-    st.markdown("#### 🧠 歷史訊號學習紀錄 (動態 TP/SL 結算)")
-    history = view_df[view_df["Base_Long"] | view_df["Base_Short"]].tail(12).copy()
+    st.markdown("### 🧠 歷史訊號學習紀錄 (動態 TP/SL 結算)")
+    history = view_df[view_df["Base_Long"] | view_df["Base_Short"]].tail(15).copy()
     if history.empty:
         st.caption("目前載入中沒有歷史候選訊號。")
     else:
@@ -944,7 +944,8 @@ def render_live_kline_chart(table, symbol, pair, tf):
         )
         st.dataframe(
             history[["時間", "方向", "進場參考價", "止損價 (SL)", "止盈價 (TP)", "Trade_Result", "AI 分數"]]
-            .rename(columns={"Trade_Result": "結算結果"}),
+            .rename(columns={"Trade_Result": "結算結果"})
+            .iloc[::-1],  # 讓最新的歷史訊號排在最上方
             use_container_width=True,
             hide_index=True,
         )
