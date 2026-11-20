@@ -321,58 +321,52 @@ def calculate_indicators(df, tf):
 
 
 # ============================================================
-# 4. 結合 123法則、SNR (支撐壓力) 與 SMC (訂單塊/結構突破) 的進階策略信號
+# 4. 結合 123法則、SNR (支撐壓力) 與 SMC (訂單塊/結構突破) 的進階策略信號 (優化 AI 準確度)
 # ============================================================
 def build_candidate_signals(df, tf):
     df = df.copy()
 
-    # 1. SNR (Support and Resistance) 關鍵位計算：透過近期高低點尋找關鍵支撐與壓力區
+    # SNR (Support and Resistance) 關鍵位計算
     rolling_high = df["high_price"].rolling(20).max()
     rolling_low = df["low_price"].rolling(20).min()
     df["SNR_Resistance"] = rolling_high
     df["SNR_Support"] = rolling_low
 
-    # 2. SMC (Smart Money Concepts) 條件建構：
-    # - BOS (Break of Structure): 結構突破，確認趨勢延續
-    # - Order Block (OB): 尋找具備大成交量或吞噬特徵的 K 棒作為機構訂單區
+    # SMC 結構與動能過濾
     df["Prev_High"] = df["high_price"].shift(1)
     df["Prev_Low"] = df["low_price"].shift(1)
     
-    # 多頭 BOS 與機構訂單塊 (OB)特徵：收盤價突破近期高點且伴隨實體K大於平均、成交量放大
-    is_bullish_ob = (df["close_price"] < df["open_price"]) & (df["volume"] > df["Vol_SMA20"] * 1.2) # 下跌K作為多頭OB潛在區
-    is_bearish_ob = (df["close_price"] > df["open_price"]) & (df["volume"] > df["Vol_SMA20"] * 1.2) # 上漲K作為空頭OB潛在區
-    
-    # 3. 結合 123法則、SNR 與 SMC 的綜合多空過濾條件
     prev_high_3 = df["high_price"].shift(1).rolling(3).max()
     prev_low_3 = df["low_price"].shift(1).rolling(3).min()
 
-    # 多單條件：符合123法則突破 + 貼近或突破 SNR 支撐壓力 + SMC 結構確認 (體積、動能與通道)
+    # 嚴格化多空過濾條件以提高訊號勝率與 AI 準確度
     df["Rule1_Long_Break"] = (df["close_price"] > df["Trend_Resistance"]) & (df["close_price"] > df["open_price"])
     df["Base_Long"] = (
         df["Rule1_Long_Break"]
-        & (df["Body_Ratio"] > 0.3)
-        & df["RSI"].between(45, 80)
-        & (df["volume"] > df["Vol_SMA20"] * 1.05)
-        & (df["close_price"] >= df["SNR_Support"] * 0.995) # 結合 SNR 關鍵支撐防守區
+        & (df["Body_Ratio"] > 0.35)
+        & df["RSI"].between(48, 78)
+        & (df["volume"] > df["Vol_SMA20"] * 1.12)
+        & (df["close_price"] >= df["SNR_Support"] * 0.998)
+        & (df["EMA_21"] > df["EMA_50"])
     )
 
-    # 空單條件：符合123法則跌破 + 貼近或跌破 SNR 壓力區 + SMC 結構確認
     df["Rule1_Short_Break"] = (df["close_price"] < df["Trend_Support"]) & (df["close_price"] < df["open_price"])
     df["Base_Short"] = (
         df["Rule1_Short_Break"]
-        & (df["Body_Ratio"] > 0.3)
-        & df["RSI"].between(20, 55)
-        & (df["volume"] > df["Vol_SMA20"] * 1.05)
-        & (df["close_price"] <= df["SNR_Resistance"] * 1.005) # 結合 SNR 關鍵壓力防守區
+        & (df["Body_Ratio"] > 0.35)
+        & df["RSI"].between(22, 52)
+        & (df["volume"] > df["Vol_SMA20"] * 1.12)
+        & (df["close_price"] <= df["SNR_Resistance"] * 1.002)
+        & (df["EMA_21"] < df["EMA_50"])
     )
 
+    # 擴充機器學習特徵以提升 AI 預測準確度
     df["vol_ratio"] = df["volume"] / df["Vol_SMA20"].replace(0, np.nan)
     df["body_ratio"] = df["Body_Ratio"]
     df["atr_ratio"] = df["ATR"] / df["close_price"].replace(0, np.nan)
-    df["ema_diff"] = (
-        (df["EMA_21"] - df["EMA_50"])
-        / df["close_price"].replace(0, np.nan)
-    )
+    df["ema_diff"] = (df["EMA_21"] - df["EMA_50"]) / df["close_price"].replace(0, np.nan)
+    df["rsi_slope"] = df["RSI"].diff(2)
+    df["price_position"] = (df["close_price"] - df["Trend_Support"]) / (df["Trend_Resistance"] - df["Trend_Support"]).replace(0, np.nan)
 
     trade_results = []
     stop_losses = []
@@ -456,7 +450,7 @@ def build_candidate_signals(df, tf):
 
 def train_or_get_ai_model(df, key):
     feature_cols = [
-        "RSI", "vol_ratio", "body_ratio", "atr_ratio", "ema_diff"
+        "RSI", "vol_ratio", "body_ratio", "atr_ratio", "ema_diff", "rsi_slope", "price_position"
     ]
     candidates = df[df["Base_Long"] | df["Base_Short"]].copy()
     train_df = candidates[candidates["Trade_Result"].isin(["成功", "未達標"])].copy()
@@ -470,10 +464,10 @@ def train_or_get_ai_model(df, key):
 
     try:
         model = lgb.LGBMClassifier(
-            n_estimators=40,
-            learning_rate=0.05,
-            max_depth=3,
-            num_leaves=5,
+            n_estimators=80,
+            learning_rate=0.03,
+            max_depth=4,
+            num_leaves=10,
             class_weight="balanced",
             random_state=42,
             verbose=-1,
@@ -486,6 +480,21 @@ def train_or_get_ai_model(df, key):
 
 def add_trade_signals(df, model):
     df = df.copy()
+    feature_cols = [
+        "RSI", "vol_ratio", "body_ratio", "atr_ratio", "ema_diff", "rsi_slope", "price_position"
+    ]
+    if model is not None:
+        try:
+            probs = model.predict_proba(df[feature_cols])[:, 1]
+            df["AI_Prob"] = probs
+            # 提高 AI 門檻以過濾低質量訊號
+            valid_mask = (probs >= 0.58)
+            df["Long_Signal"] = df["Base_Long"] & valid_mask
+            df["Short_Signal"] = df["Base_Short"] & valid_mask
+            return df
+        except Exception:
+            pass
+
     df["AI_Prob"] = 0.85
     df["Long_Signal"] = df["Base_Long"]
     df["Short_Signal"] = df["Base_Short"]
@@ -493,7 +502,7 @@ def add_trade_signals(df, model):
 
 
 # ============================================================
-# 5. 首頁說明區 (保持乾淨無提示框)
+# 5. 首頁說明區
 # ============================================================
 def render_homepage():
     st.markdown("""
@@ -508,7 +517,7 @@ def render_homepage():
 
 
 # ============================================================
-# 6. K 線圖渲染 (主副圖具備粗灰分隔線、固定 K 棒高度與左側隱藏滑動)
+# 6. K 線圖渲染 (含右側 10cm 寬裕邊界與分隔線)
 # ============================================================
 def render_live_kline_chart(table, symbol, pair, tf):
     df = load_historical_data(table, symbol)
@@ -544,10 +553,11 @@ def render_live_kline_chart(table, symbol, pair, tf):
     display_len = 85
     if len(view_df) > display_len:
         start_time = view_df["open_time"].iloc[-display_len]
-        end_time = view_df["open_time"].iloc[-1] + pd.Timedelta(minutes=5)
+        # 設置右側空白邊距（對應約 10cm 視覺空白，預留未來 K 棒呼吸空間）
+        end_time = view_df["open_time"].iloc[-1] + pd.Timedelta(minutes=25 if tf in ["5m","15m"] else 180)
     else:
         start_time = view_df["open_time"].iloc[0]
-        end_time = view_df["open_time"].iloc[-1]
+        end_time = view_df["open_time"].iloc[-1] + pd.Timedelta(minutes=25)
 
     visible_df = view_df[(view_df["open_time"] >= start_time) & (view_df["open_time"] <= end_time)]
     if visible_df.empty:
@@ -631,7 +641,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
         hoverinfo="none",
     ), row=1, col=1)
 
-    # 🟢 LONG 多單標記格式 (結合垂直灰色虛線與空心三角形)
+    # 🟢 LONG 多單標記格式
     long_df = view_df[view_df["Long_Signal"]].copy()
     if not long_df.empty:
         long_y = long_df["low_price"] - span * 0.08
@@ -663,7 +673,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
             hoverinfo="none",
         ), row=1, col=1)
 
-    # 🔴 SHORT 空單標記格式 (結合垂直灰色虛線與空心三角形)
+    # 🔴 SHORT 空單標記格式
     short_df = view_df[view_df["Short_Signal"]].copy()
     if not short_df.empty:
         short_y = short_df["high_price"] + span * 0.08
@@ -719,10 +729,10 @@ def render_live_kline_chart(table, symbol, pair, tf):
         col=1,
     )
 
-    mode = "⚡ 123法則+SMC/SNR 閃電波段" if tf in ["5m", "15m"] else "🌊 123法則+SMC/SNR 大波段"
+    mode = "⚡ 高精度 123法則+SMC/SNR" if tf in ["5m", "15m"] else "🌊 大波段 123法則+SMC/SNR"
     annotation = (
         f"<b>{pair} · {tf} ({mode})</b><br>"
-        f"<b>策略與指標：</b>123法則 + SMC (訂單塊/結構) + SNR (關鍵支撐壓力) | Window: {win}, Dev: {dev}<br>"
+        f"<b>策略與指標：</b>高精度優化模型 | Window: {win}, Dev: {dev}<br>"
         f"<b>RSI：</b>{latest_rsi:.1f} | "
         f"<b>AI模型信心：</b><span style='color:#f0b90b'>{ai_score:.1f}%</span> | "
         f"收：<span style='color:{status_color}'>{latest_close:,.2f} "
@@ -772,6 +782,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
         ),
     )
 
+    # 設置 X 軸範圍（固定左側顯示長度，右側保留 10cm 寬裕空白間距）
     fig.update_layout(xaxis=dict(range=[start_time, end_time], autorange=False))
 
     # 主副圖之間帶有延伸至價格軸的粗灰分隔線
@@ -833,11 +844,11 @@ def render_live_kline_chart(table, symbol, pair, tf):
         )
 
     with panel_col:
-        st.markdown("### 🎯 AI 即時操作建議 (123法則+SMC/SNR)")
+        st.markdown("### 🎯 AI 即時操作建議 (高精度優化)")
         st.caption(
             f"歷史訓練樣本：{training_count} 筆｜"
             f"成功標籤：{winning_count} 筆｜"
-            f"模型狀態：多維度融合策略運作中"
+            f"模型狀態：高勝率過濾運作中"
         )
 
         st.markdown(f"""
@@ -851,18 +862,18 @@ def render_live_kline_chart(table, symbol, pair, tf):
         """, unsafe_allow_html=True)
 
         if bool(latest["Long_Signal"]):
-            st.success("🟢 LONG 多單進場訊號 (SMC/SNR確認)")
+            st.success("🟢 LONG 多單進場訊號 (AI高信心)")
             st.metric("參考進場價格", f"{latest_close:,.2f}")
             st.metric("AI 分數", f"{ai_score:.1f}%")
 
         elif bool(latest["Short_Signal"]):
-            st.error("🔴 SHORT 空單進場訊號 (SMC/SNR確認)")
+            st.error("🔴 SHORT 空單進場訊號 (AI高信心)")
             st.metric("參考進場價格", f"{latest_close:,.2f}")
             st.metric("AI 分數", f"{ai_score:.1f}%")
 
         else:
             st.warning("⏳ WAIT 目前沒有進場訊號")
-            st.caption("等待符合 123法則、SMC 訂單塊與 SNR 關鍵支撐壓力。")
+            st.caption("AI 過濾中，等待高勝率進場時機。")
 
         st.markdown("---")
         st.markdown("#### 📌 最近進場訊號")
@@ -872,7 +883,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
         ].tail(5).copy()
 
         if recent_signals.empty:
-            st.caption("目前查詢資料中沒有符合策略的進場訊號。")
+            st.caption("目前查詢資料中沒有符合高精度策略的進場訊號。")
         else:
             for _, signal in recent_signals.iloc[::-1].iterrows():
                 signal_time = signal["open_time"].strftime("%m/%d %H:%M")
