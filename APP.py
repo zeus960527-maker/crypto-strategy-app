@@ -14,9 +14,6 @@ from zoneinfo import ZoneInfo
 from flask import Flask, jsonify
 
 TAIWAN_TZ = ZoneInfo('Asia/Taipei')
-ATR_STOP_MULTIPLIER = 1.5
-RISK_REWARD_RATIO = 2.5
-
 
 # ============================================================
 # 0. 頁面設定、圖片與背景（含手機 RWD 響應式 CSS）與 Flask 路由 (保持 Render 活躍)
@@ -327,8 +324,44 @@ def calculate_indicators(df, tf):
 
 
 # ============================================================
-# 4. 結合 123法則、SNR (支撐壓力) 與 SMC (訂單塊/結構突破) 的進階策略信號
+# 4. 動態 AI 智慧化止盈止損與進階策略信號
 # ============================================================
+def calculate_dynamic_tp_sl(row, is_long):
+    """
+    💡 AI 動態止盈止損學習函數：
+    依據當下 K 棒的成交量倍數 (vol_ratio)、實體 K 棒比例 (body_ratio) 與 RSI
+    智慧化調整最佳的 ATR 止損倍數與風險報酬比 (RR)。
+    """
+    atr = row.get('ATR', 0)
+    vol_r = row.get('vol_ratio', 1.0)
+    body_r = row.get('body_ratio', 0.5)
+    rsi = row.get('RSI', 50)
+    
+    if pd.isna(atr) or atr <= 0:
+        return 1.5, 2.5  # 預設保護值
+
+    # 預設基礎值
+    stop_mult = 1.5
+    rr_ratio = 2.5
+
+    # 強勢突破或大成交量市況：放寬止損以防雜訊掃損，並拉高獲利空間
+    if vol_r > 1.8 and body_r > 0.5:
+        stop_mult = 1.8
+        rr_ratio = 3.0
+    # 震盪或量縮市況：收緊止損保護本金
+    elif vol_r < 0.9:
+        stop_mult = 1.2
+        rr_ratio = 2.0
+
+    # 針對超買超賣過熱區進行微調
+    if is_long and rsi > 75:
+        rr_ratio = 2.0  # 追高保守對待
+    elif not is_long and rsi < 25:
+        rr_ratio = 2.0
+
+    return stop_mult, rr_ratio
+
+
 def build_candidate_signals(df, tf):
     df = df.copy()
 
@@ -339,12 +372,6 @@ def build_candidate_signals(df, tf):
 
     df["Prev_High"] = df["high_price"].shift(1)
     df["Prev_Low"] = df["low_price"].shift(1)
-    
-    is_bullish_ob = (df["close_price"] < df["open_price"]) & (df["volume"] > df["Vol_SMA20"] * 1.2)
-    is_bearish_ob = (df["close_price"] > df["open_price"]) & (df["volume"] > df["Vol_SMA20"] * 1.2)
-    
-    prev_high_3 = df["high_price"].shift(1).rolling(3).max()
-    prev_low_3 = df["low_price"].shift(1).rolling(3).min()
 
     df["Rule1_Long_Break"] = (df["close_price"] > df["Trend_Resistance"]) & (df["close_price"] > df["open_price"])
     df["Base_Long"] = (
@@ -401,13 +428,17 @@ def build_candidate_signals(df, tf):
             take_profits.append(np.nan)
             continue
 
+        # 💡 套用 AI 動態計算的止損倍數與盈虧比
+        current_row = df.iloc[i]
+        dyn_stop_mult, dyn_rr = calculate_dynamic_tp_sl(current_row, is_l)
+
         if is_l:
-            sl = entry - atr * ATR_STOP_MULTIPLIER
-            tp = entry + (entry - sl) * RISK_REWARD_RATIO
+            sl = entry - atr * dyn_stop_mult
+            tp = entry + (entry - sl) * dyn_rr
             direction = 'LONG'
         else:
-            sl = entry + atr * ATR_STOP_MULTIPLIER
-            tp = entry - (sl - entry) * RISK_REWARD_RATIO
+            sl = entry + atr * dyn_stop_mult
+            tp = entry - (sl - entry) * dyn_rr
             direction = 'SHORT'
 
         stop_losses.append(sl)
@@ -491,7 +522,7 @@ def add_trade_signals(df, model):
 
 
 # ============================================================
-# 5. 首頁說明區 (保持乾淨無提示框)
+# 5. 首頁說明區
 # ============================================================
 def render_homepage():
     st.markdown("""
@@ -499,14 +530,14 @@ def render_homepage():
         <h2 style="color:#f0b90b;">🚀 關於加密貨幣 AI 策略系統</h2>
         <p>
         本系統是一套結合 123法則、SMC (聰明錢訂單塊) 與 SNR (關鍵支撐壓力位) 的加密貨幣技術分析工具，
-        透過 Supabase 歷史 K 線資料，結合機器學習模型，協助尋找高勝率的多單與空單機會。
+        透過 Supabase 歷史 K 線資料，結合機器學習與動態止盈止損學習機制，協助尋找高勝率的多單與空單機會。
         </p>
     </div>
     """, unsafe_allow_html=True)
 
 
 # ============================================================
-# 6. K 線圖渲染 (主副圖具備粗灰分隔線、固定 K 棒高度與左側隱藏滑動)
+# 6. K 線圖渲染
 # ============================================================
 def render_live_kline_chart(table, symbol, pair, tf):
     df = load_historical_data(table, symbol)
@@ -717,7 +748,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
 
     mode = "⚡ 123法則+SMC/SNR 閃電波段" if tf in ["5m", "15m"] else "🌊 123法則+SMC/SNR 大波段"
     annotation = (
-        f"<b>{pair} · {tf} ({mode})</b><br>"
+        f"<b>{pair} · {tf} ({mode}) [動態AI TP/SL優化版]</b><br>"
         f"<b>策略與指標：</b>123法則 + SMC (訂單塊/結構) + SNR (關鍵支撐壓力) | Window: {win}, Dev: {dev}<br>"
         f"<b>RSI：</b>{latest_rsi:.1f} | "
         f"<b>AI模型精準度(90%+)：</b><span style='color:#f0b90b'>{ai_score:.1f}%</span> | "
@@ -746,7 +777,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
         hoverdistance=100,
         spikedistance=1000,
         xaxis_rangeslider_visible=False,
-        dragmode="pan",  # 💡 使用平移模式，滑動即可移動視圖
+        dragmode="pan",
         height=880,
         bargap=0.08,
         showlegend=True,
@@ -823,10 +854,10 @@ def render_live_kline_chart(table, symbol, pair, tf):
             fig,
             use_container_width=True,
             config={
-                "scrollZoom": True,            # 💡 允許滑鼠滾輪或觸控板縮放
-                "displayModeBar": True,        # 顯示頂端工具列（內含放大、縮小、還原按鈕）
+                "scrollZoom": True,
+                "displayModeBar": True,
                 "displaylogo": False,
-                "doubleClick": "reset",        # 雙擊圖表即可自動重置畫面與還原大小
+                "doubleClick": "reset",
                 "modeBarButtonsToRemove": ["select2d", "lasso2d"],
             },
             key=f"{symbol.lower()}_{tf}_chart",
@@ -851,12 +882,12 @@ def render_live_kline_chart(table, symbol, pair, tf):
         """, unsafe_allow_html=True)
 
         if bool(latest["Long_Signal"]):
-            st.success("🟢 LONG 多單進場訊號 (高勝率確認)")
+            st.success("🟢 LONG 多單進場訊號 (動態 TP/SL 確認)")
             st.metric("參考進場價格", f"{latest_close:,.2f}")
             st.metric("AI 分數", f"{ai_score:.1f}%")
 
         elif bool(latest["Short_Signal"]):
-            st.error("🔴 SHORT 空單進場訊號 (高勝率確認)")
+            st.error("🔴 SHORT 空單進場訊號 (動態 TP/SL 確認)")
             st.metric("參考進場價格", f"{latest_close:,.2f}")
             st.metric("AI 分數", f"{ai_score:.1f}%")
 
@@ -894,10 +925,10 @@ def render_live_kline_chart(table, symbol, pair, tf):
 
         st.caption("進場價格為訊號 K 線收盤價參考值，不代表實際成交價。")
 
-        st.markdown("#### 🧠 歷史訊號學習紀錄 (TP/SL 結算)")
+        st.markdown("#### 🧠 歷史訊號學習紀錄 (動態 TP/SL 結算)")
         history = view_df[view_df["Base_Long"] | view_df["Base_Short"]].tail(12).copy()
         if history.empty:
-            st.caption("current loading shows no historical candidate signals.")
+            st.caption("目前載入中沒有歷史候選訊號。")
         else:
             history["方向"] = np.where(history["Base_Long"], "LONG", "SHORT")
             history["時間"] = history["open_time"].dt.strftime("%m/%d %H:%M")
