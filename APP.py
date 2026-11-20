@@ -264,7 +264,7 @@ def load_historical_data(table_name, symbol_name):
 
 
 # ============================================================
-# 3. 技術指標 (已升級：新增更多動能與趨勢特徵)
+# 3. 技術指標
 # ============================================================
 def calculate_trendline_channel(df, window=30, num_dev=1.8):
     df = df.copy()
@@ -294,7 +294,6 @@ def calculate_trendline_channel(df, window=30, num_dev=1.8):
 def calculate_indicators(df, tf):
     df = df.copy()
 
-    # 均線系統
     df["EMA_21"] = df["close_price"].ewm(span=21, adjust=False).mean()
     df["EMA_50"] = df["close_price"].ewm(span=50, adjust=False).mean()
     df["EMA_100"] = df["close_price"].ewm(span=100, adjust=False).mean()
@@ -303,21 +302,18 @@ def calculate_indicators(df, tf):
     dev = 1.5 if tf in ["5m", "15m"] else 2.0
     df = calculate_trendline_channel(df, win, dev)
 
-    # RSI
     delta = df["close_price"].diff()
     gain = delta.where(delta > 0, 0).rolling(14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
     rs = gain / loss.replace(0, np.nan)
     df["RSI"] = (100 - 100 / (1 + rs)).fillna(50)
 
-    # MACD 特徵升級
     exp1 = df["close_price"].ewm(span=12, adjust=False).mean()
     exp2 = df["close_price"].ewm(span=26, adjust=False).mean()
     df["MACD"] = exp1 - exp2
     df["MACD_Signal"] = df["MACD"].ewm(span=9, adjust=False).mean()
     df["MACD_Hist"] = df["MACD"] - df["MACD_Signal"]
 
-    # ATR 與成交量
     high_low = df["high_price"] - df["low_price"]
     high_close = (df["high_price"] - df["close_price"].shift()).abs()
     low_close = (df["low_price"] - df["close_price"].shift()).abs()
@@ -334,7 +330,7 @@ def calculate_indicators(df, tf):
 
 
 # ============================================================
-# 4. 動態 AI 智慧化止盈止損與高勝率進階策略信號 (已升級過濾條件)
+# 4. 動態 AI 智慧化止盈止損與高勝率進階策略信號
 # ============================================================
 def calculate_dynamic_tp_sl(row, is_long):
     atr = row.get('ATR', 0)
@@ -343,10 +339,10 @@ def calculate_dynamic_tp_sl(row, is_long):
     rsi = row.get('RSI', 50)
     
     if pd.isna(atr) or atr <= 0:
-        return 1.5, 2.5
+        return 1.5, 2.8
 
     stop_mult = 1.5
-    rr_ratio = 2.8  # 提高預設盈虧比以優化期望值
+    rr_ratio = 2.8
 
     if vol_r > 1.8 and body_r > 0.5:
         stop_mult = 1.8
@@ -374,25 +370,24 @@ def build_candidate_signals(df, tf):
     df["Prev_High"] = df["high_price"].shift(1)
     df["Prev_Low"] = df["low_price"].shift(1)
 
-    # 💡 提升勝率：加入趨勢過濾（價格必須在 EMA 21 與 EMA 50 之上/下，且 MACD 柱狀體確認動能）
     df["Rule1_Long_Break"] = (df["close_price"] > df["Trend_Resistance"]) & (df["close_price"] > df["open_price"])
     df["Base_Long"] = (
         df["Rule1_Long_Break"]
-        & (df["Body_Ratio"] > 0.35)  # 提高實體 K 棒比例要求，過濾假突破
-        & df["RSI"].between(48, 75)   # 避開過度超買區
-        & (df["volume"] > df["Vol_SMA20"] * 1.15)  # 要求更高等級的放量突破
-        & (df["close_price"] > df["EMA_21"])      # 順勢交易：必須在 21 EMA 之上
-        & (df["MACD_Hist"] > 0)                  # 動能確認
+        & (df["Body_Ratio"] > 0.35)
+        & df["RSI"].between(48, 75)
+        & (df["volume"] > df["Vol_SMA20"] * 1.15)
+        & (df["close_price"] > df["EMA_21"])
+        & (df["MACD_Hist"] > 0)
     )
 
     df["Rule1_Short_Break"] = (df["close_price"] < df["Trend_Support"]) & (df["close_price"] < df["open_price"])
     df["Base_Short"] = (
         df["Rule1_Short_Break"]
         & (df["Body_Ratio"] > 0.35)
-        & df["RSI"].between(25, 52)   # 避開過度超賣區
+        & df["RSI"].between(25, 52)
         & (df["volume"] > df["Vol_SMA20"] * 1.15)
-        & (df["close_price"] < df["EMA_21"])      # 順勢交易：必須在 21 EMA 之下
-        & (df["MACD_Hist"] < 0)                  # 動能確認
+        & (df["close_price"] < df["EMA_21"])
+        & (df["MACD_Hist"] < 0)
     )
 
     df["vol_ratio"] = df["volume"] / df["Vol_SMA20"].replace(0, np.nan)
@@ -450,7 +445,7 @@ def build_candidate_signals(df, tf):
         outcome = "觀察中"
         matured = False
 
-        for j in range(i + 1, min(n, i + 80)):  # 縮短結算視窗以確保高效率波段
+        for j in range(i + 1, min(n, i + 80)):
             h = high_arr[j]
             l = low_arr[j]
             if pd.isna(h) or pd.isna(l):
@@ -487,7 +482,6 @@ def build_candidate_signals(df, tf):
 
 
 def train_or_get_ai_model(df, key):
-    # 💡 升級特徵欄位，納入 MACD 動能
     feature_cols = [
         "RSI", "vol_ratio", "body_ratio", "atr_ratio", "ema_diff", "MACD_Hist"
     ]
@@ -502,7 +496,6 @@ def train_or_get_ai_model(df, key):
         return None, len(train_df), int(train_df["target"].sum())
 
     try:
-        # 💡 最佳化 LightGBM 參數以提高泛化能力與勝率預測準確度
         model = lgb.LGBMClassifier(
             n_estimators=60,
             learning_rate=0.03,
@@ -535,7 +528,6 @@ def add_trade_signals(df, model):
                 probs[candidates_mask] = pred_probs
             df["AI_Prob"] = probs
             
-            # 💡 嚴格篩選：只有模型預測勝率高於 62% 的訊號才正式發出
             high_prob_mask = df["AI_Prob"] >= 0.62
             df["Long_Signal"] = df["Base_Long"] & high_prob_mask
             df["Short_Signal"] = df["Base_Short"] & high_prob_mask
@@ -839,6 +831,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
         fixedrange=False,
     )
 
+    # 修正 Plotly 屬性拼寫錯誤（spikesdash -> spikedash）
     fig.update_yaxes(
         side="right",
         gridcolor="#1e2329",
@@ -849,7 +842,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
         spikemode="across+toaxis",
         spikesnap="cursor",
         spikethickness=1,
-        spikesdash="dash",
+        spikedash="dash",
         spikecolor="#a0a6b2",
         showline=True,
         row=1,
@@ -868,7 +861,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
         spikemode="across",
         spikesnap="cursor",
         spikethickness=1,
-        spikesdash="dash",
+        spikedash="dash",
         spikecolor="#a0a6b2",
         row=2,
         col=1,
