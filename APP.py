@@ -110,7 +110,7 @@ div[data-testid="stRadio"] > div {{ flex-direction: row; gap: 12px; flex-wrap: w
 [data-testid="stStatusWidget"] {{ visibility: hidden; display: none; }}
 .js-plotly-plot .plotly .nsewdrag,
 .js-plotly-plot .plotly .draglayer,
-.js-plotly-plot .plotly .plot-container {{ cursor: crosshair !important; touch-action: auto !important; }}
+.js-plotly-plot .plotly .plot-container {{ cursor: crosshair !important; }}
 .intro-card {{
     background: rgba(20,25,35,.94);
     border: 1px solid #343b48;
@@ -127,7 +127,7 @@ div[data-testid="stRadio"] > div {{ flex-direction: row; gap: 12px; flex-wrap: w
     height: 100%;
 }}
 
-/* 手機版 RWD 自動適配樣式 */
+/* 💡 關鍵修復：強制讓手機圖表區域接收觸控，支援雙指縮放與平移且不出現框選 */
 @media(max-width: 768px) {{
     .block-container {{
         padding-left: 0.5rem !important;
@@ -140,7 +140,7 @@ div[data-testid="stRadio"] > div {{ flex-direction: row; gap: 12px; flex-wrap: w
     .js-plotly-plot, .plot-container, .plotly {{
         width: 100% !important;
         max-width: 100% !important;
-        touch-action: pan-x pan-y pinch-zoom !important;
+        touch-action: none !important;
     }}
     div.stPlotlyChart {{
         width: 100% !important;
@@ -746,7 +746,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
         hoverdistance=100,
         spikedistance=1000,
         xaxis_rangeslider_visible=False,
-        dragmode="pan",  # 💡 改為 "pan"（平移模式），徹底取消框選放大功能
+        dragmode="pan",  # 保持平移模式，不使用框選
         height=880,
         bargap=0.08,
         showlegend=True,
@@ -827,7 +827,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
                 "displayModeBar": True,
                 "displaylogo": False,
                 "doubleClick": "reset",
-                "modeBarButtonsToRemove": ["select2d", "lasso2d"],  # 💡 移除工具列中的框選按鈕
+                "modeBarButtonsToRemove": ["select2d", "lasso2d"],
             },
             key=f"{symbol.lower()}_{tf}_chart",
         )
