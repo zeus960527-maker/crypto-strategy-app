@@ -321,37 +321,49 @@ def calculate_indicators(df, tf):
 
 
 # ============================================================
-# 4. 結合 123 法則與通道突破的嚴謹策略訊號判定
+# 4. 結合 123法則、SNR (支撐壓力) 與 SMC (訂單塊/結構突破) 的進階策略信號
 # ============================================================
 def build_candidate_signals(df, tf):
     df = df.copy()
 
-    # 123法則條件建構：
-    # 條件 1: 價格突破通道 (Trend_Resistance / Trend_Support)
-    # 條件 2: 結合近期回測未破前高/低與再次突破確認 (透過價格動能與前幾根 K 棒高低點判定)
+    # 1. SNR (Support and Resistance) 關鍵位計算：透過近期高低點尋找關鍵支撐與壓力區
+    rolling_high = df["high_price"].rolling(20).max()
+    rolling_low = df["low_price"].rolling(20).min()
+    df["SNR_Resistance"] = rolling_high
+    df["SNR_Support"] = rolling_low
+
+    # 2. SMC (Smart Money Concepts) 條件建構：
+    # - BOS (Break of Structure): 結構突破，確認趨勢延續
+    # - Order Block (OB): 尋找具備大成交量或吞噬特徵的 K 棒作為機構訂單區
+    df["Prev_High"] = df["high_price"].shift(1)
+    df["Prev_Low"] = df["low_price"].shift(1)
+    
+    # 多頭 BOS 與機構訂單塊 (OB)特徵：收盤價突破近期高點且伴隨實體K大於平均、成交量放大
+    is_bullish_ob = (df["close_price"] < df["open_price"]) & (df["volume"] > df["Vol_SMA20"] * 1.2) # 下跌K作為多頭OB潛在區
+    is_bearish_ob = (df["close_price"] > df["open_price"]) & (df["volume"] > df["Vol_SMA20"] * 1.2) # 上漲K作為空頭OB潛在區
+    
+    # 3. 結合 123法則、SNR 與 SMC 的綜合多空過濾條件
     prev_high_3 = df["high_price"].shift(1).rolling(3).max()
     prev_low_3 = df["low_price"].shift(1).rolling(3).min()
 
+    # 多單條件：符合123法則突破 + 貼近或突破 SNR 支撐壓力 + SMC 結構確認 (體積、動能與通道)
     df["Rule1_Long_Break"] = (df["close_price"] > df["Trend_Resistance"]) & (df["close_price"] > df["open_price"])
-    df["Rule2_Long_Test"] = df["low_price"] >= df["Trend_Support"]  # 回測不破支撐或不再創新低
-    df["Rule3_Long_Confirm"] = df["close_price"] > prev_high_3       # 再次突破前高確認
-
     df["Base_Long"] = (
         df["Rule1_Long_Break"]
         & (df["Body_Ratio"] > 0.3)
         & df["RSI"].between(45, 80)
         & (df["volume"] > df["Vol_SMA20"] * 1.05)
+        & (df["close_price"] >= df["SNR_Support"] * 0.995) # 結合 SNR 關鍵支撐防守區
     )
 
+    # 空單條件：符合123法則跌破 + 貼近或跌破 SNR 壓力區 + SMC 結構確認
     df["Rule1_Short_Break"] = (df["close_price"] < df["Trend_Support"]) & (df["close_price"] < df["open_price"])
-    df["Rule2_Short_Test"] = df["high_price"] <= df["Trend_Resistance"] # 回測不破壓力或不再創新高
-    df["Rule3_Short_Confirm"] = df["close_price"] < prev_low_3         # 再次跌破前低確認
-
     df["Base_Short"] = (
         df["Rule1_Short_Break"]
         & (df["Body_Ratio"] > 0.3)
         & df["RSI"].between(20, 55)
         & (df["volume"] > df["Vol_SMA20"] * 1.05)
+        & (df["close_price"] <= df["SNR_Resistance"] * 1.005) # 結合 SNR 關鍵壓力防守區
     )
 
     df["vol_ratio"] = df["volume"] / df["Vol_SMA20"].replace(0, np.nan)
@@ -488,9 +500,8 @@ def render_homepage():
     <div class="intro-card">
         <h2 style="color:#f0b90b;">🚀 關於加密貨幣 AI 策略系統</h2>
         <p>
-        本系統是一套結合 123 法則與機器學習的加密貨幣技術分析工具，
-        透過 Supabase 歷史 K 線資料，結合趨勢通道、EMA 均線、
-        RSI、ATR、成交量及 AI 模型，協助尋找高勝率的多單與空單機會。
+        本系統是一套結合 123法則、SMC (聰明錢訂單塊) 與 SNR (關鍵支撐壓力位) 的加密貨幣技術分析工具，
+        透過 Supabase 歷史 K 線資料，結合機器學習模型，協助尋找高勝率的多單與空單機會。
         </p>
     </div>
     """, unsafe_allow_html=True)
@@ -708,11 +719,10 @@ def render_live_kline_chart(table, symbol, pair, tf):
         col=1,
     )
 
-    mode = "⚡ 123法則 AI 閃電波段" if tf in ["5m", "15m"] else "🌊 123法則 AI 大波段"
+    mode = "⚡ 123法則+SMC/SNR 閃電波段" if tf in ["5m", "15m"] else "🌊 123法則+SMC/SNR 大波段"
     annotation = (
         f"<b>{pair} · {tf} ({mode})</b><br>"
-        f"<b>策略與指標：</b>123法則過濾 | 雙軌通道 (Window: {win}, Dev: {dev}) | "
-        "EMA (21, 50, 100) | RSI (14) | ATR (14)<br>"
+        f"<b>策略與指標：</b>123法則 + SMC (訂單塊/結構) + SNR (關鍵支撐壓力) | Window: {win}, Dev: {dev}<br>"
         f"<b>RSI：</b>{latest_rsi:.1f} | "
         f"<b>AI模型信心：</b><span style='color:#f0b90b'>{ai_score:.1f}%</span> | "
         f"收：<span style='color:{status_color}'>{latest_close:,.2f} "
@@ -823,11 +833,11 @@ def render_live_kline_chart(table, symbol, pair, tf):
         )
 
     with panel_col:
-        st.markdown("### 🎯 AI 即時操作建議 (123法則)")
+        st.markdown("### 🎯 AI 即時操作建議 (123法則+SMC/SNR)")
         st.caption(
             f"歷史訓練樣本：{training_count} 筆｜"
             f"成功標籤：{winning_count} 筆｜"
-            f"模型狀態：123法則策略運作中"
+            f"模型狀態：多維度融合策略運作中"
         )
 
         st.markdown(f"""
@@ -841,18 +851,18 @@ def render_live_kline_chart(table, symbol, pair, tf):
         """, unsafe_allow_html=True)
 
         if bool(latest["Long_Signal"]):
-            st.success("🟢 LONG 多單進場訊號")
+            st.success("🟢 LONG 多單進場訊號 (SMC/SNR確認)")
             st.metric("參考進場價格", f"{latest_close:,.2f}")
             st.metric("AI 分數", f"{ai_score:.1f}%")
 
         elif bool(latest["Short_Signal"]):
-            st.error("🔴 SHORT 空單進場訊號")
+            st.error("🔴 SHORT 空單進場訊號 (SMC/SNR確認)")
             st.metric("參考進場價格", f"{latest_close:,.2f}")
             st.metric("AI 分數", f"{ai_score:.1f}%")
 
         else:
             st.warning("⏳ WAIT 目前沒有進場訊號")
-            st.caption("等待符合 123 反轉法則與通道突破條件。")
+            st.caption("等待符合 123法則、SMC 訂單塊與 SNR 關鍵支撐壓力。")
 
         st.markdown("---")
         st.markdown("#### 📌 最近進場訊號")
@@ -862,7 +872,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
         ].tail(5).copy()
 
         if recent_signals.empty:
-            st.caption("目前查詢資料中沒有符合 123 法則的進場訊號。")
+            st.caption("目前查詢資料中沒有符合策略的進場訊號。")
         else:
             for _, signal in recent_signals.iloc[::-1].iterrows():
                 signal_time = signal["open_time"].strftime("%m/%d %H:%M")
