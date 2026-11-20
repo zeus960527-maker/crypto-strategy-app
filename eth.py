@@ -28,13 +28,13 @@ def before_request_func():
 
 @app.route("/")
 def home():
-    return "ETH OKX Fetcher is running 24/7! 🚀"
+    return jsonify({"status": "running", "service": "ETH OKX Fetcher"})
 
 @app.route("/health", methods=["GET"])
 def health_check():
     return jsonify({"status": "healthy"}), 200
 
-# 💡 修正：回傳極簡的 JSON，防止 cron-job 發生 "output too large" 錯誤
+# 💡 確保 cron-job 呼叫這個路由時，只回傳極簡的 JSON，徹底避免 "output too large"
 @app.route("/run-scanner", methods=["GET", "POST"])
 def run_scanner():
     return jsonify({"status": "success", "message": "OK"})
