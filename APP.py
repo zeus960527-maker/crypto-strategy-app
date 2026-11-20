@@ -110,7 +110,7 @@ div[data-testid="stRadio"] > div {{ flex-direction: row; gap: 12px; flex-wrap: w
 [data-testid="stStatusWidget"] {{ visibility: hidden; display: none; }}
 .js-plotly-plot .plotly .nsewdrag,
 .js-plotly-plot .plotly .draglayer,
-.js-plotly-plot .plotly .plot-container {{ cursor: crosshair !important; }}
+.js-plotly-plot .plotly .plot-container {{ cursor: crosshair !important; touch-action: auto !important; }}
 .intro-card {{
     background: rgba(20,25,35,.94);
     border: 1px solid #343b48;
@@ -127,7 +127,7 @@ div[data-testid="stRadio"] > div {{ flex-direction: row; gap: 12px; flex-wrap: w
     height: 100%;
 }}
 
-/* 手機版 RWD 自動適配樣式（修復截斷與邊界問題） */
+/* 手機版 RWD 自動適配樣式（允許雙指觸控縮放與防止截斷） */
 @media(max-width: 768px) {{
     .block-container {{
         padding-left: 0.5rem !important;
@@ -140,6 +140,7 @@ div[data-testid="stRadio"] > div {{ flex-direction: row; gap: 12px; flex-wrap: w
     .js-plotly-plot, .plot-container, .plotly {{
         width: 100% !important;
         max-width: 100% !important;
+        touch-action: pan-x pan-y pinch-zoom !important;
     }}
     div.stPlotlyChart {{
         width: 100% !important;
@@ -745,7 +746,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
         hoverdistance=100,
         spikedistance=1000,
         xaxis_rangeslider_visible=False,
-        dragmode="pan",
+        dragmode="zoom",  # 💡 允許手機雙指進行縮放
         height=880,
         bargap=0.08,
         showlegend=True,
@@ -794,6 +795,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
         row=1,
         col=1,
         range=y_range,
+        fixedrange=False,  # 💡 允許手機上下滑動/雙指縮放價格高度
     )
 
     fig.update_yaxes(
@@ -810,6 +812,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
         spikecolor="#a0a6b2",
         row=2,
         col=1,
+        fixedrange=False,
     )
 
     chart_col, panel_col = st.columns([3.6, 1.2])
@@ -822,6 +825,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
                 "scrollZoom": True,
                 "displayModeBar": True,
                 "displaylogo": False,
+                "doubleClick": "reset",
             },
             key=f"{symbol.lower()}_{tf}_chart",
         )
@@ -930,7 +934,7 @@ if __name__ == "__main__":
             )
 
         selected_tf = st.radio(
-            "時間週期（小波段／大波段）",
+            "時間軸週期",
             ["5m", "15m", "1h", "4h"],
             horizontal=True,
             key="timeframe_select",
