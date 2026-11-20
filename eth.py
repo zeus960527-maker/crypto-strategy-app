@@ -24,7 +24,6 @@ def ensure_background_worker_running():
 
 @app.before_request
 def before_request_func():
-    # 當 Render 健康檢查或 cron-job.org Ping 網址時，自動安全啟動 ETH 背景同步爬蟲
     ensure_background_worker_running()
 
 @app.route("/")
@@ -35,10 +34,10 @@ def home():
 def health_check():
     return jsonify({"status": "healthy"}), 200
 
-# 💡 瞬間回傳 200 OK，防止 cron-job.org 發生 Timeout
+# 💡 修正：回傳極簡的 JSON，防止 cron-job 發生 "output too large" 錯誤
 @app.route("/run-scanner", methods=["GET", "POST"])
 def run_scanner():
-    return jsonify({"status": "success", "message": "ETH Ping received, background worker is active!"}), 200
+    return jsonify({"status": "success", "message": "OK"})
 
 SUPABASE_DB_URL = "postgresql://postgres.ygzeqvcyqtvhvjrxhzdv:%4010233960527Ken@aws-0-ap-northeast-1.pooler.supabase.com:6543/postgres"
 
@@ -65,11 +64,6 @@ def catch_up_historical_data(tf):
 
             all_data_to_insert = []
             current_since = last_open_time
-            
-            if current_since:
-                print(f"[ETH-{tf}] 檢測到歷史斷點，開始補齊自時間戳 {current_since} 起的資料...")
-            else:
-                print(f"[ETH-{tf}] 首次同步，正在從 OKX 完整抓取 [{tf}] 歷史資料...")
 
             while True:
                 params = {'symbol': symbol, 'timeframe': tf, 'limit': 300}
@@ -79,7 +73,6 @@ def catch_up_historical_data(tf):
                 try:
                     ohlcv = exchange.fetch_ohlcv(**params)
                 except Exception as e:
-                    print(f"[ETH-{tf}] 歷史補齊 OKX API 抓取失敗: {e}")
                     break
 
                 if not ohlcv:
@@ -119,13 +112,9 @@ def catch_up_historical_data(tf):
                 """
                 cursor.executemany(sql, all_data_to_insert)
                 connection.commit()
-                print(f"  -> ETH 週期 [{tf}] 歷史資料補齊成功！共補入 {len(all_data_to_insert)} 筆")
-            else:
-                print(f"  -> ETH 週期 [{tf}] 歷史資料已是最新，無需補齊。")
 
     except Exception as e:
         connection.rollback()
-        print(f"  -> ETH 週期 [{tf}] 歷史補齊寫入錯誤: {e}")
     finally:
         connection.close()
 
@@ -140,7 +129,6 @@ def fetch_single_timeframe_realtime(tf):
             try:
                 ohlcv = exchange.fetch_ohlcv(**params)
             except Exception as e:
-                print(f"[ETH-{tf}] 即時同步 OKX API 抓取失敗: {e}")
                 return
 
             if not ohlcv:
@@ -163,14 +151,9 @@ def fetch_single_timeframe_realtime(tf):
             """
             cursor.executemany(sql, batch_data)
             connection.commit()
-            
-            latest_close = batch_data[-1][4]
-            latest_vol = batch_data[-1][5]
-            print(f"[ETH-{tf}] 即時同步成功 | 最新收盤價: {latest_close:,.2f} | 成交量: {latest_vol:.4f}")
 
     except Exception as e:
         connection.rollback()
-        print(f"[ETH-{tf}] 即時寫入錯誤: {e}")
     finally:
         connection.close()
 
@@ -182,16 +165,10 @@ def run_sync_task(task_func):
             try:
                 future.result()
             except Exception as e:
-                print(f"執行緒發生錯誤: {e}")
+                pass
 
 def background_worker():
-    print("==========================================")
-    print(" ETH 多週期背景同步控制台已啟動")
-    print("==========================================")
-    print("【狀態】正在檢查並補齊歷史數據...")
     run_sync_task(catch_up_historical_data)
-    print("【狀態】歷史數據補齊完畢！正式進入高頻即時監控...")
-
     while True:
         try:
             start_time = time.time()
@@ -200,9 +177,9 @@ def background_worker():
             sleep_time = max(1.0, 3.0 - elapsed)
             time.sleep(sleep_time)
         except Exception as e:
-            print(f"背景迴圈錯誤: {e}")
             time.sleep(5)
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+```[cite: 7]
