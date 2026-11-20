@@ -23,15 +23,15 @@ def home():
 def health_check():
     return jsonify({"status": "healthy"}), 200
 
-# 💡 關鍵修正：將耗時的掃描任務丟給背景執行緒，立刻回傳 200 OK 避免 500 錯誤
+# 💡 修正：改回傳極簡的 JSON，避免 cron-job.org 報 output too large 錯誤
 @app.route("/run-scanner", methods=["GET", "POST"])
 def webhook_trigger():
     try:
         t = threading.Thread(target=run_scanner_job)
         t.start()
-        return jsonify({"status": "success", "message": "Scanner job started in background!"}), 200
+        return jsonify({"status": "ok"}), 200
     except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
+        return jsonify({"status": "error"}), 500
 
 
 def get_database_url():
