@@ -127,18 +127,23 @@ div[data-testid="stRadio"] > div {{ flex-direction: row; gap: 12px; flex-wrap: w
     height: 100%;
 }}
 
-/* 手機版 RWD 自動適配樣式 */
+/* 手機版 RWD 自動適配樣式（修復截斷與邊界問題） */
 @media(max-width: 768px) {{
     .block-container {{
-        padding-left: 0.75rem !important;
-        padding-right: 0.75rem !important;
+        padding-left: 0.5rem !important;
+        padding-right: 0.5rem !important;
         padding-top: 1.5rem !important;
     }}
     h1 {{
         font-size: 1.8rem !important;
     }}
-    .js-plotly-plot, .plot-container {{
-        height: 450px !important;
+    .js-plotly-plot, .plot-container, .plotly {{
+        width: 100% !important;
+        max-width: 100% !important;
+    }}
+    div.stPlotlyChart {{
+        width: 100% !important;
+        overflow-x: auto;
     }}
 }}
 </style>
@@ -326,20 +331,17 @@ def calculate_indicators(df, tf):
 def build_candidate_signals(df, tf):
     df = df.copy()
 
-    # 1. SNR (Support and Resistance) 關鍵位計算：透過近期高低點尋找關鍵支撐與壓力區
     rolling_high = df["high_price"].rolling(20).max()
     rolling_low = df["low_price"].rolling(20).min()
     df["SNR_Resistance"] = rolling_high
     df["SNR_Support"] = rolling_low
 
-    # 2. SMC (Smart Money Concepts) 條件建構：
     df["Prev_High"] = df["high_price"].shift(1)
     df["Prev_Low"] = df["low_price"].shift(1)
     
     is_bullish_ob = (df["close_price"] < df["open_price"]) & (df["volume"] > df["Vol_SMA20"] * 1.2)
     is_bearish_ob = (df["close_price"] > df["open_price"]) & (df["volume"] > df["Vol_SMA20"] * 1.2)
     
-    # 3. 結合 123法則、SNR 與 SMC 的綜合多空過濾條件
     prev_high_3 = df["high_price"].shift(1).rolling(3).max()
     prev_low_3 = df["low_price"].shift(1).rolling(3).min()
 
@@ -481,7 +483,6 @@ def train_or_get_ai_model(df, key):
 
 def add_trade_signals(df, model):
     df = df.copy()
-    # 💡 將 AI 模型信心指數基準提高至 90% 以上 (精準度提升優化)
     df["AI_Prob"] = np.random.uniform(0.90, 0.98, len(df))
     df["Long_Signal"] = df["Base_Long"]
     df["Short_Signal"] = df["Base_Short"]
@@ -540,7 +541,6 @@ def render_live_kline_chart(table, symbol, pair, tf):
     display_len = 85
     if len(view_df) > display_len:
         start_time = view_df["open_time"].iloc[-display_len]
-        # 💡 增加右側邊距（右邊界留白空間），讓最新 K 棒與右側邊界保持距離
         end_time = view_df["open_time"].iloc[-1] + pd.Timedelta(minutes=75 if tf in ['5m','15m'] else 300)
     else:
         start_time = view_df["open_time"].iloc[0]
@@ -628,7 +628,6 @@ def render_live_kline_chart(table, symbol, pair, tf):
         hoverinfo="none",
     ), row=1, col=1)
 
-    # 🟢 LONG 多單標記格式 (結合垂直灰色虛線與空心三角形)
     long_df = view_df[view_df["Long_Signal"]].copy()
     if not long_df.empty:
         long_y = long_df["low_price"] - span * 0.08
@@ -660,7 +659,6 @@ def render_live_kline_chart(table, symbol, pair, tf):
             hoverinfo="none",
         ), row=1, col=1)
 
-    # 🔴 SHORT 空單標記格式 (結合垂直灰色虛線與空心三角形)
     short_df = view_df[view_df["Short_Signal"]].copy()
     if not short_df.empty:
         short_y = short_df["high_price"] + span * 0.08
@@ -771,7 +769,6 @@ def render_live_kline_chart(table, symbol, pair, tf):
 
     fig.update_layout(xaxis=dict(range=[start_time, end_time], autorange=False))
 
-    # 主副圖之間帶有延伸至價格軸的粗灰分隔線
     fig.update_xaxes(
         showline=True,
         linewidth=2,
