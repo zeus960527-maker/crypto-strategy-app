@@ -127,7 +127,7 @@ div[data-testid="stRadio"] > div {{ flex-direction: row; gap: 12px; flex-wrap: w
     height: 100%;
 }}
 
-/* 💡 關鍵修復：強制讓手機圖表區域接收觸控，支援雙指縮放與平移且不出現框選 */
+/* 手機版 RWD 自動適配樣式 */
 @media(max-width: 768px) {{
     .block-container {{
         padding-left: 0.5rem !important;
@@ -140,7 +140,7 @@ div[data-testid="stRadio"] > div {{ flex-direction: row; gap: 12px; flex-wrap: w
     .js-plotly-plot, .plot-container, .plotly {{
         width: 100% !important;
         max-width: 100% !important;
-        touch-action: none !important;
+        touch-action: pan-x pan-y !important;
     }}
     div.stPlotlyChart {{
         width: 100% !important;
@@ -746,7 +746,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
         hoverdistance=100,
         spikedistance=1000,
         xaxis_rangeslider_visible=False,
-        dragmode="pan",  # 保持平移模式，不使用框選
+        dragmode="pan",  # 💡 使用平移模式，滑動即可移動視圖
         height=880,
         bargap=0.08,
         showlegend=True,
@@ -823,10 +823,10 @@ def render_live_kline_chart(table, symbol, pair, tf):
             fig,
             use_container_width=True,
             config={
-                "scrollZoom": True,
-                "displayModeBar": True,
+                "scrollZoom": True,            # 💡 允許滑鼠滾輪或觸控板縮放
+                "displayModeBar": True,        # 顯示頂端工具列（內含放大、縮小、還原按鈕）
                 "displaylogo": False,
-                "doubleClick": "reset",
+                "doubleClick": "reset",        # 雙擊圖表即可自動重置畫面與還原大小
                 "modeBarButtonsToRemove": ["select2d", "lasso2d"],
             },
             key=f"{symbol.lower()}_{tf}_chart",
@@ -897,7 +897,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
         st.markdown("#### 🧠 歷史訊號學習紀錄 (TP/SL 結算)")
         history = view_df[view_df["Base_Long"] | view_df["Base_Short"]].tail(12).copy()
         if history.empty:
-            st.caption("目前載入的 K 線中尚無歷史候選進場點。")
+            st.caption("current loading shows no historical candidate signals.")
         else:
             history["方向"] = np.where(history["Base_Long"], "LONG", "SHORT")
             history["時間"] = history["open_time"].dt.strftime("%m/%d %H:%M")
