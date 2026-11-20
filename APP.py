@@ -472,8 +472,24 @@ def build_candidate_signals(df, tf):
                     matured = True
                     break
 
+        # 💡 若未跑滿 100 根（如最新即時訊號），以目前最新高低價即時判定結算
         if not matured:
-            outcome = "觀察中"
+            current_h = high_arr[n - 1]
+            current_l = low_arr[n - 1]
+            if direction == 'LONG':
+                if current_l <= sl:
+                    outcome = "未達標"
+                elif current_h >= tp:
+                    outcome = "成功"
+                else:
+                    outcome = "觀察中"
+            else:
+                if current_h >= sl:
+                    outcome = "未達標"
+                elif current_l <= tp:
+                    outcome = "成功"
+                else:
+                    outcome = "觀察中"
 
         trade_results.append(outcome)
 
@@ -926,7 +942,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
         st.caption("進場價格為訊號 K 線收盤價參考值，不代表實際成交價。")
 
     # ============================================================
-    # 移至下方區塊的：🧠 歷史訊號學習紀錄 (動態 TP/SL 結算)
+    # 底部區塊：🧠 歷史訊號學習紀錄 (動態 TP/SL 即時結算)
     # ============================================================
     st.markdown("---")
     st.markdown("### 🧠 歷史訊號學習紀錄 (動態 TP/SL 結算)")
