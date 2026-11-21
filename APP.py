@@ -1,6 +1,5 @@
 import os
 import base64
-import traceback
 from pathlib import Path
 
 import streamlit as st
@@ -454,12 +453,9 @@ def get_db_engine():
 
 
 def save_signal_to_outbox(symbol, tf, signal_time, direction, price, ai_prob):
-    """💡 自動將產生的即時訊號寫入 strategy_signal_outbox 資料表
-    （SQL 不變；新增：結果與錯誤會記錄到 session_state 並顯示在畫面上）"""
+    """💡 自動將產生的即時訊號寫入 strategy_signal_outbox 資料表"""
     try:
         engine = get_db_engine()
-        if hasattr(signal_time, "to_pydatetime"):
-            signal_time = signal_time.to_pydatetime()
         with engine.begin() as conn:
             sql = text("""
                 INSERT INTO strategy_signal_outbox 
@@ -467,27 +463,15 @@ def save_signal_to_outbox(symbol, tf, signal_time, direction, price, ai_prob):
                 VALUES (:sym, :tf, :time, :dir, :price, :prob, 'PENDING')
                 ON CONFLICT DO NOTHING;
             """)
-            result = conn.execute(sql, {
+            conn.execute(sql, {
                 "sym": symbol,
                 "tf": tf,
                 "time": signal_time,
                 "dir": direction,
-                "price": float(price),
-                "prob": float(ai_prob)
+                "price": price,
+                "prob": ai_prob
             })
-        if result.rowcount and result.rowcount > 0:
-            st.session_state["outbox_status"] = (
-                "ok", f"已寫入 {symbol} {tf} {direction} @ {price:,.2f}"
-            )
-        else:
-            st.session_state["outbox_status"] = (
-                "skip", f"{symbol} {tf} {direction} 已存在（被 ON CONFLICT 略過，未新增）"
-            )
     except Exception as e:
-        traceback.print_exc()
-        st.session_state["outbox_status"] = (
-            "error", f"{type(e).__name__}: {str(e)[:400]}"
-        )
         print(f"寫入 strategy_signal_outbox 失敗: {e}")
 
 
@@ -1237,16 +1221,6 @@ def render_live_kline_chart(table, symbol, pair, tf):
                 )
 
         st.caption("進場價格為訊號 K 線收盤價參考值，不代表實際成交價。")
-
-        _ob = st.session_state.get("outbox_status")
-        if _ob:
-            _kind, _msg = _ob
-            if _kind == "error":
-                st.error(f"⚠️ 訊號寫入 Supabase 失敗：{_msg}")
-            elif _kind == "ok":
-                st.caption(f"✅ {_msg}")
-            else:
-                st.caption(f"ℹ️ {_msg}")
 
     # ============================================================
     # 底部區塊：🧠 歷史訊號學習紀錄 (動態 TP/SL 即時結算)
