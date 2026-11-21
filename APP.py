@@ -384,6 +384,106 @@ div[data-testid="stDataFrame"] {{
     border-radius: 4px;
 }}
 
+
+/* ============================================================ */
+/* 第二層精緻化：動態光感、狀態列、微互動（僅外觀）                */
+/* ============================================================ */
+@keyframes fadeUp {{ from {{ opacity: 0; transform: translateY(14px); }} to {{ opacity: 1; transform: translateY(0); }} }}
+@keyframes shimmer {{ 0% {{ background-position: 0% 50%; }} 100% {{ background-position: 200% 50%; }} }}
+@keyframes pulseDot {{
+    0% {{ box-shadow: 0 0 0 0 rgba(14,203,129,.65); }}
+    70% {{ box-shadow: 0 0 0 9px rgba(14,203,129,0); }}
+    100% {{ box-shadow: 0 0 0 0 rgba(14,203,129,0); }}
+}}
+::selection {{ background: rgba(240,185,11,.35); color: #fff; }}
+
+h1::after {{
+    width: 120px;
+    background: linear-gradient(90deg, #f0b90b, #fff1b0, #f0b90b);
+    background-size: 200% 100%;
+    animation: shimmer 3.2s linear infinite;
+}}
+
+/* 首頁與表單入場動畫（不套用在每 5 秒刷新的圖表區，避免閃動） */
+div[data-testid="stForm"], .intro-card {{ animation: fadeUp .55s ease both; }}
+.feature-card {{ animation: fadeUp .6s ease both; }}
+div[data-testid="stColumn"]:nth-child(2) .feature-card {{ animation-delay: .08s; }}
+div[data-testid="stColumn"]:nth-child(3) .feature-card {{ animation-delay: .16s; }}
+div[data-testid="stColumn"]:nth-child(4) .feature-card {{ animation-delay: .24s; }}
+
+.grad-text {{
+    background: linear-gradient(90deg, #f0b90b, #ffe27a 50%, #f0b90b);
+    background-size: 200% 100%;
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    animation: shimmer 5s linear infinite;
+    display: inline-block;
+}}
+.chip-row {{ display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }}
+.chip {{
+    background: rgba(255,255,255,.04);
+    border: 1px solid #3a4352;
+    color: #cbd2dc;
+    padding: 3px 12px;
+    border-radius: 999px;
+    font-size: .78rem;
+}}
+.chip b {{ color: #f0b90b; }}
+.feature-icon {{
+    width: 48px; height: 48px;
+    display: flex; align-items: center; justify-content: center;
+    border-radius: 14px;
+    background: linear-gradient(145deg, rgba(240,185,11,.2), rgba(240,185,11,.04));
+    border: 1px solid rgba(240,185,11,.3);
+    box-shadow: 0 0 18px rgba(240,185,11,.15);
+    margin-bottom: 12px;
+}}
+
+/* 即時狀態列 */
+.live-bar {{
+    display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px;
+    background: linear-gradient(135deg, rgba(26,32,46,.9), rgba(16,20,29,.9));
+    border: 1px solid #2f3643;
+    border-radius: 12px;
+    padding: 10px 16px;
+    margin: 6px 0 14px;
+    box-shadow: 0 6px 22px rgba(0,0,0,.35);
+}}
+.live-pair {{ font-size: 1.1rem; font-weight: 800; color: #fff; letter-spacing: .5px; }}
+.live-pair small {{ color: #848e9c; font-weight: 500; margin-left: 8px; font-size: .78rem; }}
+.live-badge {{
+    display: inline-flex; align-items: center; gap: 8px;
+    background: rgba(14,203,129,.1);
+    border: 1px solid rgba(14,203,129,.35);
+    color: #0ECB81;
+    padding: 3px 12px; border-radius: 999px;
+    font-size: .78rem; font-weight: 700; letter-spacing: 1px;
+}}
+.live-dot {{ width: 8px; height: 8px; border-radius: 50%; background: #0ECB81; animation: pulseDot 1.8s infinite; }}
+
+/* 微互動 */
+div[data-testid="stMetric"], .conf-card, .sig-card {{ transition: transform .2s ease, border-color .2s ease, box-shadow .2s ease; }}
+div[data-testid="stMetric"]:hover, .conf-card:hover, .sig-card:hover {{
+    transform: translateY(-2px);
+    border-color: #f0b90b;
+    box-shadow: 0 10px 26px rgba(240,185,11,.12);
+}}
+.conf-bar i {{ box-shadow: 0 0 10px rgba(240,185,11,.6); }}
+.stTextInput input {{ transition: border-color .2s ease, box-shadow .2s ease; }}
+div[data-testid="stFormSubmitButton"] button {{ position: relative; overflow: hidden; }}
+div[data-testid="stFormSubmitButton"] button::after {{
+    content: "";
+    position: absolute; top: 0; left: -60%;
+    width: 40%; height: 100%;
+    background: linear-gradient(120deg, transparent, rgba(255,255,255,.45), transparent);
+    transform: skewX(-20deg);
+    transition: left .5s ease;
+}}
+div[data-testid="stFormSubmitButton"] button:hover::after {{ left: 130%; }}
+div.stPlotlyChart {{ box-shadow: 0 8px 28px rgba(0,0,0,.45), inset 0 1px 0 rgba(240,185,11,.35); }}
+div[data-testid="stAlert"] {{ box-shadow: 0 4px 16px rgba(0,0,0,.25); }}
+
 /* ============================================================ */
 /* 手機版 RWD 精美高質感適配優化                                  */
 /* ============================================================ */
@@ -430,6 +530,9 @@ div[data-testid="stDataFrame"] {{
     }}
 }}
 @media(max-width: 768px) {{
+    .live-bar {{ padding: 8px 12px; }}
+    .live-pair {{ font-size: 1rem; }}
+    .chip-row {{ justify-content: center; }}
     h1::after {{ margin-left: auto; margin-right: auto; }}
     .app-subtitle {{ justify-content: center; }}
     .feature-card {{ min-height: auto; margin-bottom: 10px; }}
@@ -889,11 +992,16 @@ def add_trade_signals(df, model):
 def render_homepage():
     st.markdown(_html("""
     <div class="intro-card">
-        <h2 style="color:#f0b90b;">🚀 關於加密貨幣 AI 策略系統</h2>
+        <h2><span class="grad-text">🚀 關於加密貨幣 AI 策略系統</span></h2>
         <p>
         本系統是一套結合 123法則、SMC (聰明錢訂單塊)、SNR (關鍵支撐壓力位) 與宏觀基本面過濾的加密貨幣智慧分析工具，
         透過 Supabase 歷史 K 線資料，結合機器學習與動態止盈止損學習機制，協助尋找高勝率的多單與空單機會。
         </p>
+        <div class="chip-row">
+            <span class="chip">標的 <b>BTC</b> / <b>ETH</b></span>
+            <span class="chip">週期 <b>5m</b> · <b>15m</b> · <b>1h</b> · <b>4h</b></span>
+            <span class="chip">資料來源 <b>Supabase</b></span>
+        </div>
         <div class="step-row">
             <div class="step"><div class="num">1</div><div>於上方輸入 <b>BTC</b> 或 <b>ETH</b></div></div>
             <div class="step"><div class="num">2</div><div>選擇 5m / 15m / 1h / 4h 週期</div></div>
@@ -1369,6 +1477,13 @@ if __name__ == "__main__":
             horizontal=True,
             key="timeframe_select",
         )
+
+        st.markdown(_html(f"""
+        <div class="live-bar">
+            <div class="live-pair">{pair_name}<small>永續合約 · {selected_tf}</small></div>
+            <div class="live-badge"><span class="live-dot"></span>LIVE · 每 5 秒更新</div>
+        </div>
+        """), unsafe_allow_html=True)
 
         @st.fragment(run_every=5)
         def render_live_fragment(tbl, sym, pair, timeframe):
