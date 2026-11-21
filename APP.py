@@ -15,6 +15,14 @@ from flask import Flask, jsonify
 
 TAIWAN_TZ = ZoneInfo('Asia/Taipei')
 
+# ---- 勝率優化參數（可自行調整；調高 AI_MIN_PROB 訊號更少但更精選）----
+AI_MIN_PROB = 0.60            # AI 預測成功機率低於此值的訊號不進場
+USE_EMA_TREND_FILTER = True   # 多單需 EMA21 > EMA50，空單需 EMA21 < EMA50
+MODEL_FEATURES = [
+    "RSI", "vol_ratio", "body_ratio", "atr_ratio", "ema_diff",
+    "macro_trend_bias", "macro_sentiment",
+]
+
 # ============================================================
 # 0. 頁面設定、圖片與背景（含頂級精緻手機 RWD 響應式 CSS）與 Flask 路由 (保持 Render 活躍)
 # ============================================================
@@ -690,6 +698,14 @@ def build_candidate_signals(df, tf):
     macro_long_filter = df["macro_trend_bias"] > -0.02
     macro_short_filter = df["macro_trend_bias"] < 0.02
 
+    # 💡 勝率優化：順著 EMA 趨勢方向交易，過濾逆勢突破
+    if USE_EMA_TREND_FILTER:
+        ema_long_filter = df["EMA_21"] > df["EMA_50"]
+        ema_short_filter = df["EMA_21"] < df["EMA_50"]
+    else:
+        ema_long_filter = pd.Series(True, index=df.index)
+        ema_short_filter = pd.Series(True, index=df.index)
+
     df["Rule1_Long_Break"] = (df["close_price"] > df["Trend_Resistance"]) & (df["close_price"] > df["open_price"])
     df["Base_Long"] = (
         df["Rule1_Long_Break"]
@@ -698,6 +714,7 @@ def build_candidate_signals(df, tf):
         & (df["volume"] > df["Vol_SMA20"] * 1.05)
         & (df["close_price"] >= df["SNR_Support"] * 0.995)
         & macro_long_filter
+        & ema_long_filter
     )
 
     df["Rule1_Short_Break"] = (df["close_price"] < df["Trend_Support"]) & (df["close_price"] < df["open_price"])
@@ -708,6 +725,7 @@ def build_candidate_signals(df, tf):
         & (df["volume"] > df["Vol_SMA20"] * 1.05)
         & (df["close_price"] <= df["SNR_Resistance"] * 1.005)
         & macro_short_filter
+        & ema_short_filter
     )
 
     df["vol_ratio"] = df["volume"] / df["Vol_SMA20"].replace(0, np.nan)
@@ -818,10 +836,7 @@ def build_candidate_signals(df, tf):
 
 def train_or_get_ai_model(df, key):
     # 💡 納入基本面特徵（macro_sentiment、macro_trend_bias）至 AI 機器學習訓練特徵中
-    feature_cols = [
-        "RSI", "vol_ratio", "body_ratio", "atr_ratio", "ema_diff",
-        "macro_trend_bias", "macro_sentiment"
-    ]
+    feature_cols = MODEL_FEATURES
     candidates = df[df["Base_Long"] | df["Base_Short"]].copy()
     train_df = candidates[candidates["Trade_Result"].isin(["成功", "未達標"])].copy()
 
@@ -850,9 +865,21 @@ def train_or_get_ai_model(df, key):
 
 def add_trade_signals(df, model):
     df = df.copy()
-    df["AI_Prob"] = np.random.uniform(0.90, 0.98, len(df))
-    df["Long_Signal"] = df["Base_Long"]
-    df["Short_Signal"] = df["Base_Short"]
+    # 💡 使用真實模型預測的成功機率；模型尚無足夠樣本時不發出訊號
+    if model is None:
+        df["AI_Prob"] = np.nan
+        df["Long_Signal"] = False
+        df["Short_Signal"] = False
+        return df
+
+    try:
+        df["AI_Prob"] = model.predict_proba(df[MODEL_FEATURES])[:, 1]
+    except Exception:
+        df["AI_Prob"] = np.nan
+
+    passed = df["AI_Prob"] >= AI_MIN_PROB
+    df["Long_Signal"] = df["Base_Long"] & passed
+    df["Short_Signal"] = df["Base_Short"] & passed
     return df
 
 
@@ -1114,7 +1141,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
         f"<b>{pair} · {tf} ({mode}) [基本面+動態AI優化版]</b><br>"
         f"<b>策略與指標：</b>123法則 + SMC + SNR + 宏觀基本面過濾 | Window: {win}, Dev: {dev}<br>"
         f"<b>RSI：</b>{latest_rsi:.1f} | "
-        f"<b>AI模型精準度(90%+)：</b><span style='color:#f0b90b'>{ai_score:.1f}%</span> | "
+        f"<b>AI 信心分數：</b><span style='color:#f0b90b'>{ai_score:.1f}%</span> | "
         f"收：<span style='color:{status_color}'>{latest_close:,.2f} "
         f"({change_pct:+.2f}%)</span>"
     )
@@ -1227,11 +1254,12 @@ def render_live_kline_chart(table, symbol, pair, tf):
         )
 
     with panel_col:
-        st.markdown("### 🎯 AI 即時操作建議 (90%+ 高勝率)")
+        st.markdown("### 🎯 AI 即時操作建議")
         st.caption(
             f"歷史訓練樣本：{training_count} 筆｜"
             f"成功標籤：{winning_count} 筆｜"
-            f"模型精準度：90.0%+"
+            f"歷史成功率：{(winning_count / training_count * 100 if training_count else 0):.1f}%｜"
+            f"AI 門檻：{AI_MIN_PROB:.0%}"
         )
 
         macro_text = "偏多 🟢" if latest.get("macro_trend_bias", 0) > 0 else "偏空 🔴"
