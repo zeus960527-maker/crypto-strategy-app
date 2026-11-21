@@ -141,14 +141,12 @@ div[data-testid="stRadio"] > div {{ flex-direction: row; gap: 12px; flex-wrap: w
         text-align: center;
         letter-spacing: 1px;
     }}
-    /* 精緻化手機卡片與表單互動外觀 */
     div[data-testid="stForm"] {{
         background: rgba(20, 25, 35, 0.75) !important;
         border: 1px solid #2b313a !important;
         border-radius: 12px !important;
         padding: 10px !important;
     }}
-    /* 讓圖表完美鋪滿手機螢幕並提供流暢觸控 */
     .js-plotly-plot, .plot-container, .plotly {{
         width: 100% !important;
         max-width: 100% !important;
@@ -159,13 +157,11 @@ div[data-testid="stRadio"] > div {{ flex-direction: row; gap: 12px; flex-wrap: w
         width: 100% !important;
         overflow-x: auto;
     }}
-    /* 優化手機端資料表格顯示，防擠壓與溢出 */
     [data-testid="stTable"] td, [data-testid="stTable"] th,
     .stDataFrame td, .stDataFrame th {{
         font-size: 11px !important;
         padding: 6px 8px !important;
     }}
-    /* 手機按鈕與指標優化 */
     .stButton button {{
         width: 100% !important;
         border-radius: 8px !important;
@@ -176,7 +172,7 @@ div[data-testid="stRadio"] > div {{ flex-direction: row; gap: 12px; flex-wrap: w
 
 
 # ============================================================
-# 0.5 精美介面樣式（純外觀，疊加在原本 CSS 之上，不影響任何功能）
+# 0.5 精美介面樣式
 # ============================================================
 UI_CSS = """
 <style>
@@ -201,7 +197,6 @@ code, .mono, [data-testid="stMetricValue"] {
 header[data-testid="stHeader"] { background: transparent !important; }
 footer { visibility: hidden; }
 
-/* 背景加上柔和光暈 */
 .stApp::before {
     content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 0;
     background:
@@ -209,7 +204,6 @@ footer { visibility: hidden; }
         radial-gradient(800px 520px at 92% 4%, rgba(41,98,255,.10), transparent 60%);
 }
 
-/* 標題 */
 h1 {
     background: linear-gradient(92deg, #ffffff 0%, #ffe9a6 45%, #f0b90b 100%);
     -webkit-background-clip: text; background-clip: text;
@@ -235,7 +229,6 @@ h1 {
     100% { box-shadow: 0 0 0 0 rgba(14,203,129,0); }
 }
 
-/* 搜尋表單 */
 div[data-testid="stForm"] {
     background: var(--panel) !important;
     border: 1px solid var(--line) !important;
@@ -258,14 +251,11 @@ div[data-testid="stForm"] {
     transform: translateY(-1px); filter: brightness(1.06);
     box-shadow: 0 10px 24px rgba(240,185,11,.38);
 }
-[data-testid="stFormSubmitButton"] button:active, .stButton button:active { transform: translateY(0); }
 
-/* 分隔線 */
 hr { border: none !important; height: 1px !important;
      background: linear-gradient(90deg, transparent, rgba(240,185,11,.35), transparent) !important;
      margin: 1.4rem 0 !important; }
 
-/* 時間軸週期：膠囊式分頁 */
 div[data-testid="stRadio"] > label { color: var(--muted) !important; font-size: 13px; }
 div[data-testid="stRadio"] label[data-baseweb="radio"] {
     margin: 0; padding: 7px 22px; border-radius: 999px; cursor: pointer;
@@ -282,13 +272,11 @@ div[data-testid="stRadio"] label[data-baseweb="radio"]:has(input:checked) * {
     color: #1a1400 !important; font-weight: 700;
 }
 
-/* 圖表容器 */
 div.stPlotlyChart {
     border: 1px solid var(--line); border-radius: 16px; overflow: hidden;
     box-shadow: 0 12px 38px rgba(0,0,0,.45);
 }
 
-/* 指標卡 */
 [data-testid="stMetric"] {
     background: var(--panel-2); border: 1px solid var(--line);
     border-radius: 12px; padding: 12px 14px;
@@ -296,21 +284,16 @@ div.stPlotlyChart {
 [data-testid="stMetricLabel"] { color: var(--muted) !important; }
 [data-testid="stMetricValue"] { color: var(--gold) !important; font-weight: 700; }
 
-/* 提示框 */
 [data-testid="stAlert"] { border-radius: 12px !important; border: 1px solid var(--line) !important; }
-
-/* 資料表 */
 [data-testid="stDataFrame"] {
     border: 1px solid var(--line); border-radius: 14px; overflow: hidden;
     box-shadow: 0 8px 26px rgba(0,0,0,.35);
 }
 
-/* 小標題 */
 h3 { font-weight: 700 !important; letter-spacing: .5px; }
 h3, h4 { border-left: 3px solid var(--gold); padding-left: 10px !important; }
 [data-testid="stCaptionContainer"] { color: var(--muted) !important; }
 
-/* 首頁卡片 */
 .intro-card {
     background: linear-gradient(145deg, rgba(26,32,44,.94), rgba(18,22,31,.94));
     border: 1px solid var(--line); border-left: 4px solid var(--gold);
@@ -335,7 +318,6 @@ h3, h4 { border-left: 3px solid var(--gold); padding-left: 10px !important; }
 .feature-tile h4 { border: none; padding: 0 !important; margin: 0 0 6px 0; color: #fff !important; font-size: 16px; }
 .feature-tile p { margin: 0; font-size: 13px; line-height: 1.7; color: #aab2bf; }
 
-/* AI 信心分數卡 */
 .conf-card {
     background: linear-gradient(145deg, rgba(30,35,41,.92), rgba(20,24,32,.92));
     border: 1px solid var(--line); border-radius: 14px; padding: 16px; margin-bottom: 12px;
@@ -347,7 +329,6 @@ h3, h4 { border-left: 3px solid var(--gold); padding-left: 10px !important; }
 .conf-bar > span { display: block; height: 100%; border-radius: 999px; background: linear-gradient(90deg, #f0b90b, #ffe08a); }
 .conf-foot { font-size: 12px; color: #a0a6b2; display: flex; justify-content: space-between; }
 
-/* 最近訊號卡 */
 .sig-card {
     display: flex; justify-content: space-between; align-items: center; gap: 10px;
     padding: 10px 12px; margin-bottom: 8px; border-radius: 12px;
@@ -361,19 +342,6 @@ h3, h4 { border-left: 3px solid var(--gold); padding-left: 10px !important; }
 .sig-time { font-size: 11px; color: var(--muted); }
 .sig-price { font-family: 'JetBrains Mono', monospace; font-size: 14px; font-weight: 700; color: #eaecef; text-align: right; }
 .sig-prob { font-size: 11px; color: var(--gold); text-align: right; }
-
-/* 捲軸 */
-::-webkit-scrollbar { width: 8px; height: 8px; }
-::-webkit-scrollbar-thumb { background: #2b313a; border-radius: 8px; }
-::-webkit-scrollbar-thumb:hover { background: #3a4250; }
-
-@media (max-width: 768px) {
-    .hero-sub { justify-content: center; }
-    div[data-testid="stRadio"] label[data-baseweb="radio"] { padding: 6px 16px; }
-    .conf-value { font-size: 26px; }
-    .feature-grid { grid-template-columns: 1fr 1fr; }
-    div[data-testid="stForm"] { padding: 12px 12px 6px 12px !important; }
-}
 </style>
 """
 st.markdown(UI_CSS, unsafe_allow_html=True)
@@ -418,7 +386,7 @@ st.markdown("---")
 
 
 # ============================================================
-# 2. Supabase 連線與歷史 K 棒資料載入（支援完整歷史延伸）
+# 2. Supabase 連線與 K 棒資料載入 (移除快取，確保每 5 秒抓取最新資料庫內容)
 # ============================================================
 def get_database_url():
     url = os.getenv("SUPABASE_DB_URL", "").strip()
@@ -453,7 +421,6 @@ def get_db_engine():
 
 
 def save_signal_to_outbox(symbol, tf, signal_time, direction, price, ai_prob):
-    """💡 自動將產生的即時訊號寫入 strategy_signal_outbox 資料表"""
     try:
         engine = get_db_engine()
         with engine.begin() as conn:
@@ -483,7 +450,7 @@ def load_historical_data(table_name, symbol_name):
 
     try:
         engine = get_db_engine()
-        # 💡 擴充載入歷史 K 棒筆數，確保歷史線圖與回測更為完整
+        # 💡 每次呼叫強制重新從 Supabase 讀取最新的 1000 筆資料，確保資料即時更新
         sql = text(f"""
             SELECT timeframe, open_time, open_price, high_price,
                    low_price, close_price, volume
@@ -496,7 +463,8 @@ def load_historical_data(table_name, symbol_name):
 
         if df.empty:
             return df
-        df = df.sort_values("open_time").reset_index(drop=True)
+        # 抓出來後重新依時間正向排序
+        df = df.sort_values("open_time").drop_duplicates(subset=["timeframe", "open_time"]).reset_index(drop=True)
 
     except Exception as e:
         st.error(f"Supabase 連線或讀取錯誤：{e}")
@@ -586,7 +554,6 @@ def calculate_indicators(df, tf):
     candle_range = df["high_price"] - df["low_price"]
     df["Body_Ratio"] = (body / candle_range.replace(0, np.nan)).fillna(0)
 
-    # 💡 增設宏觀基本面代理指標（結合成交量動能、價格均線乖離率與市場流動性趨勢）
     df["price_sma50"] = df["close_price"].rolling(50).mean()
     df["macro_trend_bias"] = (df["close_price"] - df["price_sma50"]) / df["price_sma50"].replace(0, np.nan)
     df["volume_liquidity_score"] = df["volume"] / df["volume"].rolling(50).mean().replace(0, np.nan)
@@ -596,7 +563,7 @@ def calculate_indicators(df, tf):
 
 
 # ============================================================
-# 4. 動態 AI 智慧化止盈止損與結合基本面的進階策略信號
+# 4. 動態 AI 智慧化止盈止損與策略信號
 # ============================================================
 def calculate_dynamic_tp_sl(row, is_long):
     atr = row.get('ATR', 0)
@@ -636,7 +603,6 @@ def build_candidate_signals(df, tf):
     df["Prev_High"] = df["high_price"].shift(1)
     df["Prev_Low"] = df["low_price"].shift(1)
 
-    # 💡 結合基本面過濾條件（宏觀偏多/偏空情緒加權，過濾逆勢交易）
     macro_long_filter = df["macro_trend_bias"] > -0.02
     macro_short_filter = df["macro_trend_bias"] < 0.02
 
@@ -767,7 +733,6 @@ def build_candidate_signals(df, tf):
 
 
 def train_or_get_ai_model(df, key):
-    # 💡 納入基本面特徵（macro_sentiment、macro_trend_bias）至 AI 機器學習訓練特徵中
     feature_cols = [
         "RSI", "vol_ratio", "body_ratio", "atr_ratio", "ema_diff",
         "macro_trend_bias", "macro_sentiment"
@@ -865,7 +830,6 @@ def render_live_kline_chart(table, symbol, pair, tf):
         st.warning("目前沒有足夠資料可顯示。")
         return
 
-    # 💡 檢查當前最新 K 棒是否有產生訊號，若有則自動寫入 strategy_signal_outbox
     latest = view_df.iloc[-1]
     latest_close = float(latest["close_price"])
     ai_score = float(latest["AI_Prob"]) * 100 if pd.notna(latest["AI_Prob"]) else 0.0
@@ -963,7 +927,6 @@ def render_live_kline_chart(table, symbol, pair, tf):
     long_df = view_df[view_df["Long_Signal"]].copy()
     if not long_df.empty:
         long_y = long_df["low_price"] - span * 0.08
-
         for t, low_p, ly in zip(long_df["open_time"], long_df["low_price"], long_y):
             fig.add_trace(go.Scatter(
                 x=[t, t],
@@ -994,7 +957,6 @@ def render_live_kline_chart(table, symbol, pair, tf):
     short_df = view_df[view_df["Short_Signal"]].copy()
     if not short_df.empty:
         short_y = short_df["high_price"] + span * 0.08
-
         for t, high_p, sy in zip(short_df["open_time"], short_df["high_price"], short_y):
             fig.add_trace(go.Scatter(
                 x=[t, t],
@@ -1090,7 +1052,8 @@ def render_live_kline_chart(table, symbol, pair, tf):
             font=dict(size=10),
         ),
         margin=dict(l=10, r=85, t=65, b=30),
-        uirevision=f"{symbol}_{tf}_chart",
+        # 💡 移除舊版固定的 uirevision 字串，允許每次新資料帶動圖表自動捲動至最新狀態
+        uirevision=str(latest["open_time"]),
         hoverlabel=dict(
             bgcolor="rgba(30,35,41,.95)",
             font_size=12,
@@ -1222,9 +1185,6 @@ def render_live_kline_chart(table, symbol, pair, tf):
 
         st.caption("進場價格為訊號 K 線收盤價參考值，不代表實際成交價。")
 
-    # ============================================================
-    # 底部區塊：🧠 歷史訊號學習紀錄 (動態 TP/SL 即時結算)
-    # ============================================================
     st.markdown("---")
     st.markdown("### 🧠 歷史訊號學習紀錄 (動態 TP/SL 結算)")
     history = view_df[view_df["Base_Long"] | view_df["Base_Short"]].tail(15).copy()
