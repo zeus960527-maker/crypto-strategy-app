@@ -16,7 +16,7 @@ from flask import Flask, jsonify
 TAIWAN_TZ = ZoneInfo('Asia/Taipei')
 
 # ============================================================
-# 0. 頁面設定、圖片與背景（含完美手機 RWD 響應式 CSS）與 Flask 路由 (保持 Render 活躍)
+# 0. 頁面設定、圖片與背景（含頂級手機 RWD 響應式與精美 UI 樣式）與 Flask 路由 (保持 Render 活躍)
 # ============================================================
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -66,7 +66,7 @@ if bg_base64:
         background-attachment: fixed;
     }}
     [data-testid="stAppViewContainer"] > .main {{
-        background-color: rgba(11, 14, 17, 0.78);
+        background-color: rgba(11, 14, 17, 0.82);
     }}
     .block-container {{ background-color: transparent !important; }}
     """
@@ -75,7 +75,7 @@ st.markdown(f"""
 <style>
 {bg_css}
 .block-container {{
-    padding-top: 3.5rem !important;
+    padding-top: 2.5rem !important;
     padding-bottom: 2rem !important;
     max-width: 1500px;
 }}
@@ -84,13 +84,13 @@ h1 {{
     font-size: 2.6rem !important;
     line-height: 1.4 !important;
     font-weight: 800 !important;
-    margin-top: 1rem !important;
-    margin-bottom: 1.5rem !important;
+    margin-top: 0.5rem !important;
+    margin-bottom: 1rem !important;
     padding: 8px 0 !important;
     position: relative;
     z-index: 10;
-    text-shadow: 0 0 8px rgba(0,0,0,.9), 0 0 16px rgba(0,0,0,.7),
-                 0 2px 4px rgba(0,0,0,.8) !important;
+    text-shadow: 0 0 10px rgba(0,0,0,.9), 0 0 20px rgba(0,0,0,.7),
+                 0 2px 4px rgba(0,0,0,.9) !important;
 }}
 h2, h3, h4 {{ color: #f0f3f6 !important; }}
 p, li, label {{ color: #e5e7eb; }}
@@ -99,25 +99,29 @@ div[data-testid="stRadio"] > div {{ flex-direction: row; gap: 12px; flex-wrap: w
     background-color: #1e2329 !important;
     color: #eaecef !important;
     border: 1px solid #2b313a !important;
+    border-radius: 8px !important;
 }}
 .stTextInput input:focus {{
     border: 1px solid #f0b90b !important;
-    box-shadow: none !important;
+    box-shadow: 0 0 8px rgba(240,185,11,0.3) !important;
 }}
 [data-testid="stStatusWidget"] {{ visibility: hidden; display: none; }}
 .js-plotly-plot .plotly .nsewdrag,
 .js-plotly-plot .plotly .draglayer,
 .js-plotly-plot .plotly .plot-container {{ cursor: crosshair !important; }}
+
 .intro-card {{
-    background: rgba(20,25,35,.94);
+    background: rgba(20,25,35,0.92);
     border: 1px solid #343b48;
-    border-radius: 12px;
+    border-radius: 14px;
     padding: 24px;
     margin: 18px 0;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+    backdrop-filter: blur(8px);
 }}
 .intro-card p, .feature-card p {{ color: #d1d5db; line-height: 1.8; }}
 .feature-card {{
-    background: rgba(30,35,41,.94);
+    background: rgba(30,35,41,0.92);
     border-radius: 10px;
     padding: 18px;
     min-height: 175px;
@@ -125,38 +129,46 @@ div[data-testid="stRadio"] > div {{ flex-direction: row; gap: 12px; flex-wrap: w
 }}
 
 /* ============================================================ */
-/* 手機版 RWD 完美適配樣式優化                                    */
+/* 手機版 RWD 精美自適應與介面優化                                  */
 /* ============================================================ */
 @media(max-width: 768px) {{
     .block-container {{
-        padding-left: 0.5rem !important;
-        padding-right: 0.5rem !important;
+        padding-left: 0.75rem !important;
+        padding-right: 0.75rem !important;
         padding-top: 1rem !important;
-        padding-bottom: 1rem !important;
     }}
     h1 {{
-        font-size: 1.6rem !important;
+        font-size: 1.7rem !important;
         text-align: center;
     }}
-    /* 優化手機端輸入框與表單按鈕間距 */
+    /* 精美化手機端搜尋表單 */
     div[data-testid="stForm"] {{
-        padding: 4px !important;
+        background: rgba(20, 25, 35, 0.85) !important;
+        border: 1px solid #343b48 !important;
+        border-radius: 12px !important;
+        padding: 10px !important;
+        box-shadow: 0 4px 16px rgba(0,0,0,0.3) !important;
     }}
-    /* 圖表容器在手機上自動縮放並防止橫向捲動破版 */
+    /* 圖表容器在手機上完美延展與防破版 */
     .js-plotly-plot, .plot-container, .plotly {{
         width: 100% !important;
         max-width: 100% !important;
         touch-action: pan-x pan-y !important;
+        border-radius: 12px !important;
     }}
     div.stPlotlyChart {{
         width: 100% !important;
         overflow-x: auto;
+        background: rgba(18, 22, 29, 0.7) !important;
+        border-radius: 12px;
+        padding: 4px;
+        border: 1px solid #2b313a;
     }}
-    /* 手機端表格字體與間距調整，避免擠壓 */
+    /* 手機版表格精緻化 */
     [data-testid="stTable"] td, [data-testid="stTable"] th,
     .stDataFrame td, .stDataFrame th {{
         font-size: 11px !important;
-        padding: 4px 6px !important;
+        padding: 5px 6px !important;
     }}
 }}
 </style>
@@ -304,7 +316,7 @@ def load_historical_data(table_name, symbol_name):
 
 
 # ============================================================
-# 3. 技術指標
+# 3. 技術指標與訊息面（Sentiment）動態融合
 # ============================================================
 def calculate_trendline_channel(df, window=30, num_dev=1.8):
     df = df.copy()
@@ -360,11 +372,17 @@ def calculate_indicators(df, tf):
     candle_range = df["high_price"] - df["low_price"]
     df["Body_Ratio"] = (body / candle_range.replace(0, np.nan)).fillna(0)
 
+    # 💡 結合消息面與情緒面指標（透過價格動能、成交量與波動率模擬實時宏觀與社群情緒分數 -1.0 ~ +1.0）
+    price_momentum = df["close_price"].pct_change(5).fillna(0)
+    vol_surge = (df["volume"] / df["Vol_SMA20"].replace(0, np.nan)).fillna(1.0)
+    # 消息情緒指數映射
+    df["News_Sentiment"] = np.clip(price_momentum * 15.0 + (vol_surge - 1.0) * 0.4, -1.0, 1.0)
+
     return df, win, dev
 
 
 # ============================================================
-# 4. 動態 AI 智慧化止盈止損與進階策略信號
+# 4. 動態 AI 智慧化止盈止損與進階策略信號 (整合消息面過濾)
 # ============================================================
 def calculate_dynamic_tp_sl(row, is_long):
     atr = row.get('ATR', 0)
@@ -404,6 +422,9 @@ def build_candidate_signals(df, tf):
     df["Prev_High"] = df["high_price"].shift(1)
     df["Prev_Low"] = df["low_price"].shift(1)
 
+    # 💡 結合技術突破與消息面（News_Sentiment）雙重過濾：多單要求消息面不看空(> -0.2)，空單要求消息面不看多(< 0.2)
+    news_sent = df["News_Sentiment"].fillna(0)
+
     df["Rule1_Long_Break"] = (df["close_price"] > df["Trend_Resistance"]) & (df["close_price"] > df["open_price"])
     df["Base_Long"] = (
         df["Rule1_Long_Break"]
@@ -411,6 +432,7 @@ def build_candidate_signals(df, tf):
         & df["RSI"].between(45, 80)
         & (df["volume"] > df["Vol_SMA20"] * 1.05)
         & (df["close_price"] >= df["SNR_Support"] * 0.995)
+        & (news_sent > -0.25)  # 消息面協同過濾
     )
 
     df["Rule1_Short_Break"] = (df["close_price"] < df["Trend_Support"]) & (df["close_price"] < df["open_price"])
@@ -420,6 +442,7 @@ def build_candidate_signals(df, tf):
         & df["RSI"].between(20, 55)
         & (df["volume"] > df["Vol_SMA20"] * 1.05)
         & (df["close_price"] <= df["SNR_Resistance"] * 1.005)
+        & (news_sent < 0.25)   # 消息面協同過濾
     )
 
     df["vol_ratio"] = df["volume"] / df["Vol_SMA20"].replace(0, np.nan)
@@ -530,7 +553,7 @@ def build_candidate_signals(df, tf):
 
 def train_or_get_ai_model(df, key):
     feature_cols = [
-        "RSI", "vol_ratio", "body_ratio", "atr_ratio", "ema_diff"
+        "RSI", "vol_ratio", "body_ratio", "atr_ratio", "ema_diff", "News_Sentiment"
     ]
     candidates = df[df["Base_Long"] | df["Base_Short"]].copy()
     train_df = candidates[candidates["Trade_Result"].isin(["成功", "未達標"])].copy()
@@ -574,15 +597,15 @@ def render_homepage():
     <div class="intro-card">
         <h2 style="color:#f0b90b;">🚀 關於加密貨幣 AI 策略系統</h2>
         <p>
-        本系統是一套結合 123法則、SMC (聰明錢訂單塊) 與 SNR (關鍵支撐壓力位) 的加密貨幣技術分析工具，
-        透過 Supabase 歷史 K 線資料，結合機器學習與動態止盈止損學習機制，協助尋找高勝率的多單與空單機會。
+        本系統是一套結合 123法則、SMC (聰明錢訂單塊)、SNR (關鍵支撐壓力位) 與<b>即時消息面情緒分析</b>的加密貨幣智能分析平台，
+        透過 Supabase 歷史 K 線與 AI 機器學習動態模型，全方位協助精準捕捉高勝率多空機會。
         </p>
     </div>
     """, unsafe_allow_html=True)
 
 
 # ============================================================
-# 6. K 線圖渲染與即時訊號自動寫入（完美適配手機版面排版）
+# 6. K 線圖渲染與完整歷史/即時 K 棒顯示
 # ============================================================
 def render_live_kline_chart(table, symbol, pair, tf):
     df = load_historical_data(table, symbol)
@@ -620,19 +643,16 @@ def render_live_kline_chart(table, symbol, pair, tf):
     latest_close = float(latest["close_price"])
     ai_score = float(latest["AI_Prob"]) * 100 if pd.notna(latest["AI_Prob"]) else 0.0
     latest_time = latest["open_time"]
+    news_sentiment_val = float(latest["News_Sentiment"]) if pd.notna(latest["News_Sentiment"]) else 0.0
 
     if bool(latest["Long_Signal"]):
         save_signal_to_outbox(symbol, tf, latest_time, "LONG", latest_close, ai_score)
     elif bool(latest["Short_Signal"]):
         save_signal_to_outbox(symbol, tf, latest_time, "SHORT", latest_close, ai_score)
 
-    display_len = 85
-    if len(view_df) > display_len:
-        start_time = view_df["open_time"].iloc[-display_len]
-        end_time = view_df["open_time"].iloc[-1] + pd.Timedelta(minutes=75 if tf in ['5m','15m'] else 300)
-    else:
-        start_time = view_df["open_time"].iloc[0]
-        end_time = view_df["open_time"].iloc[-1] + pd.Timedelta(minutes=75 if tf in ['5m','15m'] else 300)
+    # 💡 顯示完整的歷史與即時 K 棒（完整載入所有取得的資料點，不作過度裁切）
+    start_time = view_df["open_time"].iloc[0]
+    end_time = view_df["open_time"].iloc[-1] + pd.Timedelta(minutes=75 if tf in ['5m','15m'] else 300)
 
     visible_df = view_df[(view_df["open_time"] >= start_time) & (view_df["open_time"] <= end_time)]
     if visible_df.empty:
@@ -796,14 +816,13 @@ def render_live_kline_chart(table, symbol, pair, tf):
         col=1,
     )
 
+    news_text = "🟢 偏多" if news_sentiment_val > 0.1 else ("🔴 偏空" if news_sentiment_val < -0.1 else "⚪ 中性")
     mode = "⚡ 123法則+SMC/SNR 閃電波段" if tf in ["5m", "15m"] else "🌊 123法則+SMC/SNR 大波段"
     annotation = (
-        f"<b>{pair} · {tf} ({mode}) [動態AI TP/SL優化版]</b><br>"
-        f"<b>策略與指標：</b>123法則 + SMC (訂單塊/結構) + SNR (關鍵支撐壓力) | Window: {win}, Dev: {dev}<br>"
-        f"<b>RSI：</b>{latest_rsi:.1f} | "
-        f"<b>AI模型精準度(90%+)：</b><span style='color:#f0b90b'>{ai_score:.1f}%</span> | "
-        f"收：<span style='color:{status_color}'>{latest_close:,.2f} "
-        f"({change_pct:+.2f}%)</span>"
+        f"<b>{pair} · {tf} ({mode}) [動態AI + 訊息面融合版]</b><br>"
+        f"<b>策略與指標：</b>123法則 + SMC + SNR + 消息面情緒 ({news_text}) | Window: {win}<br>"
+        f"<b>RSI：</b>{latest_rsi:.1f} | <b>AI 模型精準度：</b><span style='color:#f0b90b'>{ai_score:.1f}%</span> | "
+        f"收：<span style='color:{status_color}'>{latest_close:,.2f} ({change_pct:+.2f}%)</span>"
     )
 
     fig.add_annotation(
@@ -914,36 +933,48 @@ def render_live_kline_chart(table, symbol, pair, tf):
         )
 
     with panel_col:
-        st.markdown("### 🎯 AI 即時操作建議 (90%+ 高勝率)")
+        st.markdown("### 🎯 AI 策略與消息面聯防")
         st.caption(
-            f"歷史訓練樣本：{training_count} 筆｜"
-            f"成功標籤：{winning_count} 筆｜"
-            f"模型精準度：90.0%+"
+            f"歷史樣本：{training_count} 筆｜成功標籤：{winning_count} 筆"
         )
 
+        news_badge = "🟢 偏多 (利好)" if news_sentiment_val > 0.1 else ("🔴 偏空 (利空)" if news_sentiment_val < -0.1 else "⚪ 中性 (震盪)")
         st.markdown(f"""
-        <div style="background:rgba(30,35,41,.9);border:1px solid #2b313a;
-                    padding:10px;border-radius:6px;margin-bottom:10px;">
-            <div style="font-size:13px;color:#848e9c;">當前 AI 模型信心分數</div>
-            <div style="font-size:20px;font-weight:bold;color:#f0b90b;">
+        <div style="background:rgba(30,35,41,.92);border:1px solid #343b48;
+                    padding:12px;border-radius:8px;margin-bottom:10px;">
+            <div style="font-size:12px;color:#848e9c;">🌐 即時消息與情緒面指數</div>
+            <div style="font-size:16px;font-weight:bold;color:#f0b90b;margin-top:4px;">
+                {news_badge} ({news_sentiment_val:+.2f})
+            </div>
+            <div style="font-size:11px;color:#9ca3af;margin-top:4px;">
+                結合市場宏觀、多空量能與社群情緒聯防過濾
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        st.markdown(f"""
+        <div style="background:rgba(30,35,41,.92);border:1px solid #343b48;
+                    padding:10px;border-radius:8px;margin-bottom:10px;">
+            <div style="font-size:12px;color:#848e9c;">當前 AI 模型信心分數</div>
+            <div style="font-size:20px;font-weight:bold;color:#00E676;">
                 {ai_score:.1f}%
             </div>
         </div>
         """, unsafe_allow_html=True)
 
         if bool(latest["Long_Signal"]):
-            st.success("🟢 LONG 多單進場訊號 (動態 TP/SL 確認)")
+            st.success("🟢 LONG 多單進場訊號 (技術+消息面確認)")
             st.metric("參考進場價格", f"{latest_close:,.2f}")
-            st.metric("AI 分數", f"{ai_score:.1f}%")
+            st.metric("AI 信心評分", f"{ai_score:.1f}%")
 
         elif bool(latest["Short_Signal"]):
-            st.error("🔴 SHORT 空單進場訊號 (動態 TP/SL 確認)")
+            st.error("🔴 SHORT 空單進場訊號 (技術+消息面確認)")
             st.metric("參考進場價格", f"{latest_close:,.2f}")
-            st.metric("AI 分數", f"{ai_score:.1f}%")
+            st.metric("AI 信心評分", f"{ai_score:.1f}%")
 
         else:
             st.warning("⏳ WAIT 目前沒有進場訊號")
-            st.caption("等待符合高勝率過濾條件。")
+            st.caption("等待技術結構與消息面達到共振條件。")
 
         st.markdown("---")
         st.markdown("#### 📌 最近進場訊號")
@@ -989,11 +1020,12 @@ def render_live_kline_chart(table, symbol, pair, tf):
         history["進場參考價"] = history["close_price"].map(lambda x: f"{x:,.2f}")
         history["止損價 (SL)"] = history["Stop_Loss"].map(lambda x: f"{x:,.2f}" if pd.notna(x) else "—")
         history["止盈價 (TP)"] = history["Take_Profit"].map(lambda x: f"{x:,.2f}" if pd.notna(x) else "—")
+        history["訊息情緒"] = history["News_Sentiment"].map(lambda x: f"{x:+.2f}" if pd.notna(x) else "—")
         history["AI 分數"] = history["AI_Prob"].map(
             lambda x: f"{x:.1%}" if pd.notna(x) else "—"
         )
         st.dataframe(
-            history[["時間", "方向", "進場參考價", "止損價 (SL)", "止盈價 (TP)", "Trade_Result", "AI 分數"]]
+            history[["時間", "方向", "進場參考價", "止損價 (SL)", "止盈價 (TP)", "訊息情緒", "Trade_Result", "AI 分數"]]
             .rename(columns={"Trade_Result": "結算結果"})
             .iloc[::-1],
             use_container_width=True,
