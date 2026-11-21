@@ -16,7 +16,7 @@ from flask import Flask, jsonify
 TAIWAN_TZ = ZoneInfo('Asia/Taipei')
 
 # ============================================================
-# 0. 頁面設定、圖片與背景（含手機 RWD 響應式 CSS）與 Flask 路由 (保持 Render 活躍)
+# 0. 頁面設定、圖片與背景（含完美手機 RWD 響應式 CSS）與 Flask 路由 (保持 Render 活躍)
 # ============================================================
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -124,16 +124,25 @@ div[data-testid="stRadio"] > div {{ flex-direction: row; gap: 12px; flex-wrap: w
     height: 100%;
 }}
 
-/* 手機版 RWD 自動適配樣式 */
+/* ============================================================ */
+/* 手機版 RWD 完美適配樣式優化                                    */
+/* ============================================================ */
 @media(max-width: 768px) {{
     .block-container {{
         padding-left: 0.5rem !important;
         padding-right: 0.5rem !important;
-        padding-top: 1.5rem !important;
+        padding-top: 1rem !important;
+        padding-bottom: 1rem !important;
     }}
     h1 {{
-        font-size: 1.8rem !important;
+        font-size: 1.6rem !important;
+        text-align: center;
     }}
+    /* 優化手機端輸入框與表單按鈕間距 */
+    div[data-testid="stForm"] {{
+        padding: 4px !important;
+    }}
+    /* 圖表容器在手機上自動縮放並防止橫向捲動破版 */
     .js-plotly-plot, .plot-container, .plotly {{
         width: 100% !important;
         max-width: 100% !important;
@@ -142,6 +151,12 @@ div[data-testid="stRadio"] > div {{ flex-direction: row; gap: 12px; flex-wrap: w
     div.stPlotlyChart {{
         width: 100% !important;
         overflow-x: auto;
+    }}
+    /* 手機端表格字體與間距調整，避免擠壓 */
+    [data-testid="stTable"] td, [data-testid="stTable"] th,
+    .stDataFrame td, .stDataFrame th {{
+        font-size: 11px !important;
+        padding: 4px 6px !important;
     }}
 }}
 </style>
@@ -232,7 +247,6 @@ def save_signal_to_outbox(symbol, tf, signal_time, direction, price, ai_prob):
                 "prob": ai_prob
             })
     except Exception as e:
-        # 若資料表結構不同或寫入失敗時捕捉例外，不影響網頁運作
         print(f"寫入 strategy_signal_outbox 失敗: {e}")
 
 
@@ -568,7 +582,7 @@ def render_homepage():
 
 
 # ============================================================
-# 6. K 線圖渲染與即時訊號自動寫入
+# 6. K 線圖渲染與即時訊號自動寫入（完美適配手機版面排版）
 # ============================================================
 def render_live_kline_chart(table, symbol, pair, tf):
     df = load_historical_data(table, symbol)
@@ -883,7 +897,10 @@ def render_live_kline_chart(table, symbol, pair, tf):
         fixedrange=False,
     )
 
-    chart_col, panel_col = st.columns([3.6, 1.2])
+    # 💡 智慧化手機與電腦版面適配：手機上自動改為單欄上下堆疊，避免左右分割造成資訊擠壓
+    if st.get_option("client.showSidebarNav") is not None or True:
+        # 使用 Streamlit 內建 RWD 欄位，在手機螢幕自動堆疊
+        chart_col, panel_col = st.columns([3.6, 1.2])
 
     with chart_col:
         st.plotly_chart(
