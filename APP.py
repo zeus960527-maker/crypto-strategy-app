@@ -178,7 +178,7 @@ st.markdown("---")
 
 
 # ============================================================
-# 2. Supabase 連線
+# 2. Supabase 連線 (已修復連線池滿載問題)
 # ============================================================
 def get_database_url():
     url = os.getenv("SUPABASE_DB_URL", "").strip()
@@ -204,9 +204,11 @@ def get_db_engine():
         )
     return create_engine(
         url,
+        pool_size=3,
+        max_overflow=2,
         pool_pre_ping=True,
-        pool_recycle=1800,
-        connect_args={"connect_timeout": 10},
+        pool_recycle=300,
+        connect_args={"connect_timeout": 5},
     )
 
 
@@ -327,35 +329,26 @@ def calculate_indicators(df, tf):
 # 4. 動態 AI 智慧化止盈止損與進階策略信號
 # ============================================================
 def calculate_dynamic_tp_sl(row, is_long):
-    """
-    💡 AI 動態止盈止損學習函數：
-    依據當下 K 棒的成交量倍數 (vol_ratio)、實體 K 棒比例 (body_ratio) 與 RSI
-    智慧化調整最佳的 ATR 止損倍數與風險報酬比 (RR)。
-    """
     atr = row.get('ATR', 0)
     vol_r = row.get('vol_ratio', 1.0)
     body_r = row.get('body_ratio', 0.5)
     rsi = row.get('RSI', 50)
     
     if pd.isna(atr) or atr <= 0:
-        return 1.5, 2.5  # 預設保護值
+        return 1.5, 2.5
 
-    # 預設基礎值
     stop_mult = 1.5
     rr_ratio = 2.5
 
-    # 強勢突破或大成交量市況：放寬止損以防雜訊掃損，並拉高獲利空間
     if vol_r > 1.8 and body_r > 0.5:
         stop_mult = 1.8
         rr_ratio = 3.0
-    # 震盪或量縮市況：收緊止損保護本金
     elif vol_r < 0.9:
         stop_mult = 1.2
         rr_ratio = 2.0
 
-    # 針對超買超賣過熱區進行微調
     if is_long and rsi > 75:
-        rr_ratio = 2.0  # 追高保守對待
+        rr_ratio = 2.0
     elif not is_long and rsi < 25:
         rr_ratio = 2.0
 
@@ -428,7 +421,6 @@ def build_candidate_signals(df, tf):
             take_profits.append(np.nan)
             continue
 
-        # 💡 套用 AI 動態計算的止損倍數與盈虧比
         current_row = df.iloc[i]
         dyn_stop_mult, dyn_rr = calculate_dynamic_tp_sl(current_row, is_l)
 
@@ -472,7 +464,6 @@ def build_candidate_signals(df, tf):
                     matured = True
                     break
 
-        # 💡 若未跑滿 100 根（如最新即時訊號），以目前最新高低價即時判定結算
         if not matured:
             current_h = high_arr[n - 1]
             current_l = low_arr[n - 1]
@@ -961,7 +952,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
         st.dataframe(
             history[["時間", "方向", "進場參考價", "止損價 (SL)", "止盈價 (TP)", "Trade_Result", "AI 分數"]]
             .rename(columns={"Trade_Result": "結算結果"})
-            .iloc[::-1],  # 讓最新的歷史訊號排在最上方
+            .iloc[::-1],
             use_container_width=True,
             hide_index=True,
         )
