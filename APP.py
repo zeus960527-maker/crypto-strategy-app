@@ -897,10 +897,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
         fixedrange=False,
     )
 
-    # 💡 智慧化手機與電腦版面適配：手機上自動改為單欄上下堆疊，避免左右分割造成資訊擠壓
-    if st.get_option("client.showSidebarNav") is not None or True:
-        # 使用 Streamlit 內建 RWD 欄位，在手機螢幕自動堆疊
-        chart_col, panel_col = st.columns([3.6, 1.2])
+    chart_col, panel_col = st.columns([3.6, 1.2])
 
     with chart_col:
         st.plotly_chart(
