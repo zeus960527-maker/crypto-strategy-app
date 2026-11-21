@@ -46,6 +46,11 @@ def get_base64_image(filename):
         return None
 
 
+def _html(markup):
+    """UI 輔助：壓平 HTML 字串，避免 Markdown 把縮排誤判成程式碼區塊"""
+    return "".join(line.strip() for line in markup.strip().splitlines())
+
+
 icon_img = load_image_safe("hacker_icon.png")
 bg_base64 = get_base64_image("background.png")
 
@@ -73,6 +78,7 @@ if bg_base64:
 
 st.markdown(f"""
 <style>
+@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700;800&display=swap');
 {bg_css}
 .block-container {{
     padding-top: 3.5rem !important;
@@ -127,6 +133,250 @@ div[data-testid="stRadio"] > div {{ flex-direction: row; gap: 12px; flex-wrap: w
 }}
 
 /* ============================================================ */
+/* 精美化 UI 強化（僅調整外觀，不影響任何功能與設定）              */
+/* ============================================================ */
+html, body, .stApp, .stMarkdown, p, li, label, h1, h2, h3, h4, button, input, textarea {{
+    font-family: "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", "Segoe UI", sans-serif;
+}}
+header[data-testid="stHeader"] {{ background: transparent !important; }}
+footer {{ visibility: hidden; }}
+
+/* 標題與副標籤 */
+h1::after {{
+    content: "";
+    display: block;
+    width: 88px;
+    height: 4px;
+    margin-top: 10px;
+    border-radius: 4px;
+    background: linear-gradient(90deg, #f0b90b, #ffdf6e);
+    box-shadow: 0 0 12px rgba(240,185,11,.5);
+}}
+.app-subtitle {{
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin: -6px 0 20px 0;
+}}
+.app-subtitle span {{
+    background: rgba(240,185,11,.08);
+    border: 1px solid rgba(240,185,11,.28);
+    color: #f0d36b;
+    padding: 3px 14px;
+    border-radius: 999px;
+    font-size: .78rem;
+    letter-spacing: .5px;
+}}
+h3 {{
+    border-left: 4px solid #f0b90b;
+    padding-left: 10px !important;
+    font-size: 1.25rem !important;
+}}
+.stApp hr {{
+    border: none !important;
+    height: 1px !important;
+    background: linear-gradient(90deg, transparent, #3a4352, transparent) !important;
+    margin: 1.4rem 0 !important;
+}}
+
+/* 搜尋表單 */
+div[data-testid="stForm"] {{
+    background: linear-gradient(145deg, rgba(24,30,42,.92), rgba(16,20,28,.92)) !important;
+    border: 1px solid #2f3643 !important;
+    border-radius: 16px !important;
+    padding: 20px 22px 8px !important;
+    box-shadow: 0 10px 36px rgba(0,0,0,.45);
+    backdrop-filter: blur(8px);
+}}
+.stTextInput input {{ padding: 10px 14px !important; }}
+.stTextInput input::placeholder {{ color: #6b7684 !important; }}
+div[data-testid="stFormSubmitButton"] button {{
+    background: linear-gradient(135deg, #f0b90b, #f7d154) !important;
+    border: none !important;
+    border-radius: 10px !important;
+    height: 2.75rem;
+    box-shadow: 0 4px 16px rgba(240,185,11,.35);
+    transition: all .2s ease;
+}}
+div[data-testid="stFormSubmitButton"] button p {{
+    color: #111 !important;
+    font-weight: 800 !important;
+    letter-spacing: 1px;
+}}
+div[data-testid="stFormSubmitButton"] button:hover {{
+    transform: translateY(-2px);
+    box-shadow: 0 8px 22px rgba(240,185,11,.5);
+    filter: brightness(1.05);
+}}
+div[data-testid="stFormSubmitButton"] button:active {{ transform: translateY(0); }}
+
+/* 時間軸藥丸按鈕 */
+div[data-testid="stRadio"] [data-testid="stWidgetLabel"] p {{
+    color: #9aa4b2;
+    font-weight: 600;
+}}
+div[data-testid="stRadio"] label[data-baseweb="radio"] {{
+    background: rgba(30,35,41,.9);
+    border: 1px solid #2f3643;
+    border-radius: 999px;
+    padding: 6px 18px 6px 12px;
+    margin-right: 0;
+    transition: all .2s ease;
+    cursor: pointer;
+}}
+div[data-testid="stRadio"] label[data-baseweb="radio"]:hover {{
+    border-color: #f0b90b;
+    transform: translateY(-1px);
+}}
+div[data-testid="stRadio"] label[data-baseweb="radio"]:has(input:checked) {{
+    background: linear-gradient(135deg, rgba(240,185,11,.22), rgba(240,185,11,.08));
+    border-color: #f0b90b;
+    box-shadow: 0 0 14px rgba(240,185,11,.25);
+}}
+div[data-testid="stRadio"] label[data-baseweb="radio"]:has(input:checked) p {{
+    color: #f0b90b !important;
+    font-weight: 700;
+}}
+
+/* 指標、提示、圖表、表格 */
+div[data-testid="stMetric"] {{
+    background: linear-gradient(145deg, rgba(30,35,41,.95), rgba(22,26,33,.95));
+    border: 1px solid #2b313a;
+    border-left: 3px solid #f0b90b;
+    border-radius: 10px;
+    padding: 10px 14px;
+    margin-bottom: 8px;
+}}
+div[data-testid="stMetricValue"] {{ color: #f0b90b; font-weight: 800; }}
+div[data-testid="stMetricLabel"] p {{ color: #848e9c; }}
+div[data-testid="stAlert"] {{
+    border-radius: 10px !important;
+    border: 1px solid rgba(255,255,255,.06);
+}}
+[data-testid="stCaptionContainer"] {{ color: #8b95a5 !important; }}
+div.stPlotlyChart {{
+    border: 1px solid #2b313a;
+    border-radius: 14px;
+    overflow: hidden;
+    box-shadow: 0 8px 28px rgba(0,0,0,.45);
+}}
+div[data-testid="stDataFrame"] {{
+    border: 1px solid #2b313a;
+    border-radius: 12px;
+    overflow: hidden;
+    box-shadow: 0 6px 22px rgba(0,0,0,.35);
+}}
+::-webkit-scrollbar {{ width: 8px; height: 8px; }}
+::-webkit-scrollbar-thumb {{ background: #2f3643; border-radius: 8px; }}
+::-webkit-scrollbar-thumb:hover {{ background: #f0b90b; }}
+
+/* 首頁卡片 */
+.intro-card {{
+    position: relative;
+    overflow: hidden;
+    background: linear-gradient(135deg, rgba(26,32,46,.95), rgba(16,20,29,.95));
+}}
+.intro-card::before {{
+    content: "";
+    position: absolute;
+    top: -60px; right: -60px;
+    width: 220px; height: 220px;
+    background: radial-gradient(circle, rgba(240,185,11,.18), transparent 70%);
+    pointer-events: none;
+}}
+.intro-card h2 {{ margin-top: 0; }}
+.feature-card {{
+    border: 1px solid #2f3643;
+    transition: transform .25s ease, border-color .25s ease, box-shadow .25s ease;
+}}
+.feature-card:hover {{
+    transform: translateY(-4px);
+    border-color: #f0b90b;
+    box-shadow: 0 12px 28px rgba(240,185,11,.12);
+}}
+.feature-icon {{ font-size: 1.8rem; margin-bottom: 8px; }}
+.feature-card h4 {{
+    color: #f0b90b !important;
+    margin: 0 0 8px 0;
+    font-size: 1.05rem !important;
+}}
+.feature-card p {{ font-size: .9rem; margin: 0; }}
+.step-row {{ display: flex; gap: 12px; flex-wrap: wrap; margin-top: 18px; }}
+.step {{
+    flex: 1 1 200px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    background: rgba(255,255,255,.03);
+    border: 1px dashed #3a4352;
+    border-radius: 12px;
+    padding: 12px 14px;
+    color: #d1d5db;
+    font-size: .92rem;
+}}
+.step .num {{
+    flex: 0 0 28px;
+    height: 28px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, #f0b90b, #f7d154);
+    color: #111;
+    font-weight: 800;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}}
+.disclaimer {{ color: #8b95a5; font-size: .8rem; margin-top: 14px; }}
+
+/* 右側操作面板 */
+.conf-card {{
+    background: linear-gradient(145deg, rgba(30,35,41,.95), rgba(20,25,34,.95));
+    border: 1px solid #2b313a;
+    border-radius: 12px;
+    padding: 14px 16px;
+    margin-bottom: 12px;
+    box-shadow: 0 6px 20px rgba(0,0,0,.35);
+}}
+.conf-label {{ font-size: 13px; color: #848e9c; }}
+.conf-value {{ font-size: 30px; font-weight: 800; color: #f0b90b; line-height: 1.25; }}
+.conf-bar {{
+    height: 6px;
+    border-radius: 6px;
+    background: #2b313a;
+    overflow: hidden;
+    margin: 8px 0 10px;
+}}
+.conf-bar i {{
+    display: block;
+    height: 100%;
+    border-radius: 6px;
+    background: linear-gradient(90deg, #f0b90b, #ffe27a);
+}}
+.conf-macro {{ font-size: 12px; color: #a0a6b2; }}
+.sig-card {{
+    background: rgba(30,35,41,.9);
+    border: 1px solid #2b313a;
+    border-left: 4px solid #848e9c;
+    border-radius: 10px;
+    padding: 10px 12px;
+    margin-bottom: 8px;
+    font-size: 13px;
+    line-height: 1.8;
+    color: #d1d5db;
+}}
+.sig-card.long {{ border-left-color: #0ECB81; }}
+.sig-card.short {{ border-left-color: #F6465D; }}
+.sig-head {{ display: flex; justify-content: space-between; align-items: center; }}
+.sig-tag {{ padding: 1px 10px; border-radius: 999px; font-size: 12px; font-weight: 800; }}
+.sig-tag.long {{ background: rgba(14,203,129,.15); color: #0ECB81; }}
+.sig-tag.short {{ background: rgba(246,70,93,.15); color: #F6465D; }}
+.sig-card code {{
+    background: rgba(240,185,11,.1);
+    color: #f0d36b;
+    padding: 1px 6px;
+    border-radius: 4px;
+}}
+
+/* ============================================================ */
 /* 手機版 RWD 精美高質感適配優化                                  */
 /* ============================================================ */
 @media(max-width: 768px) {{
@@ -171,6 +421,14 @@ div[data-testid="stRadio"] > div {{ flex-direction: row; gap: 12px; flex-wrap: w
         border-radius: 8px !important;
     }}
 }}
+@media(max-width: 768px) {{
+    h1::after {{ margin-left: auto; margin-right: auto; }}
+    .app-subtitle {{ justify-content: center; }}
+    .feature-card {{ min-height: auto; margin-bottom: 10px; }}
+    div[data-testid="stRadio"] label[data-baseweb="radio"] {{ padding: 5px 12px 5px 8px; }}
+    div[data-testid="stMetricValue"] {{ font-size: 1.4rem; }}
+    .conf-value {{ font-size: 26px; }}
+}}
 </style>
 """, unsafe_allow_html=True)
 
@@ -183,6 +441,11 @@ st.session_state.setdefault("search_query", "")
 st.session_state.setdefault("ai_models", {})
 
 st.title("加密貨幣 AI 策略系統")
+st.markdown(_html("""
+<div class="app-subtitle">
+    <span>123法則</span><span>SMC</span><span>SNR</span><span>宏觀基本面</span><span>動態 TP/SL</span>
+</div>
+"""), unsafe_allow_html=True)
 
 with st.form("search_form"):
     col1, col2 = st.columns([4, 1])
@@ -597,15 +860,38 @@ def add_trade_signals(df, model):
 # 5. 首頁說明區
 # ============================================================
 def render_homepage():
-    st.markdown("""
+    st.markdown(_html("""
     <div class="intro-card">
         <h2 style="color:#f0b90b;">🚀 關於加密貨幣 AI 策略系統</h2>
         <p>
         本系統是一套結合 123法則、SMC (聰明錢訂單塊)、SNR (關鍵支撐壓力位) 與宏觀基本面過濾的加密貨幣智慧分析工具，
         透過 Supabase 歷史 K 線資料，結合機器學習與動態止盈止損學習機制，協助尋找高勝率的多單與空單機會。
         </p>
+        <div class="step-row">
+            <div class="step"><div class="num">1</div><div>於上方輸入 <b>BTC</b> 或 <b>ETH</b></div></div>
+            <div class="step"><div class="num">2</div><div>選擇 5m / 15m / 1h / 4h 週期</div></div>
+            <div class="step"><div class="num">3</div><div>查看圖表訊號與 TP / SL</div></div>
+        </div>
+        <div class="disclaimer">⚠️ 本系統輸出僅供研究參考，不構成任何投資建議。</div>
     </div>
-    """, unsafe_allow_html=True)
+    """), unsafe_allow_html=True)
+
+    features = [
+        ("📐", "123 法則", "以趨勢通道偵測價格突破壓力或跌破支撐，並搭配實體比例與成交量放大確認。"),
+        ("🧱", "SMC / SNR", "結合聰明錢訂單塊與關鍵支撐壓力位，協助判斷進場區間的可靠度。"),
+        ("🌐", "宏觀基本面過濾", "以均線乖離與成交量流動性建立情緒指標，過濾逆勢交易。"),
+        ("🎯", "動態止盈止損", "依 ATR、量能與 RSI 調整 TP / SL，並累積歷史訊號學習紀錄。"),
+    ]
+    cols = st.columns(4)
+    for col, (icon, title, desc) in zip(cols, features):
+        with col:
+            st.markdown(_html(f"""
+            <div class="feature-card">
+                <div class="feature-icon">{icon}</div>
+                <h4>{title}</h4>
+                <p>{desc}</p>
+            </div>
+            """), unsafe_allow_html=True)
 
 
 # ============================================================
@@ -948,17 +1234,16 @@ def render_live_kline_chart(table, symbol, pair, tf):
             f"模型精準度：90.0%+"
         )
 
-        st.markdown(f"""
-        <div style="background:rgba(30,35,41,.9);border:1px solid #2b313a;
-                    padding:12px;border-radius:8px;margin-bottom:10px;">
-            <div style="font-size:13px;color:#848e9c;">當前 AI 模型信心分數</div>
-            <div style="font-size:22px;font-weight:bold;color:#f0b90b;">
-                {ai_score:.1f}%
-            </div>
-            <hr style="margin:8px 0; border-color:#2b313a;">
-            <div style="font-size:12px;color:#a0a6b2;">宏觀基本面情緒：<b>{"偏多 🟢" if latest.get("macro_trend_bias", 0) > 0 else "偏空 🔴"}</b></div>
+        macro_text = "偏多 🟢" if latest.get("macro_trend_bias", 0) > 0 else "偏空 🔴"
+        conf_width = max(0.0, min(ai_score, 100.0))
+        st.markdown(_html(f"""
+        <div class="conf-card">
+            <div class="conf-label">當前 AI 模型信心分數</div>
+            <div class="conf-value">{ai_score:.1f}%</div>
+            <div class="conf-bar"><i style="width:{conf_width:.1f}%"></i></div>
+            <div class="conf-macro">宏觀基本面情緒：<b>{macro_text}</b></div>
         </div>
-        """, unsafe_allow_html=True)
+        """), unsafe_allow_html=True)
 
         if bool(latest["Long_Signal"]):
             st.success("🟢 LONG 多單進場訊號 (基本面+動態 TP/SL 確認)")
@@ -989,18 +1274,18 @@ def render_live_kline_chart(table, symbol, pair, tf):
                 signal_price = float(signal["close_price"])
                 signal_prob = float(signal["AI_Prob"]) * 100
 
-                if bool(signal["Long_Signal"]):
-                    st.markdown(
-                        f"🟢 **LONG**｜{signal_time}  \n"
-                        f"進場參考價：`{signal_price:,.2f}`  \n"
-                        f"AI 分數：`{signal_prob:.1f}%`"
-                    )
-                else:
-                    st.markdown(
-                        f"🔴 **SHORT**｜{signal_time}  \n"
-                        f"進場參考價：`{signal_price:,.2f}`  \n"
-                        f"AI 分數：`{signal_prob:.1f}%`"
-                    )
+                side_cls = "long" if bool(signal["Long_Signal"]) else "short"
+                side_txt = "🟢 LONG" if side_cls == "long" else "🔴 SHORT"
+                st.markdown(_html(f"""
+                <div class="sig-card {side_cls}">
+                    <div class="sig-head">
+                        <span class="sig-tag {side_cls}">{side_txt}</span>
+                        <span style="color:#848e9c;">{signal_time}</span>
+                    </div>
+                    <div>進場參考價：<code>{signal_price:,.2f}</code></div>
+                    <div>AI 分數：<code>{signal_prob:.1f}%</code></div>
+                </div>
+                """), unsafe_allow_html=True)
 
         st.caption("進場價格為訊號 K 線收盤價參考值，不代表實際成交價。")
 
