@@ -9,7 +9,7 @@ from flask import Flask, jsonify
 
 app = Flask(__name__)
 
-# 用來確保 ETH 背景執行緒只會被安全啟動一次的鎖與旗標
+# 用來確保 BTC 背景執行緒只會被安全啟動一次的鎖與旗標
 _worker_started = False
 _worker_lock = threading.Lock()
 
@@ -28,7 +28,7 @@ def before_request_func():
 
 @app.route("/")
 def home():
-    return "ETH OKX Fetcher is running 24/7! 🚀"
+    return "BTC OKX Fetcher is running 24/7! 🚀"
 
 @app.route("/health", methods=["GET"])
 def health_check():
@@ -37,7 +37,7 @@ def health_check():
 # 💡 瞬間回傳 200 OK，防止 cron-job.org 發生 Timeout 或 503
 @app.route("/run-scanner", methods=["GET", "POST"])
 def run_scanner():
-    return jsonify({"status": "success", "message": "ETH Ping received, background worker is active!"}), 200
+    return jsonify({"status": "success", "message": "BTC Ping received, background worker is active!"}), 200
 
 SUPABASE_DB_URL = "postgresql://postgres.ygzeqvcyqtvhvjrxhzdv:%4010233960527Ken@aws-0-ap-northeast-1.pooler.supabase.com:6543/postgres"
 
@@ -50,13 +50,13 @@ def get_db_connection():
 
 def fetch_single_timeframe(tf):
     exchange = ccxt.okx({'enableRateLimit': True})
-    symbol = 'ETH/USDT:USDT'
+    symbol = 'BTC/USDT:USDT'
     
     connection = get_db_connection()
     try:
         with connection.cursor() as cursor:
             cursor.execute(
-                "SELECT MAX(open_time) FROM eth_contract_klines WHERE timeframe = %s",
+                "SELECT MAX(open_time) FROM btc_contract_klines WHERE timeframe = %s",
                 (tf,)
             )
             result = cursor.fetchone()
@@ -69,7 +69,7 @@ def fetch_single_timeframe(tf):
             try:
                 ohlcv = exchange.fetch_ohlcv(**params)
             except Exception as e:
-                print(f"[ETH-{tf}] OKX API 抓取失敗: {e}")
+                print(f"[BTC-{tf}] OKX API 抓取失敗: {e}")
                 return
 
             if not ohlcv:
@@ -82,12 +82,12 @@ def fetch_single_timeframe(tf):
 
             if batch_data:
                 sql = """
-                    INSERT INTO eth_contract_klines 
+                    INSERT INTO btc_contract_klines 
                     (timeframe, open_time, open_price, high_price, low_price, close_price, volume)
                     VALUES (%s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (timeframe, open_time) DO UPDATE SET 
-                    high_price = GREATEST(eth_contract_klines.high_price, EXCLUDED.high_price),
-                    low_price = LEAST(eth_contract_klines.low_price, EXCLUDED.low_price),
+                    high_price = GREATEST(btc_contract_klines.high_price, EXCLUDED.high_price),
+                    low_price = LEAST(btc_contract_klines.low_price, EXCLUDED.low_price),
                     close_price = EXCLUDED.close_price,
                     volume = EXCLUDED.volume;
                 """
@@ -95,15 +95,15 @@ def fetch_single_timeframe(tf):
                 connection.commit()
                 latest_close = batch_data[-1][4]
                 latest_vol = batch_data[-1][5]
-                print(f" -> [ETH-{tf}] 即時同步成功 | 最新收盤價: {latest_close:,.2f} | 成交量: {latest_vol:.4f}")
+                print(f" -> [BTC-{tf}] 即時同步成功 | 最新收盤價: {latest_close:,.2f} | 成交量: {latest_vol:.4f}")
 
     except Exception as e:
         connection.rollback()
-        print(f" -> [ETH-{tf}] 資料庫寫入錯誤: {e}")
+        print(f" -> [BTC-{tf}] 資料庫寫入錯誤: {e}")
     finally:
         connection.close()
 
-def fetch_and_save_eth_contracts():
+def fetch_and_save_btc_contracts():
     timeframes = ['5m', '15m', '1h', '4h']
     with ThreadPoolExecutor(max_workers=len(timeframes)) as executor:
         futures = [executor.submit(fetch_single_timeframe, tf) for tf in timeframes]
@@ -115,14 +115,14 @@ def fetch_and_save_eth_contracts():
 
 def background_worker():
     print("==========================================")
-    print(" ETH 雲端高頻即時數據同步背景執行緒已啟動")
+    print(" BTC 雲端高頻即時數據同步背景執行緒已啟動")
     print("==========================================")
     # 啟動時加入短暫緩衝，確保 Flask 能第一時間響應 Render 健康檢查
     time.sleep(3)
     
     while True:
         try:
-            fetch_and_save_eth_contracts()
+            fetch_and_save_btc_contracts()
             time.sleep(2)
         except Exception as e:
             print(f"背景迴圈錯誤: {e}")
