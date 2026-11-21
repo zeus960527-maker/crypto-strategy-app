@@ -16,7 +16,7 @@ from flask import Flask, jsonify
 TAIWAN_TZ = ZoneInfo('Asia/Taipei')
 
 # ============================================================
-# 0. 頁面設定、圖片與背景（含頂級精美手機 RWD 響應式 CSS）與 Flask 路由 (保持 Render 活躍)
+# 0. 頁面設定、圖片與背景（含防閃爍平滑過渡 CSS）與 Flask 路由 (保持 Render 活躍)
 # ============================================================
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -127,8 +127,22 @@ div[data-testid="stRadio"] > div {{ flex-direction: row; gap: 12px; flex-wrap: w
 }}
 
 /* ============================================================ */
-/* 手機版 RWD 精美高質感適配優化 (App 原生風格)                  */
+/* 💡 方案一：消除畫面閃爍與優化動態重新整理的平滑過渡 CSS         */
 /* ============================================================ */
+.element-container, div[data-testid="stPlotlyChart"], .stDataFrame {{
+    animation: fadeIn 0.3s ease-in-out;
+}}
+@keyframes fadeIn {{
+    from {{ opacity: 0.85; }}
+    to {{ opacity: 1; }}
+}}
+* {{
+    -webkit-font-smoothing: antialiased;
+    transform: translateZ(0);
+    backface-visibility: hidden;
+}}
+
+/* 手機版 RWD 精美高質感適配優化 (App 原生風格)                  */
 @media(max-width: 768px) {{
     .block-container {{
         padding-left: 0.7rem !important;
@@ -141,7 +155,6 @@ div[data-testid="stRadio"] > div {{ flex-direction: row; gap: 12px; flex-wrap: w
         text-align: center;
         letter-spacing: 0.5px;
     }}
-    /* 精緻化手機端表單搜尋框外觀 */
     div[data-testid="stForm"] {{
         background: rgba(20, 25, 35, 0.85) !important;
         border: 1px solid #343b48 !important;
@@ -149,7 +162,6 @@ div[data-testid="stRadio"] > div {{ flex-direction: row; gap: 12px; flex-wrap: w
         padding: 12px !important;
         box-shadow: 0 4px 20px rgba(0,0,0,0.4);
     }}
-    /* 圖表容器完美縮放與觸控優化 */
     .js-plotly-plot, .plot-container, .plotly {{
         width: 100% !important;
         max-width: 100% !important;
@@ -160,13 +172,11 @@ div[data-testid="stRadio"] > div {{ flex-direction: row; gap: 12px; flex-wrap: w
         width: 100% !important;
         overflow-x: auto;
     }}
-    /* 手機版數據表格與欄位精簡美化 */
     [data-testid="stTable"] td, [data-testid="stTable"] th,
     .stDataFrame td, .stDataFrame th {{
         font-size: 11px !important;
         padding: 6px 8px !important;
     }}
-    /* 手機按鈕圓角與互動優化 */
     .stButton button {{
         width: 100% !important;
         border-radius: 10px !important;
@@ -272,7 +282,6 @@ def load_historical_data(table_name, symbol_name):
 
     try:
         engine = get_db_engine()
-        # 💡 載入 1000 筆歷史 K 棒確保線圖與歷史訊號完整
         sql = text(f"""
             SELECT timeframe, open_time, open_price, high_price,
                    low_price, close_price, volume
@@ -375,13 +384,10 @@ def calculate_indicators(df, tf):
     candle_range = df["high_price"] - df["low_price"]
     df["Body_Ratio"] = (body / candle_range.replace(0, np.nan)).fillna(0)
 
-    # 💡 宏觀基本面代理與消息面情緒特徵工程
     df["price_sma50"] = df["close_price"].rolling(50).mean()
     df["macro_trend_bias"] = (df["close_price"] - df["price_sma50"]) / df["price_sma50"].replace(0, np.nan)
     df["volume_liquidity_score"] = df["volume"] / df["volume"].rolling(50).mean().replace(0, np.nan)
     df["macro_sentiment"] = np.where(df["macro_trend_bias"] > 0, 1.0, -1.0) * df["volume_liquidity_score"].fillna(1.0)
-    
-    # 💡 模擬即時新聞與訊息面加權指標（結合波動率與動能）
     df["news_sentiment_score"] = (df["close_price"].pct_change(3).rolling(5).mean() * 100).fillna(0)
 
     return df, win, dev
@@ -428,7 +434,6 @@ def build_candidate_signals(df, tf):
     df["Prev_High"] = df["high_price"].shift(1)
     df["Prev_Low"] = df["low_price"].shift(1)
 
-    # 💡 整合基本面與消息面情緒過濾器
     macro_long_filter = (df["macro_trend_bias"] > -0.02) & (df["news_sentiment_score"] > -1.5)
     macro_short_filter = (df["macro_trend_bias"] < 0.02) & (df["news_sentiment_score"] < 1.5)
 
@@ -559,7 +564,6 @@ def build_candidate_signals(df, tf):
 
 
 def train_or_get_ai_model(df, key):
-    # 💡 納入基本面與新聞情緒特徵至 LightGBM 模型
     feature_cols = [
         "RSI", "vol_ratio", "body_ratio", "atr_ratio", "ema_diff",
         "macro_trend_bias", "macro_sentiment", "news_sentiment_score"
@@ -647,7 +651,6 @@ def render_live_kline_chart(table, symbol, pair, tf):
         st.warning("目前沒有足夠資料可顯示。")
         return
 
-    # 💡 檢查當前最新 K 棒是否有產生訊號，若有則自動寫入 strategy_signal_outbox
     latest = view_df.iloc[-1]
     latest_close = float(latest["close_price"])
     ai_score = float(latest["AI_Prob"]) * 100 if pd.notna(latest["AI_Prob"]) else 0.0
