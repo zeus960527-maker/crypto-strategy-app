@@ -28,16 +28,16 @@ def before_request_func():
 
 @app.route("/")
 def home():
-    return jsonify({"status": "running", "service": "ETH OKX Fetcher"})
+    return "ETH OKX Fetcher is running 24/7! 🚀"
 
 @app.route("/health", methods=["GET"])
 def health_check():
     return jsonify({"status": "healthy"}), 200
 
-# 💡 確保 cron-job 呼叫這個路由時，只回傳極簡的 JSON，徹底避免 "output too large"
+# 💡 瞬間回傳 200 OK，防止 cron-job.org 發生 Timeout 或 503
 @app.route("/run-scanner", methods=["GET", "POST"])
 def run_scanner():
-    return jsonify({"status": "success", "message": "OK"})
+    return jsonify({"status": "success", "message": "ETH Ping received, background worker is active!"}), 200
 
 SUPABASE_DB_URL = "postgresql://postgres.ygzeqvcyqtvhvjrxhzdv:%4010233960527Ken@aws-0-ap-northeast-1.pooler.supabase.com:6543/postgres"
 
@@ -48,7 +48,7 @@ def get_db_connection():
         options="-c statement_timeout=15000"
     )
 
-def catch_up_historical_data(tf):
+def fetch_single_timeframe(tf):
     exchange = ccxt.okx({'enableRateLimit': True})
     symbol = 'ETH/USDT:USDT'
     
@@ -62,73 +62,14 @@ def catch_up_historical_data(tf):
             result = cursor.fetchone()
             last_open_time = result[0] if result and result[0] is not None else None
 
-            all_data_to_insert = []
-            current_since = last_open_time
+            params = {'symbol': symbol, 'timeframe': tf, 'limit': 10}
+            if last_open_time:
+                params['since'] = last_open_time
 
-            while True:
-                params = {'symbol': symbol, 'timeframe': tf, 'limit': 300}
-                if current_since:
-                    params['since'] = current_since
-                
-                try:
-                    ohlcv = exchange.fetch_ohlcv(**params)
-                except Exception as e:
-                    break
-
-                if not ohlcv:
-                    break
-
-                batch_data = [
-                    (tf, candle[0], candle[1], candle[2], candle[3], candle[4], candle[5])
-                    for candle in ohlcv
-                ]
-
-                if current_since and all_data_to_insert and batch_data[0][1] == all_data_to_insert[-1][1]:
-                    batch_data = batch_data[1:]
-
-                if not batch_data:
-                    break
-
-                all_data_to_insert.extend(batch_data)
-                
-                if len(ohlcv) < params['limit']:
-                    break
-                
-                next_since = ohlcv[-1][0] + 1
-                if current_since and next_since <= current_since:
-                    break
-                current_since = next_since
-
-            if all_data_to_insert:
-                sql = """
-                    INSERT INTO eth_contract_klines 
-                    (timeframe, open_time, open_price, high_price, low_price, close_price, volume)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
-                    ON CONFLICT (timeframe, open_time) DO UPDATE SET 
-                    high_price = GREATEST(eth_contract_klines.high_price, EXCLUDED.high_price),
-                    low_price = LEAST(eth_contract_klines.low_price, EXCLUDED.low_price),
-                    close_price = EXCLUDED.close_price,
-                    volume = EXCLUDED.volume;
-                """
-                cursor.executemany(sql, all_data_to_insert)
-                connection.commit()
-
-    except Exception as e:
-        connection.rollback()
-    finally:
-        connection.close()
-
-def fetch_single_timeframe_realtime(tf):
-    exchange = ccxt.okx({'enableRateLimit': True})
-    symbol = 'ETH/USDT:USDT'
-    
-    connection = get_db_connection()
-    try:
-        with connection.cursor() as cursor:
-            params = {'symbol': symbol, 'timeframe': tf, 'limit': 15}
             try:
                 ohlcv = exchange.fetch_ohlcv(**params)
             except Exception as e:
+                print(f"[ETH-{tf}] OKX API 抓取失敗: {e}")
                 return
 
             if not ohlcv:
@@ -139,44 +80,52 @@ def fetch_single_timeframe_realtime(tf):
                 for candle in ohlcv
             ]
 
-            sql = """
-                INSERT INTO eth_contract_klines 
-                (timeframe, open_time, open_price, high_price, low_price, close_price, volume)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (timeframe, open_time) DO UPDATE SET 
-                high_price = GREATEST(eth_contract_klines.high_price, EXCLUDED.high_price),
-                low_price = LEAST(eth_contract_klines.low_price, EXCLUDED.low_price),
-                close_price = EXCLUDED.close_price,
-                volume = EXCLUDED.volume;
-            """
-            cursor.executemany(sql, batch_data)
-            connection.commit()
+            if batch_data:
+                sql = """
+                    INSERT INTO eth_contract_klines 
+                    (timeframe, open_time, open_price, high_price, low_price, close_price, volume)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (timeframe, open_time) DO UPDATE SET 
+                    high_price = GREATEST(eth_contract_klines.high_price, EXCLUDED.high_price),
+                    low_price = LEAST(eth_contract_klines.low_price, EXCLUDED.low_price),
+                    close_price = EXCLUDED.close_price,
+                    volume = EXCLUDED.volume;
+                """
+                cursor.executemany(sql, batch_data)
+                connection.commit()
+                latest_close = batch_data[-1][4]
+                latest_vol = batch_data[-1][5]
+                print(f" -> [ETH-{tf}] 即時同步成功 | 最新收盤價: {latest_close:,.2f} | 成交量: {latest_vol:.4f}")
 
     except Exception as e:
         connection.rollback()
+        print(f" -> [ETH-{tf}] 資料庫寫入錯誤: {e}")
     finally:
         connection.close()
 
-def run_sync_task(task_func):
+def fetch_and_save_eth_contracts():
     timeframes = ['5m', '15m', '1h', '4h']
     with ThreadPoolExecutor(max_workers=len(timeframes)) as executor:
-        futures = [executor.submit(task_func, tf) for tf in timeframes]
+        futures = [executor.submit(fetch_single_timeframe, tf) for tf in timeframes]
         for future in as_completed(futures):
             try:
                 future.result()
             except Exception as e:
-                pass
+                print(f"執行緒發生錯誤: {e}")
 
 def background_worker():
-    run_sync_task(catch_up_historical_data)
+    print("==========================================")
+    print(" ETH 雲端高頻即時數據同步背景執行緒已啟動")
+    print("==========================================")
+    # 啟動時加入短暫緩衝，確保 Flask 能第一時間響應 Render 健康檢查
+    time.sleep(3)
+    
     while True:
         try:
-            start_time = time.time()
-            run_sync_task(fetch_single_timeframe_realtime)
-            elapsed = time.time() - start_time
-            sleep_time = max(1.0, 3.0 - elapsed)
-            time.sleep(sleep_time)
+            fetch_and_save_eth_contracts()
+            time.sleep(2)
         except Exception as e:
+            print(f"背景迴圈錯誤: {e}")
             time.sleep(5)
 
 if __name__ == "__main__":
