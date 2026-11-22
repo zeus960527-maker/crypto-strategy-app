@@ -444,20 +444,6 @@ def save_signal_to_outbox(symbol, tf, signal_time, direction, price, ai_prob):
         print(f"寫入 strategy_signal_outbox 失敗: {e}")
 
 
-def peek_outbox(n=8):
-    """診斷用：不加任何條件，直接看資料表最新 n 筆的實際內容。"""
-    try:
-        engine = get_db_engine()
-        with engine.begin() as conn:
-            conn.execute(text("SET LOCAL TIME ZONE 'Asia/Taipei'"))
-            return pd.read_sql(
-                text(f"SELECT * FROM strategy_signal_outbox ORDER BY signal_time DESC LIMIT {int(n)}"),
-                con=conn,
-            )
-    except Exception as e:
-        return pd.DataFrame({"error": [str(e)]})
-
-
 def outbox_stamp(symbol, tf):
     """輕量查詢：該商品/週期在 outbox 的筆數與最新時間，用來判斷圖要不要重算。"""
     try:
@@ -943,6 +929,16 @@ def _fired_signals():
     return {}
 
 
+# 手動補上的訊號（來自 Discord 通知）：(商品, 週期, 訊號時間(台灣), 方向, 進場價, 止損, 止盈)
+MANUAL_SIGNALS = [
+    ("BTC", "15m", "2026-11-22 17:24:11", "LONG", 60039.20, 59574.97, 61199.77),
+    ("ETH", "15m", "2026-11-22 17:24:12", "LONG", 1683.00, 1670.15, 1715.12),
+    ("BTC", "5m",  "2026-11-22 17:51:08", "LONG", 60661.30, 60368.52, 61393.25),
+    ("ETH", "5m",  "2026-11-22 17:52:12", "LONG", 1706.92, 1698.14, 1728.86),
+    ("ETH", "5m",  "2026-11-22 17:58:12", "LONG", 1715.52, 1705.90, 1739.58),
+]
+
+
 def remember_and_apply_signals(view_df, symbol, tf):
     """最新 K 棒還在跳動時，訊號可能一下成立一下不成立。
     這裡把「曾經成立並發出」的訊號記起來，之後即使這根 K 棒條件變了，圖上與面板仍保留該訊號。"""
@@ -982,13 +978,27 @@ def remember_and_apply_signals(view_df, symbol, tf):
             view_df.iloc[idx, view_df.columns.get_loc("Short_Signal")] = True
             view_df.iloc[idx, view_df.columns.get_loc("Long_Signal")] = False
 
-    st.session_state["_sig_diag"] = {
-        "db_rows": len(db_sigs),
-        "db_latest": max(db_sigs) if db_sigs else None,
-        "matched": matched,
-        "chart_first": view_df["open_time"].iloc[0],
-        "chart_last": view_df["open_time"].iloc[-1],
-    }
+
+    # 套用手動補上的訊號（顯示 Discord 通知上的進場價 / 止損 / 止盈）
+    if "Sig_Price" not in view_df.columns:
+        view_df["Sig_Price"] = np.nan
+    for m_sym, m_tf, m_time, m_dir, m_price, m_sl, m_tp in MANUAL_SIGNALS:
+        if m_sym != symbol or m_tf != tf:
+            continue
+        t = pd.Timestamp(m_time)
+        idx = int(np.searchsorted(times, np.datetime64(t), side="right")) - 1
+        if idx < 0:
+            continue
+        bar_t = view_df["open_time"].iloc[idx]
+        if not (bar_t <= t < bar_t + step):
+            continue
+        ci = view_df.columns.get_loc
+        view_df.iloc[idx, ci("Long_Signal")] = (m_dir == "LONG")
+        view_df.iloc[idx, ci("Short_Signal")] = (m_dir == "SHORT")
+        view_df.iloc[idx, ci("Sig_Price")] = m_price
+        view_df.iloc[idx, ci("Stop_Loss")] = m_sl
+        view_df.iloc[idx, ci("Take_Profit")] = m_tp
+        view_df.iloc[idx, ci("Trade_Result")] = "觀察中"
     return view_df
 
 
@@ -1135,7 +1145,7 @@ def _build_chart_bundle(df_tf, symbol, pair, tf):
                 color="rgba(11, 14, 17, 0.95)",
                 line=dict(width=2, color="#00E676")
             ),
-            text=[f"LONG<br>{price:,.2f}" for price in long_df["close_price"]],
+            text=[f"LONG<br>{(sp if pd.notna(sp) else cp):,.2f}" for sp, cp in zip(long_df["Sig_Price"], long_df["close_price"])],
             textposition="bottom center",
             textfont=dict(color="#00E676", size=10, family="Arial Black"),
             hoverinfo="none",
@@ -1168,7 +1178,7 @@ def _build_chart_bundle(df_tf, symbol, pair, tf):
                 color="rgba(11, 14, 17, 0.95)",
                 line=dict(width=2, color="#FF1744")
             ),
-            text=[f"SHORT<br>{price:,.2f}" for price in short_df["close_price"]],
+            text=[f"SHORT<br>{(sp if pd.notna(sp) else cp):,.2f}" for sp, cp in zip(short_df["Sig_Price"], short_df["close_price"])],
             textposition="top center",
             textfont=dict(color="#FF1744", size=10, family="Arial Black"),
             hoverinfo="none",
@@ -1425,7 +1435,7 @@ def render_live_kline_chart(table, symbol, pair, tf, follow=True):
         else:
             for _, signal in recent_signals.iloc[::-1].iterrows():
                 signal_time = signal["open_time"].strftime("%m/%d %H:%M")
-                signal_price = float(signal["close_price"])
+                signal_price = float(signal["Sig_Price"]) if pd.notna(signal["Sig_Price"]) else float(signal["close_price"])
                 signal_prob = float(signal["AI_Prob"]) * 100
 
                 is_long_sig = bool(signal["Long_Signal"])
@@ -1441,16 +1451,6 @@ def render_live_kline_chart(table, symbol, pair, tf, follow=True):
 
         st.caption("進場價格為訊號 K 線收盤價參考值，不代表實際成交價。")
 
-        diag = st.session_state.get("_sig_diag")
-        if diag:
-            with st.expander("🔧 訊號診斷"):
-                st.write(f"資料庫讀到：{diag['db_rows']} 筆（{symbol} / {tf}）")
-                st.write(f"對上圖上 K 棒：{diag['matched']} 筆")
-                st.write(f"資料庫最新 signal_time：{diag['db_latest']}")
-                st.write(f"圖上資料範圍：{diag['chart_first']} ～ {diag['chart_last']}")
-                st.caption("資料表最新 8 筆原始內容（不加任何條件）：")
-                st.dataframe(peek_outbox(8), use_container_width=True, hide_index=True)
-
     st.markdown("---")
     st.markdown("### 🧠 歷史訊號學習紀錄 (動態 TP/SL 結算)")
     history = view_df[
@@ -1462,7 +1462,7 @@ def render_live_kline_chart(table, symbol, pair, tf, follow=True):
     else:
         history["方向"] = np.where(history["Long_Signal"] | history["Base_Long"], "LONG", "SHORT")
         history["時間"] = history["open_time"].dt.strftime("%m/%d %H:%M")
-        history["進場參考價"] = history["close_price"].map(lambda x: f"{x:,.2f}")
+        history["進場參考價"] = history["Sig_Price"].fillna(history["close_price"]).map(lambda x: f"{x:,.2f}")
         history["止損價 (SL)"] = history["Stop_Loss"].map(lambda x: f"{x:,.2f}" if pd.notna(x) else "—")
         history["止盈價 (TP)"] = history["Take_Profit"].map(lambda x: f"{x:,.2f}" if pd.notna(x) else "—")
         history["AI 分數"] = history["AI_Prob"].map(
