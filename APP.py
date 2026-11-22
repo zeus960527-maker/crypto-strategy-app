@@ -1301,7 +1301,7 @@ def _build_chart_bundle(df_tf, symbol, pair, tf):
     }
 
 
-def render_live_kline_chart(table, symbol, pair, tf, follow=True):
+def render_live_kline_chart(table, symbol, pair, tf):
     df = load_historical_data(table, symbol, tf)
 
     if df.empty:
@@ -1346,16 +1346,9 @@ def render_live_kline_chart(table, symbol, pair, tf, follow=True):
     training_count = bundle["training_count"]
     winning_count = bundle["winning_count"]
 
-    # 自動跟隨最新 K 線：勾選時每次更新都移到最新；取消勾選時固定在目前的位置不再被拉回
-    freeze_key = f"_frozen_range_{table}_{tf}"
-    if follow or st.session_state.get(freeze_key) is None:
-        st.session_state[freeze_key] = (bundle["x_range"], bundle["y_range"])
-        use_x, use_y = bundle["x_range"], bundle["y_range"]
-    else:
-        use_x, use_y = st.session_state[freeze_key]
     fig.update_layout(
-        xaxis=dict(range=list(use_x), autorange=False),
-        yaxis=dict(range=list(use_y)),
+        xaxis=dict(range=list(bundle["x_range"]), autorange=False),
+        yaxis=dict(range=list(bundle["y_range"])),
     )
 
     chart_col, panel_col = st.columns([3.6, 1.2])
@@ -1486,22 +1479,15 @@ if __name__ == "__main__":
             key="timeframe_select",
         )
 
-        follow_latest = st.checkbox(
-            "自動跟隨最新 K 線（取消勾選後，畫面停在目前位置，新 K 線出現時不會被拉回最新處）",
-            value=True,
-            key="follow_latest",
-        )
-
         @st.fragment(run_every=5)
-        def render_live_fragment(tbl, sym, pair, timeframe, follow):
-            render_live_kline_chart(tbl, sym, pair, timeframe, follow)
+        def render_live_fragment(tbl, sym, pair, timeframe):
+            render_live_kline_chart(tbl, sym, pair, timeframe)
 
         render_live_fragment(
             table_name,
             symbol_name,
             pair_name,
             selected_tf,
-            follow_latest,
         )
 
     elif st.session_state.search_query:
