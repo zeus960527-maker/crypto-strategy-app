@@ -520,15 +520,22 @@ def calculate_trendline_channel(df, window=30, num_dev=1.8):
     upper = np.full(n, np.nan)
     lower = np.full(n, np.nan)
 
-    for i in range(window - 1, n):
-        y = close[i - window + 1:i + 1]
-        x = np.arange(window)
-        slope, intercept = np.polyfit(x, y, 1)
+    # 向量化滾動線性回歸（結果與逐根 np.polyfit 相同，但速度快數十倍，資料量大也不會卡頁面）
+    if n >= window:
+        x = np.arange(window, dtype=float)
+        xc = x - x.mean()
+        sxx = float((xc ** 2).sum())
+        wins = np.lib.stride_tricks.sliding_window_view(close, window)
+        ym = wins.mean(axis=1)
+        yc = wins - ym[:, None]
+        slope = (yc @ xc) / sxx
+        intercept = ym - slope * x.mean()
         center = slope * (window - 1) + intercept
-        std = np.std(y - (slope * x + intercept))
-        mid[i] = center
-        upper[i] = center + num_dev * std
-        lower[i] = center - num_dev * std
+        resid = yc - slope[:, None] * xc[None, :]
+        std = resid.std(axis=1)
+        mid[window - 1:] = center
+        upper[window - 1:] = center + num_dev * std
+        lower[window - 1:] = center - num_dev * std
 
     df["Trend_Mid"] = mid
     df["Trend_Resistance"] = upper
