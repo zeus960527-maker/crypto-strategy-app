@@ -869,6 +869,38 @@ def render_homepage():
 # ============================================================
 # 6. K 線圖渲染與即時訊號自動寫入
 # ============================================================
+@st.cache_resource
+def _fired_signals():
+    # 已經發出（寫入 outbox）的訊號：{(symbol, tf): {open_time: "LONG"/"SHORT"}}
+    return {}
+
+
+def remember_and_apply_signals(view_df, symbol, tf):
+    """最新 K 棒還在跳動時，訊號可能一下成立一下不成立。
+    這裡把「曾經成立並發出」的訊號記起來，之後即使這根 K 棒條件變了，圖上與面板仍保留該訊號。"""
+    store = _fired_signals().setdefault((symbol, tf), {})
+    last = view_df.iloc[-1]
+    if bool(last["Long_Signal"]):
+        store[last["open_time"]] = "LONG"
+    elif bool(last["Short_Signal"]):
+        store[last["open_time"]] = "SHORT"
+
+    # 只保留最近 300 筆，避免無限成長
+    if len(store) > 300:
+        for k in sorted(store)[:-300]:
+            store.pop(k, None)
+
+    if not store:
+        return view_df
+    view_df = view_df.copy()
+    for t, direction in store.items():
+        mask = view_df["open_time"] == t
+        if mask.any():
+            col = "Long_Signal" if direction == "LONG" else "Short_Signal"
+            view_df.loc[mask, col] = True
+    return view_df
+
+
 def _build_chart_bundle(df_tf, symbol, pair, tf):
     """重運算與組圖（指標、訊號、AI、Plotly 圖）。資料沒變時會被快取略過。"""
     df_tf, win, dev = calculate_indicators(df_tf, tf)
@@ -883,6 +915,8 @@ def _build_chart_bundle(df_tf, symbol, pair, tf):
     if view_df.empty:
         st.warning("目前沒有足夠資料可顯示。")
         return None
+
+    view_df = remember_and_apply_signals(view_df, symbol, tf)
 
     latest = view_df.iloc[-1]
     latest_close = float(latest["close_price"])
