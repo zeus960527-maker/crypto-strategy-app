@@ -1,43 +1,9 @@
 import os
 import ccxt
 import psycopg2
-import time
-import sys
-import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from flask import Flask, jsonify
 
 app = Flask(__name__)
-
-# 用來確保 ETH 背景執行緒只會被安全啟動一次的鎖與旗標
-_worker_started = False
-_worker_lock = threading.Lock()
-
-def ensure_background_worker_running():
-    global _worker_started
-    if not _worker_started:
-        with _worker_lock:
-            if not _worker_started:
-                t = threading.Thread(target=background_worker, daemon=True)
-                t.start()
-                _worker_started = True
-
-@app.before_request
-def before_request_func():
-    ensure_background_worker_running()
-
-@app.route("/")
-def home():
-    return "ETH OKX Fetcher is running 24/7! 🚀"
-
-@app.route("/health", methods=["GET"])
-def health_check():
-    return jsonify({"status": "healthy"}), 200
-
-# 💡 瞬間回傳 200 OK，防止 cron-job.org 發生 Timeout 或 503
-@app.route("/run-scanner", methods=["GET", "POST"])
-def run_scanner():
-    return jsonify({"status": "success", "message": "ETH Ping received, background worker is active!"}), 200
 
 SUPABASE_DB_URL = "postgresql://postgres.ygzeqvcyqtvhvjrxhzdv:%4010233960527Ken@aws-0-ap-northeast-1.pooler.supabase.com:6543/postgres"
 
@@ -93,9 +59,7 @@ def fetch_single_timeframe(tf):
                 """
                 cursor.executemany(sql, batch_data)
                 connection.commit()
-                latest_close = batch_data[-1][4]
-                latest_vol = batch_data[-1][5]
-                print(f" -> [ETH-{tf}] 即時同步成功 | 最新收盤價: {latest_close:,.2f} | 成交量: {latest_vol:.4f}")
+                print(f" -> [ETH-{tf}] 即時同步成功")
 
     except Exception as e:
         connection.rollback()
@@ -103,30 +67,24 @@ def fetch_single_timeframe(tf):
     finally:
         connection.close()
 
-def fetch_and_save_eth_contracts():
-    timeframes = ['5m', '15m', '1h', '4h']
-    with ThreadPoolExecutor(max_workers=len(timeframes)) as executor:
-        futures = [executor.submit(fetch_single_timeframe, tf) for tf in timeframes]
-        for future in as_completed(futures):
-            try:
-                future.result()
-            except Exception as e:
-                print(f"執行緒發生錯誤: {e}")
+@app.route("/")
+def home():
+    return "ETH OKX Fetcher is running! 🚀"
 
-def background_worker():
-    print("==========================================")
-    print(" ETH 雲端高頻即時數據同步背景執行緒已啟動")
-    print("==========================================")
-    # 啟動時加入短暫緩衝，確保 Flask 能第一時間響應 Render 健康檢查
-    time.sleep(3)
-    
-    while True:
-        try:
-            fetch_and_save_eth_contracts()
-            time.sleep(2)
-        except Exception as e:
-            print(f"背景迴圈錯誤: {e}")
-            time.sleep(5)
+@app.route("/health", methods=["GET"])
+def health_check():
+    return jsonify({"status": "healthy"}), 200
+
+# 💡 當 cron-job.org 或 Render Cron 呼叫此路由時，執行一次抓取並立刻回應 200 OK
+@app.route("/run-scanner", methods=["GET", "POST"])
+def run_scanner():
+    try:
+        timeframes = ['5m', '15m', '1h', '4h']
+        for tf in timeframes:
+            fetch_single_timeframe(tf)
+        return jsonify({"status": "success", "message": "ETH data updated successfully!"}), 200
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
