@@ -448,8 +448,13 @@ def _kline_raw_cache():
     return {}
 
 
-INITIAL_BATCH = 1000   # 第一次先載入最新的幾根，讓圖快速出現
-BACKFILL_BATCH = 500   # 之後每次更新往前多補幾根舊 K 線
+# 💡 圖上最多同時畫出幾根 K 線（越多越卡）。想看更多歷史就調大；設成 None 代表全部資料都畫上去。
+MAX_PLOT_BARS = 1500
+# 為了讓 EMA / 趨勢線等指標有足夠暖機資料，多載入一些
+_LOAD_TARGET = (MAX_PLOT_BARS + 200) if MAX_PLOT_BARS else None
+
+INITIAL_BATCH = _LOAD_TARGET or 1000   # 第一次載入的根數
+BACKFILL_BATCH = 500                   # 若還沒達到目標根數，之後每次往前多補幾根舊 K 線
 
 
 def _raw_scalar(v):
@@ -498,6 +503,8 @@ def load_historical_data(table_name, symbol_name, tf=None):
                 parts.append(pd.read_sql(sql_new, con=conn, params={**base_params, "last": last_raw}))
 
                 # 慢慢往前補更舊的 K 線，直到資料庫沒有更舊的資料為止
+                if _LOAD_TARGET and len(raw) >= _LOAD_TARGET:
+                    done = True
                 if not done:
                     sql_old = text(f"""
                         SELECT {cols} FROM {table_name}
@@ -887,6 +894,10 @@ def _build_chart_bundle(df_tf, symbol, pair, tf):
     elif bool(latest["Short_Signal"]):
         save_signal_to_outbox(symbol, tf, latest_time, "SHORT", latest_close, ai_score)
 
+    full_view_df = view_df
+    if MAX_PLOT_BARS and len(view_df) > MAX_PLOT_BARS:
+        view_df = view_df.tail(MAX_PLOT_BARS)
+
     display_len = 85
     if len(view_df) > display_len:
         start_time = view_df["open_time"].iloc[-display_len]
@@ -1166,7 +1177,7 @@ def _build_chart_bundle(df_tf, symbol, pair, tf):
 
 
     return {
-        "view_df": view_df, "fig": fig, "latest": latest,
+        "view_df": full_view_df, "fig": fig, "latest": latest,
         "latest_close": latest_close, "ai_score": ai_score,
         "training_count": training_count, "winning_count": winning_count,
     }
