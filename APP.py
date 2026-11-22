@@ -407,7 +407,7 @@ st.markdown("---")
 
 
 # ============================================================
-# 2. Supabase 連線與 K 棒資料載入 (移除快取，確保每 5 秒抓取最新資料庫內容)
+# 2. Supabase 連線與 K 棒資料載入 (移除舊快取，確保每 5 秒抓取最新資料庫內容)
 # ============================================================
 def get_database_url():
     url = os.getenv("SUPABASE_DB_URL", "").strip()
@@ -442,13 +442,10 @@ def get_db_engine():
 
 
 def save_signal_to_outbox(symbol, tf, signal_time, direction, price, ai_prob):
-    # 此資料表由 Scanner Bot 負責寫入（欄位：signal_time_taipei / entry_price / stop_loss ...），
-    # 且 Bot 會依 status 發 Discord 通知；App 若再寫入會造成重複通知，所以 App 這邊不寫入，只讀取。
     return
 
 
 def outbox_stamp(symbol, tf):
-    """輕量查詢：該商品/週期在 outbox 的筆數與最新 id，用來判斷圖要不要重算。"""
     try:
         engine = get_db_engine()
         with engine.connect() as conn:
@@ -464,8 +461,6 @@ def outbox_stamp(symbol, tf):
 
 
 def load_outbox_signals(symbol, tf, since_time):
-    """從 outbox 讀回 Bot 已發出的訊號：
-    {訊號時間(台灣, 無時區): (方向, 進場價, 止損, 止盈)}"""
     try:
         engine = get_db_engine()
         with engine.connect() as conn:
@@ -502,23 +497,10 @@ def load_outbox_signals(symbol, tf, since_time):
         return {}
 
 
-@st.cache_resource
-def _kline_raw_cache():
-    # 跨 rerun 保存已載入的原始 K 線：{(table, tf): {"df": 原始資料, "done": 是否已抓完最舊資料}}
-    return {}
-
-
-# 💡 圖上最多同時畫出幾根 K 線（越多越卡）。想看更多歷史就調大；設成 None 代表全部資料都畫上去。
+# 💡 圖上最多同時畫出幾根 K 線
 MAX_PLOT_BARS = 1500
-# 為了讓 EMA / 趨勢線等指標有足夠暖機資料，多載入一些
 _LOAD_TARGET = (MAX_PLOT_BARS + 200) if MAX_PLOT_BARS else None
-
-INITIAL_BATCH = _LOAD_TARGET or 1000   # 第一次載入的根數
-BACKFILL_BATCH = 500                   # 若還沒達到目標根數，之後每次往前多補幾根舊 K 線
-
-
-def _raw_scalar(v):
-    return v.item() if hasattr(v, "item") and not isinstance(v, pd.Timestamp) else v
+INITIAL_BATCH = _LOAD_TARGET or 1000
 
 
 def load_historical_data(table_name, symbol_name, tf=None):
@@ -529,64 +511,27 @@ def load_historical_data(table_name, symbol_name, tf=None):
 
     try:
         engine = get_db_engine()
-        cache = _kline_raw_cache()
-        key = (table_name, tf)
         cols = "timeframe, open_time, open_price, high_price, low_price, close_price, volume"
         tf_where = "timeframe = :tf AND " if tf else ""
         base_params = {"tf": tf} if tf else {}
-        entry = cache.get(key)
 
-        if entry is None or entry["df"].empty:
-            # 💡 第一次：先載入最新的 INITIAL_BATCH 根，圖馬上顯示
-            sql = text(f"""
-                SELECT {cols} FROM {table_name}
-                WHERE {tf_where} TRUE
-                ORDER BY open_time DESC LIMIT {INITIAL_BATCH}
-            """)
-            with engine.connect() as conn:
-                raw = pd.read_sql(sql, con=conn, params=dict(base_params))
-            done = len(raw) < INITIAL_BATCH
-        else:
-            raw = entry["df"]
-            done = entry["done"]
-            first_raw = _raw_scalar(raw["open_time"].iloc[0])
-            last_raw = _raw_scalar(raw["open_time"].iloc[-1])
-            parts = [raw]
-
-            with engine.connect() as conn:
-                # 補抓最新 K 棒（含最後一根，用來更新尚未收完的 K 棒）
-                sql_new = text(f"""
-                    SELECT {cols} FROM {table_name}
-                    WHERE {tf_where} open_time >= :last
-                    ORDER BY open_time ASC
-                """)
-                parts.append(pd.read_sql(sql_new, con=conn, params={**base_params, "last": last_raw}))
-
-                # 慢慢往前補更舊的 K 線，直到資料庫沒有更舊的資料為止
-                if _LOAD_TARGET and len(raw) >= _LOAD_TARGET:
-                    done = True
-                if not done:
-                    sql_old = text(f"""
-                        SELECT {cols} FROM {table_name}
-                        WHERE {tf_where} open_time < :first
-                        ORDER BY open_time DESC LIMIT {BACKFILL_BATCH}
-                    """)
-                    old = pd.read_sql(sql_old, con=conn, params={**base_params, "first": first_raw})
-                    parts.append(old)
-                    if len(old) < BACKFILL_BATCH:
-                        done = True
-
-            parts = [x for x in parts if not x.empty]
-            raw = pd.concat(parts, ignore_index=True)
+        # 💡 每次 5 秒自動重新執行時，強制直接從資料庫抓取最新的 K 棒，確保最新價格與未收盤 K 線即時更新
+        sql = text(f"""
+            SELECT {cols} FROM {table_name}
+            WHERE {tf_where} TRUE
+            ORDER BY open_time DESC LIMIT {INITIAL_BATCH}
+        """)
+        with engine.connect() as conn:
+            raw = pd.read_sql(sql, con=conn, params=dict(base_params))
 
         if raw.empty:
             return raw
+
         raw = (
             raw.drop_duplicates(subset=["timeframe", "open_time"], keep="last")
             .sort_values("open_time")
             .reset_index(drop=True)
         )
-        cache[key] = {"df": raw, "done": done}
         df = raw.copy()
 
     except Exception as e:
@@ -632,7 +577,6 @@ def calculate_trendline_channel(df, window=30, num_dev=1.8):
     upper = np.full(n, np.nan)
     lower = np.full(n, np.nan)
 
-    # 向量化滾動線性回歸（結果與逐根 np.polyfit 相同，但速度快數十倍，資料量大也不會卡頁面）
     if n >= window:
         x = np.arange(window, dtype=float)
         xc = x - x.mean()
@@ -931,13 +875,10 @@ def render_homepage():
 # ============================================================
 @st.cache_resource
 def _fired_signals():
-    # 已經發出（寫入 outbox）的訊號：{(symbol, tf): {open_time: "LONG"/"SHORT"}}
     return {}
 
 
 def remember_and_apply_signals(view_df, symbol, tf):
-    """最新 K 棒還在跳動時，訊號可能一下成立一下不成立。
-    這裡把「曾經成立並發出」的訊號記起來，之後即使這根 K 棒條件變了，圖上與面板仍保留該訊號。"""
     store = _fired_signals().setdefault((symbol, tf), {})
     last = view_df.iloc[-1]
     if bool(last["Long_Signal"]):
@@ -945,12 +886,10 @@ def remember_and_apply_signals(view_df, symbol, tf):
     elif bool(last["Short_Signal"]):
         store[last["open_time"]] = "SHORT"
 
-    # 只保留最近 300 筆，避免無限成長
     if len(store) > 300:
         for k in sorted(store)[:-300]:
             store.pop(k, None)
 
-    # 合併資料庫裡 Bot 已發出的訊號（資料庫的優先）
     db_sigs = load_outbox_signals(symbol, tf, view_df["open_time"].iloc[0])
     nan = float("nan")
     merged = {t: (d, nan, nan, nan) for t, d in store.items()}
@@ -964,7 +903,6 @@ def remember_and_apply_signals(view_df, symbol, tf):
     ci = view_df.columns.get_loc
 
     for t, (direction, e_price, sl, tp) in merged.items():
-        # 訊號時間落在哪一根 K 棒的區間內，就標在那一根（容許秒數誤差）
         idx = int(np.searchsorted(times, np.datetime64(t), side="right")) - 1
         if idx < 0:
             continue
@@ -985,7 +923,6 @@ def remember_and_apply_signals(view_df, symbol, tf):
 
 
 def _build_chart_bundle(df_tf, symbol, pair, tf):
-    """重運算與組圖（指標、訊號、AI、Plotly 圖）。資料沒變時會被快取略過。"""
     df_tf, win, dev = calculate_indicators(df_tf, tf)
     df_tf = build_candidate_signals(df_tf, tf)
     model, training_count, winning_count = train_or_get_ai_model(
@@ -1049,7 +986,7 @@ def _build_chart_bundle(df_tf, symbol, pair, tf):
         cols=1,
         shared_xaxes=True,
         vertical_spacing=0.015,
-        row_heights=[0.66, 0.34],  # 成交量區塊拉高（K 線區的像素高度維持不變）
+        row_heights=[0.66, 0.34],
     )
 
     fig.add_trace(go.Candlestick(
@@ -1102,7 +1039,6 @@ def _build_chart_bundle(df_tf, symbol, pair, tf):
     long_df = view_df[view_df["Long_Signal"]].copy()
     if not long_df.empty:
         long_y = long_df["low_price"] - span * 0.08
-        # 所有連接虛線合併成單一 trace（用 None 斷開），避免訊號多時產生上千條 trace 導致圖表無法顯示
         _lx, _ly = [], []
         for t, low_p, ly in zip(long_df["open_time"], long_df["low_price"], long_y):
             _lx += [t, t, None]
@@ -1222,7 +1158,7 @@ def _build_chart_bundle(df_tf, symbol, pair, tf):
         spikedistance=1000,
         xaxis_rangeslider_visible=False,
         dragmode="pan",
-        height=990,  # 配合成交量區塊拉高，整體圖高增加，K 線區高度不變
+        height=990,
         bargap=0.08,
         showlegend=True,
         legend=dict(
@@ -1234,8 +1170,7 @@ def _build_chart_bundle(df_tf, symbol, pair, tf):
             font=dict(size=10),
         ),
         margin=dict(l=10, r=85, t=65, b=30),
-        # 💡 移除舊版固定的 uirevision 字串，允許每次新資料帶動圖表自動捲動至最新狀態
-        uirevision=f"{symbol}_{tf}",  # 固定不變：新增 K 線時 Plotly 不重置整張圖，避免畫面閃爍消失
+        uirevision=f"{symbol}_{tf}",
         hoverlabel=dict(
             bgcolor="rgba(30,35,41,.95)",
             font_size=12,
@@ -1292,7 +1227,6 @@ def _build_chart_bundle(df_tf, symbol, pair, tf):
         fixedrange=False,
     )
 
-
     return {
         "view_df": full_view_df, "fig": fig, "latest": latest,
         "x_range": [start_time, end_time], "y_range": list(y_range),
@@ -1319,7 +1253,6 @@ def render_live_kline_chart(table, symbol, pair, tf):
         st.warning(f"{tf} 週期目前尚無資料。")
         return
 
-    # 資料沒有變動時，直接沿用上一次算好的結果，不重複運算、不重新組圖（減少卡頓）
     last_row = df_tf.iloc[-1]
     sig = (
         len(df_tf), df_tf["open_time"].iloc[0], df_tf["open_time"].iloc[-1],
