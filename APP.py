@@ -848,6 +848,11 @@ def render_live_kline_chart(table, symbol, pair, tf):
         start_time = view_df["open_time"].iloc[0]
         end_time = view_df["open_time"].iloc[-1] + pd.Timedelta(minutes=75 if tf in ['5m','15m'] else 300)
 
+    # 檢查第一筆資料 K 線：若不在顯示範圍內，就把範圍起點延伸到第一筆 K 線
+    first_candle_time = view_df["open_time"].iloc[0]
+    if first_candle_time < start_time:
+        start_time = first_candle_time
+
     visible_df = view_df[(view_df["open_time"] >= start_time) & (view_df["open_time"] <= end_time)]
     if visible_df.empty:
         visible_df = view_df
