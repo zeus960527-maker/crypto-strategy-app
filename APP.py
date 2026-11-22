@@ -386,7 +386,7 @@ st.markdown("---")
 
 
 # ============================================================
-# 2. Supabase 連線與 K 棒資料載入（從第一筆資料開始檢查並自動填補缺漏 K 線，再讀取最新資料）
+# 2. Supabase 連線與 K 棒資料載入 (從資料表第一筆開始檢查並補齊)
 # ============================================================
 def get_database_url():
     url = os.getenv("SUPABASE_DB_URL", "").strip()
@@ -442,7 +442,7 @@ def save_signal_to_outbox(symbol, tf, signal_time, direction, price, ai_prob):
         print(f"寫入 strategy_signal_outbox 失敗: {e}")
 
 
-def load_historical_data(table_name, symbol_name):
+def load_historical_data(table_name, symbol_name, tf=None):
     allowed_tables = {"btc_contract_klines", "eth_contract_klines"}
     if table_name not in allowed_tables:
         st.error("資料表名稱不合法。")
@@ -450,15 +450,27 @@ def load_historical_data(table_name, symbol_name):
 
     try:
         engine = get_db_engine()
-        # 💡 從資料表的第一筆資料開始（ASC 排序）讀取完整歷史資料，以進行缺漏檢查與填補
-        sql = text(f"""
-            SELECT timeframe, open_time, open_price, high_price,
-                   low_price, close_price, volume
-            FROM {table_name}
-            ORDER BY open_time ASC
-        """)
+        # 💡 從資料表的第一筆資料開始檢查 (ORDER BY open_time ASC)
+        if tf:
+            sql = text(f"""
+                SELECT timeframe, open_time, open_price, high_price,
+                       low_price, close_price, volume
+                FROM {table_name}
+                WHERE timeframe = :tf
+                ORDER BY open_time ASC
+            """)
+            params = {"tf": tf}
+        else:
+            sql = text(f"""
+                SELECT timeframe, open_time, open_price, high_price,
+                       low_price, close_price, volume
+                FROM {table_name}
+                ORDER BY open_time ASC
+            """)
+            params = {}
+
         with engine.connect() as conn:
-            df = pd.read_sql(sql, con=conn)
+            df = pd.read_sql(sql, con=conn, params=params)
 
         if df.empty:
             return df
@@ -488,50 +500,10 @@ def load_historical_data(table_name, symbol_name):
     for col in ["open_price", "high_price", "low_price", "close_price", "volume"]:
         df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    df = df.dropna(subset=[
+    return df.dropna(subset=[
         "open_time", "open_price", "high_price",
         "low_price", "close_price", "volume"
     ])
-
-    # 💡 執行時檢查每個 timeframe，從第一筆資料開始補齊圖表中沒有的空白 K 線資料
-    filled_dfs = []
-    tf_freq_map = {
-        "5m": "5min",
-        "15m": "15min",
-        "1h": "1h",
-        "4h": "4h"
-    }
-
-    for tf, freq in tf_freq_map.items():
-        sub_df = df[df["timeframe"] == tf].copy()
-        if sub_df.empty:
-            continue
-        
-        sub_df = sub_df.sort_values("open_time").drop_duplicates(subset=["open_time"])
-        sub_df.set_index("open_time", inplace=True)
-        
-        # 建立從頭到尾完整的時間序列網格
-        full_idx = pd.date_range(start=sub_df.index.min(), end=sub_df.index.max(), freq=freq)
-        sub_df = sub_df.reindex(full_idx)
-        
-        sub_df["timeframe"] = tf
-        sub_df["symbol"] = symbol_name
-        
-        # 填補漏失的 K 線數據（價格前值填充 ffill，成交量補 0）
-        sub_df["close_price"] = sub_df["close_price"].ffill()
-        sub_df["open_price"] = sub_df["open_price"].fillna(sub_df["close_price"])
-        sub_df["high_price"] = sub_df["high_price"].fillna(sub_df["close_price"])
-        sub_df["low_price"] = sub_df["low_price"].fillna(sub_df["close_price"])
-        sub_df["volume"] = sub_df["volume"].fillna(0.0)
-        
-        sub_df.reset_index(inplace=True)
-        sub_df.rename(columns={"index": "open_time"}, inplace=True)
-        filled_dfs.append(sub_df)
-
-    if filled_dfs:
-        df = pd.concat(filled_dfs, ignore_index=True).sort_values(["timeframe", "open_time"]).reset_index(drop=True)
-
-    return df
 
 
 # ============================================================
@@ -837,18 +809,29 @@ def render_homepage():
 # 6. K 線圖渲染與即時訊號自動寫入
 # ============================================================
 def render_live_kline_chart(table, symbol, pair, tf):
-    df = load_historical_data(table, symbol)
+    # 1. 從資料庫讀取所有資料（從第一筆開始檢查）
+    db_df = load_historical_data(table, symbol, tf=tf)
 
-    if df.empty:
+    if db_df.empty:
         st.warning("目前無法取得資料，請確認 Supabase 連線及資料表內容。")
         return
 
-    df_tf = (
-        df[df["timeframe"] == tf]
-        .sort_values("open_time")
-        .copy()
-        .reset_index(drop=True)
-    )
+    # 2. 確保執行時先把資料庫中「沒有在K線圖」的所有K線資料補進K線圖，再讀取新的資料
+    cache_key = f"chart_df_{table}_{tf}"
+    if cache_key not in st.session_state or st.session_state[cache_key].empty:
+        st.session_state[cache_key] = db_df.copy()
+    else:
+        existing_df = st.session_state[cache_key]
+        # 合併並補齊缺漏或新增的 K 線資料，依照時間排序並去除重複
+        combined_df = (
+            pd.concat([existing_df, db_df])
+            .drop_duplicates(subset=["timeframe", "open_time"])
+            .sort_values("open_time")
+            .reset_index(drop=True)
+        )
+        st.session_state[cache_key] = combined_df
+
+    df_tf = st.session_state[cache_key].copy()
 
     if df_tf.empty:
         st.warning(f"{tf} 週期目前尚無資料。")
