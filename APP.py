@@ -386,7 +386,7 @@ st.markdown("---")
 
 
 # ============================================================
-# 2. Supabase 連線與 K 棒資料載入 (移除快取，確保每 5 秒抓取最新資料庫內容)
+# 2. Supabase 連線與 K 棒資料載入與缺失 K 線補齊
 # ============================================================
 def get_database_url():
     url = os.getenv("SUPABASE_DB_URL", "").strip()
@@ -442,6 +442,46 @@ def save_signal_to_outbox(symbol, tf, signal_time, direction, price, ai_prob):
         print(f"寫入 strategy_signal_outbox 失敗: {e}")
 
 
+def fill_missing_klines(df, tf):
+    """執行時先把沒有在K線圖的所有K線資料補進K線圖再讀取新的資料"""
+    if df.empty:
+        return df
+    
+    tf_map = {
+        "5m": "5min",
+        "15m": "15min",
+        "1h": "1h",
+        "4h": "4h"
+    }
+    freq = tf_map.get(tf)
+    if not freq:
+        return df
+        
+    df = df.sort_values("open_time").copy()
+    df.set_index("open_time", inplace=True)
+    
+    # 建立完整時間序列範圍，補齊未在圖表中的所有缺失 K 線
+    full_range = pd.date_range(start=df.index.min(), end=df.index.max(), freq=freq)
+    df = df.reindex(full_range)
+    
+    # 補齊必要欄位
+    df["timeframe"] = tf
+    if "symbol" in df.columns:
+        df["symbol"] = df["symbol"].ffill().bfill()
+        
+    # 價格資料以先前收盤價 forward fill (若開頭缺則 backward fill)
+    df["close_price"] = df["close_price"].ffill().bfill()
+    df["open_price"] = df["open_price"].fillna(df["close_price"])
+    df["high_price"] = df["high_price"].fillna(df["close_price"])
+    df["low_price"] = df["low_price"].fillna(df["close_price"])
+    
+    # 成交量若無資料則補 0
+    df["volume"] = df["volume"].fillna(0.0)
+    
+    df = df.reset_index().rename(columns={"index": "open_time"})
+    return df
+
+
 def load_historical_data(table_name, symbol_name):
     allowed_tables = {"btc_contract_klines", "eth_contract_klines"}
     if table_name not in allowed_tables:
@@ -450,7 +490,6 @@ def load_historical_data(table_name, symbol_name):
 
     try:
         engine = get_db_engine()
-        # 💡 每次呼叫強制重新從 Supabase 讀取最新的 1000 筆資料，確保資料即時更新
         sql = text(f"""
             SELECT timeframe, open_time, open_price, high_price,
                    low_price, close_price, volume
@@ -463,7 +502,6 @@ def load_historical_data(table_name, symbol_name):
 
         if df.empty:
             return df
-        # 抓出來後重新依時間正向排序
         df = df.sort_values("open_time").drop_duplicates(subset=["timeframe", "open_time"]).reset_index(drop=True)
 
     except Exception as e:
@@ -817,6 +855,9 @@ def render_live_kline_chart(table, symbol, pair, tf):
         st.warning(f"{tf} 週期目前尚無資料。")
         return
 
+    # 💡 執行時先把沒有在K線圖的所有K線資料補進K線圖再讀取與計算新的資料
+    df_tf = fill_missing_klines(df_tf, tf)
+
     df_tf, win, dev = calculate_indicators(df_tf, tf)
     df_tf = build_candidate_signals(df_tf, tf)
     model, training_count, winning_count = train_or_get_ai_model(
@@ -1052,7 +1093,6 @@ def render_live_kline_chart(table, symbol, pair, tf):
             font=dict(size=10),
         ),
         margin=dict(l=10, r=85, t=65, b=30),
-        # 💡 移除舊版固定的 uirevision 字串，允許每次新資料帶動圖表自動捲動至最新狀態
         uirevision=str(latest["open_time"]),
         hoverlabel=dict(
             bgcolor="rgba(30,35,41,.95)",
