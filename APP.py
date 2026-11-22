@@ -458,6 +458,21 @@ def peek_outbox(n=8):
         return pd.DataFrame({"error": [str(e)]})
 
 
+def outbox_stamp(symbol, tf):
+    """輕量查詢：該商品/週期在 outbox 的筆數與最新時間，用來判斷圖要不要重算。"""
+    try:
+        engine = get_db_engine()
+        with engine.connect() as conn:
+            r = conn.execute(
+                text("SELECT COUNT(*), MAX(signal_time) FROM strategy_signal_outbox "
+                     "WHERE UPPER(symbol) LIKE :sym AND LOWER(timeframe) = :tf"),
+                {"sym": str(symbol).upper() + "%", "tf": str(tf).lower()},
+            ).fetchone()
+        return (int(r[0]), str(r[1]))
+    except Exception:
+        return None
+
+
 def load_outbox_signals(symbol, tf, since_time):
     """從資料庫讀回已發出的訊號 {K 棒時間(台灣時間, 無時區): "LONG"/"SHORT"}。
     資料庫是唯一可信來源：App 重啟、換 session、K 棒收完後條件改變，圖上與面板都還是看得到。"""
@@ -483,8 +498,12 @@ def load_outbox_signals(symbol, tf, since_time):
             t = t.dt.tz_convert("Asia/Taipei").dt.tz_localize(None)
         out = {}
         for ts, d in zip(t, df["direction"].astype(str).str.strip().str.upper()):
-            if pd.notna(ts) and d in ("LONG", "SHORT"):
-                out[ts] = d
+            if pd.isna(ts):
+                continue
+            if "LONG" in d or "BUY" in d or "多" in d:
+                out[ts] = "LONG"
+            elif "SHORT" in d or "SELL" in d or "空" in d:
+                out[ts] = "SHORT"
         return out
     except Exception as e:
         print(f"讀取 strategy_signal_outbox 失敗: {e}")
@@ -1315,6 +1334,7 @@ def render_live_kline_chart(table, symbol, pair, tf, follow=True):
         float(last_row["open_price"]), float(last_row["high_price"]),
         float(last_row["low_price"]), float(last_row["close_price"]),
         float(last_row["volume"]),
+        outbox_stamp(symbol, tf),
     )
     bundle_key = f"_bundle_{table}_{tf}"
     cached_bundle = st.session_state.get(bundle_key)
