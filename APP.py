@@ -424,6 +424,8 @@ def save_signal_to_outbox(symbol, tf, signal_time, direction, price, ai_prob):
     try:
         engine = get_db_engine()
         with engine.begin() as conn:
+            # 讓「沒帶時區的台灣時間」被正確解讀（否則 Supabase 預設 UTC，會差 8 小時，之後對不上 K 棒）
+            conn.execute(text("SET LOCAL TIME ZONE 'Asia/Taipei'"))
             sql = text("""
                 INSERT INTO strategy_signal_outbox 
                 (symbol, timeframe, signal_time, direction, price, ai_prob, status)
@@ -440,6 +442,38 @@ def save_signal_to_outbox(symbol, tf, signal_time, direction, price, ai_prob):
             })
     except Exception as e:
         print(f"寫入 strategy_signal_outbox 失敗: {e}")
+
+
+def load_outbox_signals(symbol, tf, since_time):
+    """從資料庫讀回已發出的訊號 {K 棒時間(台灣時間, 無時區): "LONG"/"SHORT"}。
+    資料庫是唯一可信來源：App 重啟、換 session、K 棒收完後條件改變，圖上與面板都還是看得到。"""
+    try:
+        engine = get_db_engine()
+        with engine.begin() as conn:
+            conn.execute(text("SET LOCAL TIME ZONE 'Asia/Taipei'"))
+            df = pd.read_sql(
+                text("""
+                    SELECT signal_time, direction
+                    FROM strategy_signal_outbox
+                    WHERE symbol = :sym AND timeframe = :tf AND signal_time >= :since
+                    ORDER BY signal_time
+                """),
+                con=conn,
+                params={"sym": symbol, "tf": tf, "since": pd.Timestamp(since_time).to_pydatetime()},
+            )
+        if df.empty:
+            return {}
+        t = pd.to_datetime(df["signal_time"], errors="coerce")
+        if getattr(t.dt, "tz", None) is not None:
+            t = t.dt.tz_convert("Asia/Taipei").dt.tz_localize(None)
+        out = {}
+        for ts, d in zip(t, df["direction"].astype(str).str.strip().str.upper()):
+            if pd.notna(ts) and d in ("LONG", "SHORT"):
+                out[ts] = d
+        return out
+    except Exception as e:
+        print(f"讀取 strategy_signal_outbox 失敗: {e}")
+        return {}
 
 
 @st.cache_resource
@@ -890,14 +924,22 @@ def remember_and_apply_signals(view_df, symbol, tf):
         for k in sorted(store)[:-300]:
             store.pop(k, None)
 
-    if not store:
+    # 合併資料庫裡已寫入的訊號（資料庫的優先）
+    db_sigs = load_outbox_signals(symbol, tf, view_df["open_time"].iloc[0])
+    merged = {**store, **db_sigs}
+
+    if not merged:
         return view_df
     view_df = view_df.copy()
-    for t, direction in store.items():
+    for t, direction in merged.items():
         mask = view_df["open_time"] == t
         if mask.any():
-            col = "Long_Signal" if direction == "LONG" else "Short_Signal"
-            view_df.loc[mask, col] = True
+            if direction == "LONG":
+                view_df.loc[mask, "Long_Signal"] = True
+                view_df.loc[mask, "Short_Signal"] = False
+            else:
+                view_df.loc[mask, "Short_Signal"] = True
+                view_df.loc[mask, "Long_Signal"] = False
     return view_df
 
 
