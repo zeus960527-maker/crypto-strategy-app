@@ -928,18 +928,33 @@ def remember_and_apply_signals(view_df, symbol, tf):
     db_sigs = load_outbox_signals(symbol, tf, view_df["open_time"].iloc[0])
     merged = {**store, **db_sigs}
 
-    if not merged:
-        return view_df
+    step = pd.Timedelta({"5m": "5min", "15m": "15min", "1h": "1h", "4h": "4h"}.get(tf, "5min"))
     view_df = view_df.copy()
+    times = view_df["open_time"].values
+    matched = 0
     for t, direction in merged.items():
-        mask = view_df["open_time"] == t
-        if mask.any():
-            if direction == "LONG":
-                view_df.loc[mask, "Long_Signal"] = True
-                view_df.loc[mask, "Short_Signal"] = False
-            else:
-                view_df.loc[mask, "Short_Signal"] = True
-                view_df.loc[mask, "Long_Signal"] = False
+        # 訊號時間落在哪一根 K 棒的區間內，就標在那一根（容許秒數誤差）
+        idx = int(np.searchsorted(times, np.datetime64(t), side="right")) - 1
+        if idx < 0:
+            continue
+        bar_t = view_df["open_time"].iloc[idx]
+        if not (bar_t <= t < bar_t + step):
+            continue
+        matched += 1
+        if direction == "LONG":
+            view_df.iloc[idx, view_df.columns.get_loc("Long_Signal")] = True
+            view_df.iloc[idx, view_df.columns.get_loc("Short_Signal")] = False
+        else:
+            view_df.iloc[idx, view_df.columns.get_loc("Short_Signal")] = True
+            view_df.iloc[idx, view_df.columns.get_loc("Long_Signal")] = False
+
+    st.session_state["_sig_diag"] = {
+        "db_rows": len(db_sigs),
+        "db_latest": max(db_sigs) if db_sigs else None,
+        "matched": matched,
+        "chart_first": view_df["open_time"].iloc[0],
+        "chart_last": view_df["open_time"].iloc[-1],
+    }
     return view_df
 
 
@@ -1391,13 +1406,24 @@ def render_live_kline_chart(table, symbol, pair, tf, follow=True):
 
         st.caption("進場價格為訊號 K 線收盤價參考值，不代表實際成交價。")
 
+        diag = st.session_state.get("_sig_diag")
+        if diag:
+            with st.expander("🔧 訊號診斷"):
+                st.write(f"資料庫讀到：{diag['db_rows']} 筆（{symbol} / {tf}）")
+                st.write(f"對上圖上 K 棒：{diag['matched']} 筆")
+                st.write(f"資料庫最新 signal_time：{diag['db_latest']}")
+                st.write(f"圖上資料範圍：{diag['chart_first']} ～ {diag['chart_last']}")
+
     st.markdown("---")
     st.markdown("### 🧠 歷史訊號學習紀錄 (動態 TP/SL 結算)")
-    history = view_df[view_df["Base_Long"] | view_df["Base_Short"]].tail(15).copy()
+    history = view_df[
+        view_df["Base_Long"] | view_df["Base_Short"]
+        | view_df["Long_Signal"] | view_df["Short_Signal"]
+    ].tail(15).copy()
     if history.empty:
         st.caption("目前載入中沒有歷史候選訊號。")
     else:
-        history["方向"] = np.where(history["Base_Long"], "LONG", "SHORT")
+        history["方向"] = np.where(history["Long_Signal"] | history["Base_Long"], "LONG", "SHORT")
         history["時間"] = history["open_time"].dt.strftime("%m/%d %H:%M")
         history["進場參考價"] = history["close_price"].map(lambda x: f"{x:,.2f}")
         history["止損價 (SL)"] = history["Stop_Loss"].map(lambda x: f"{x:,.2f}" if pd.notna(x) else "—")
