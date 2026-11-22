@@ -442,6 +442,20 @@ def save_signal_to_outbox(symbol, tf, signal_time, direction, price, ai_prob):
         print(f"寫入 strategy_signal_outbox 失敗: {e}")
 
 
+@st.cache_resource
+def _kline_raw_cache():
+    # 跨 rerun 保存已載入的原始 K 線：{(table, tf): {"df": 原始資料, "done": 是否已抓完最舊資料}}
+    return {}
+
+
+INITIAL_BATCH = 1000   # 第一次先載入最新的幾根，讓圖快速出現
+BACKFILL_BATCH = 500   # 之後每次更新往前多補幾根舊 K 線
+
+
+def _raw_scalar(v):
+    return v.item() if hasattr(v, "item") and not isinstance(v, pd.Timestamp) else v
+
+
 def load_historical_data(table_name, symbol_name, tf=None):
     allowed_tables = {"btc_contract_klines", "eth_contract_klines"}
     if table_name not in allowed_tables:
@@ -450,32 +464,63 @@ def load_historical_data(table_name, symbol_name, tf=None):
 
     try:
         engine = get_db_engine()
-        # 💡 每次呼叫強制重新從 Supabase 讀取「該週期的全部 K 線」(不再 LIMIT 1000，
-        #    避免多個週期混在一起被截斷，導致圖上缺 K 棒、需要左移才看得到)
-        if tf:
-            sql = text(f"""
-                SELECT timeframe, open_time, open_price, high_price,
-                       low_price, close_price, volume
-                FROM {table_name}
-                WHERE timeframe = :tf
-                ORDER BY open_time ASC
-            """)
-            params = {"tf": tf}
-        else:
-            sql = text(f"""
-                SELECT timeframe, open_time, open_price, high_price,
-                       low_price, close_price, volume
-                FROM {table_name}
-                ORDER BY open_time ASC
-            """)
-            params = {}
-        with engine.connect() as conn:
-            df = pd.read_sql(sql, con=conn, params=params)
+        cache = _kline_raw_cache()
+        key = (table_name, tf)
+        cols = "timeframe, open_time, open_price, high_price, low_price, close_price, volume"
+        tf_where = "timeframe = :tf AND " if tf else ""
+        base_params = {"tf": tf} if tf else {}
+        entry = cache.get(key)
 
-        if df.empty:
-            return df
-        # 抓出來後重新依時間正向排序
-        df = df.sort_values("open_time").drop_duplicates(subset=["timeframe", "open_time"]).reset_index(drop=True)
+        if entry is None or entry["df"].empty:
+            # 💡 第一次：先載入最新的 INITIAL_BATCH 根，圖馬上顯示
+            sql = text(f"""
+                SELECT {cols} FROM {table_name}
+                WHERE {tf_where} TRUE
+                ORDER BY open_time DESC LIMIT {INITIAL_BATCH}
+            """)
+            with engine.connect() as conn:
+                raw = pd.read_sql(sql, con=conn, params=dict(base_params))
+            done = len(raw) < INITIAL_BATCH
+        else:
+            raw = entry["df"]
+            done = entry["done"]
+            first_raw = _raw_scalar(raw["open_time"].iloc[0])
+            last_raw = _raw_scalar(raw["open_time"].iloc[-1])
+            parts = [raw]
+
+            with engine.connect() as conn:
+                # 補抓最新 K 棒（含最後一根，用來更新尚未收完的 K 棒）
+                sql_new = text(f"""
+                    SELECT {cols} FROM {table_name}
+                    WHERE {tf_where} open_time >= :last
+                    ORDER BY open_time ASC
+                """)
+                parts.append(pd.read_sql(sql_new, con=conn, params={**base_params, "last": last_raw}))
+
+                # 慢慢往前補更舊的 K 線，直到資料庫沒有更舊的資料為止
+                if not done:
+                    sql_old = text(f"""
+                        SELECT {cols} FROM {table_name}
+                        WHERE {tf_where} open_time < :first
+                        ORDER BY open_time DESC LIMIT {BACKFILL_BATCH}
+                    """)
+                    old = pd.read_sql(sql_old, con=conn, params={**base_params, "first": first_raw})
+                    parts.append(old)
+                    if len(old) < BACKFILL_BATCH:
+                        done = True
+
+            parts = [x for x in parts if not x.empty]
+            raw = pd.concat(parts, ignore_index=True)
+
+        if raw.empty:
+            return raw
+        raw = (
+            raw.drop_duplicates(subset=["timeframe", "open_time"], keep="last")
+            .sort_values("open_time")
+            .reset_index(drop=True)
+        )
+        cache[key] = {"df": raw, "done": done}
+        df = raw.copy()
 
     except Exception as e:
         st.error(f"Supabase 連線或讀取錯誤：{e}")
