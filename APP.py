@@ -862,24 +862,8 @@ def render_homepage():
 # ============================================================
 # 6. K 線圖渲染與即時訊號自動寫入
 # ============================================================
-def render_live_kline_chart(table, symbol, pair, tf):
-    df = load_historical_data(table, symbol, tf)
-
-    if df.empty:
-        st.warning("目前無法取得資料，請確認 Supabase 連線及資料表內容。")
-        return
-
-    df_tf = (
-        df[df["timeframe"] == tf]
-        .sort_values("open_time")
-        .copy()
-        .reset_index(drop=True)
-    )
-
-    if df_tf.empty:
-        st.warning(f"{tf} 週期目前尚無資料。")
-        return
-
+def _build_chart_bundle(df_tf, symbol, pair, tf):
+    """重運算與組圖（指標、訊號、AI、Plotly 圖）。資料沒變時會被快取略過。"""
     df_tf, win, dev = calculate_indicators(df_tf, tf)
     df_tf = build_candidate_signals(df_tf, tf)
     model, training_count, winning_count = train_or_get_ai_model(
@@ -891,7 +875,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
 
     if view_df.empty:
         st.warning("目前沒有足夠資料可顯示。")
-        return
+        return None
 
     latest = view_df.iloc[-1]
     latest_close = float(latest["close_price"])
@@ -1179,6 +1163,58 @@ def render_live_kline_chart(table, symbol, pair, tf):
         col=1,
         fixedrange=False,
     )
+
+
+    return {
+        "view_df": view_df, "fig": fig, "latest": latest,
+        "latest_close": latest_close, "ai_score": ai_score,
+        "training_count": training_count, "winning_count": winning_count,
+    }
+
+
+def render_live_kline_chart(table, symbol, pair, tf):
+    df = load_historical_data(table, symbol, tf)
+
+    if df.empty:
+        st.warning("目前無法取得資料，請確認 Supabase 連線及資料表內容。")
+        return
+
+    df_tf = (
+        df[df["timeframe"] == tf]
+        .sort_values("open_time")
+        .copy()
+        .reset_index(drop=True)
+    )
+
+    if df_tf.empty:
+        st.warning(f"{tf} 週期目前尚無資料。")
+        return
+
+    # 資料沒有變動時，直接沿用上一次算好的結果，不重複運算、不重新組圖（減少卡頓）
+    last_row = df_tf.iloc[-1]
+    sig = (
+        len(df_tf), df_tf["open_time"].iloc[0], df_tf["open_time"].iloc[-1],
+        float(last_row["open_price"]), float(last_row["high_price"]),
+        float(last_row["low_price"]), float(last_row["close_price"]),
+        float(last_row["volume"]),
+    )
+    bundle_key = f"_bundle_{table}_{tf}"
+    cached_bundle = st.session_state.get(bundle_key)
+    if cached_bundle is not None and cached_bundle["sig"] == sig:
+        bundle = cached_bundle["bundle"]
+    else:
+        bundle = _build_chart_bundle(df_tf, symbol, pair, tf)
+        if bundle is None:
+            return
+        st.session_state[bundle_key] = {"sig": sig, "bundle": bundle}
+
+    view_df = bundle["view_df"]
+    fig = bundle["fig"]
+    latest = bundle["latest"]
+    latest_close = bundle["latest_close"]
+    ai_score = bundle["ai_score"]
+    training_count = bundle["training_count"]
+    winning_count = bundle["winning_count"]
 
     chart_col, panel_col = st.columns([3.6, 1.2])
 
