@@ -442,7 +442,7 @@ def save_signal_to_outbox(symbol, tf, signal_time, direction, price, ai_prob):
         print(f"寫入 strategy_signal_outbox 失敗: {e}")
 
 
-def load_historical_data(table_name, symbol_name):
+def load_historical_data(table_name, symbol_name, tf=None):
     allowed_tables = {"btc_contract_klines", "eth_contract_klines"}
     if table_name not in allowed_tables:
         st.error("資料表名稱不合法。")
@@ -450,16 +450,27 @@ def load_historical_data(table_name, symbol_name):
 
     try:
         engine = get_db_engine()
-        # 💡 每次呼叫強制重新從 Supabase 讀取「全部」K 線資料（已移除 LIMIT 1000，
-        #    原本多週期混在同一張表，1000 筆分給各週期後，左移就看不到更早的 K 線）
-        sql = text(f"""
-            SELECT timeframe, open_time, open_price, high_price,
-                   low_price, close_price, volume
-            FROM {table_name}
-            ORDER BY open_time DESC
-        """)
+        # 💡 每次呼叫強制重新從 Supabase 讀取「該週期的全部 K 線」(不再 LIMIT 1000，
+        #    避免多個週期混在一起被截斷，導致圖上缺 K 棒、需要左移才看得到)
+        if tf:
+            sql = text(f"""
+                SELECT timeframe, open_time, open_price, high_price,
+                       low_price, close_price, volume
+                FROM {table_name}
+                WHERE timeframe = :tf
+                ORDER BY open_time ASC
+            """)
+            params = {"tf": tf}
+        else:
+            sql = text(f"""
+                SELECT timeframe, open_time, open_price, high_price,
+                       low_price, close_price, volume
+                FROM {table_name}
+                ORDER BY open_time ASC
+            """)
+            params = {}
         with engine.connect() as conn:
-            df = pd.read_sql(sql, con=conn)
+            df = pd.read_sql(sql, con=conn, params=params)
 
         if df.empty:
             return df
@@ -800,7 +811,7 @@ def render_homepage():
 # 6. K 線圖渲染與即時訊號自動寫入
 # ============================================================
 def render_live_kline_chart(table, symbol, pair, tf):
-    df = load_historical_data(table, symbol)
+    df = load_historical_data(table, symbol, tf)
 
     if df.empty:
         st.warning("目前無法取得資料，請確認 Supabase 連線及資料表內容。")
