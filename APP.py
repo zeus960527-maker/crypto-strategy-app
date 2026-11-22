@@ -945,15 +945,19 @@ def render_live_kline_chart(table, symbol, pair, tf):
     long_df = view_df[view_df["Long_Signal"]].copy()
     if not long_df.empty:
         long_y = long_df["low_price"] - span * 0.08
+        # 所有連接虛線合併成單一 trace（用 None 斷開），避免訊號多時產生上千條 trace 導致圖表無法顯示
+        _lx, _ly = [], []
         for t, low_p, ly in zip(long_df["open_time"], long_df["low_price"], long_y):
-            fig.add_trace(go.Scatter(
-                x=[t, t],
-                y=[low_p, ly],
-                mode="lines",
-                line=dict(color="#848e9c", width=1, dash="dot"),
-                showlegend=False,
-                hoverinfo="none"
-            ), row=1, col=1)
+            _lx += [t, t, None]
+            _ly += [low_p, ly, None]
+        fig.add_trace(go.Scatter(
+            x=_lx,
+            y=_ly,
+            mode="lines",
+            line=dict(color="#848e9c", width=1, dash="dot"),
+            showlegend=False,
+            hoverinfo="none"
+        ), row=1, col=1)
 
         fig.add_trace(go.Scatter(
             x=long_df["open_time"],
@@ -975,15 +979,18 @@ def render_live_kline_chart(table, symbol, pair, tf):
     short_df = view_df[view_df["Short_Signal"]].copy()
     if not short_df.empty:
         short_y = short_df["high_price"] + span * 0.08
+        _sx, _sy = [], []
         for t, high_p, sy in zip(short_df["open_time"], short_df["high_price"], short_y):
-            fig.add_trace(go.Scatter(
-                x=[t, t],
-                y=[high_p, sy],
-                mode="lines",
-                line=dict(color="#848e9c", width=1, dash="dot"),
-                showlegend=False,
-                hoverinfo="none"
-            ), row=1, col=1)
+            _sx += [t, t, None]
+            _sy += [high_p, sy, None]
+        fig.add_trace(go.Scatter(
+            x=_sx,
+            y=_sy,
+            mode="lines",
+            line=dict(color="#848e9c", width=1, dash="dot"),
+            showlegend=False,
+            hoverinfo="none"
+        ), row=1, col=1)
 
         fig.add_trace(go.Scatter(
             x=short_df["open_time"],
