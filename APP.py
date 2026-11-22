@@ -1123,7 +1123,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
         ),
         margin=dict(l=10, r=85, t=65, b=30),
         # 💡 移除舊版固定的 uirevision 字串，允許每次新資料帶動圖表自動捲動至最新狀態
-        uirevision=str(latest["open_time"]),
+        uirevision=f"{symbol}_{tf}",  # 固定不變：新增 K 線時 Plotly 不重置整張圖，避免畫面閃爍消失
         hoverlabel=dict(
             bgcolor="rgba(30,35,41,.95)",
             font_size=12,
