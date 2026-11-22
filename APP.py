@@ -937,7 +937,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
         cols=1,
         shared_xaxes=True,
         vertical_spacing=0.015,
-        row_heights=[0.75, 0.25],
+        row_heights=[0.66, 0.34],  # 成交量區塊拉高（K 線區的像素高度維持不變）
     )
 
     fig.add_trace(go.Candlestick(
@@ -1110,7 +1110,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
         spikedistance=1000,
         xaxis_rangeslider_visible=False,
         dragmode="pan",
-        height=880,
+        height=990,  # 配合成交量區塊拉高，整體圖高增加，K 線區高度不變
         bargap=0.08,
         showlegend=True,
         legend=dict(
