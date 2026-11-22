@@ -450,13 +450,13 @@ def load_historical_data(table_name, symbol_name):
 
     try:
         engine = get_db_engine()
-        # 💡 每次呼叫強制重新從 Supabase 讀取最新的 1000 筆資料，確保資料即時更新
+        # 💡 每次呼叫強制重新從 Supabase 讀取「全部」K 線資料（已移除 LIMIT 1000，
+        #    原本多週期混在同一張表，1000 筆分給各週期後，左移就看不到更早的 K 線）
         sql = text(f"""
             SELECT timeframe, open_time, open_price, high_price,
                    low_price, close_price, volume
             FROM {table_name}
             ORDER BY open_time DESC
-            LIMIT 1000
         """)
         with engine.connect() as conn:
             df = pd.read_sql(sql, con=conn)
@@ -1089,7 +1089,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
         showline=True,
         row=1,
         col=1,
-        autorange=True,
+        range=y_range,
         fixedrange=False,
     )
 
