@@ -444,6 +444,20 @@ def save_signal_to_outbox(symbol, tf, signal_time, direction, price, ai_prob):
         print(f"寫入 strategy_signal_outbox 失敗: {e}")
 
 
+def peek_outbox(n=8):
+    """診斷用：不加任何條件，直接看資料表最新 n 筆的實際內容。"""
+    try:
+        engine = get_db_engine()
+        with engine.begin() as conn:
+            conn.execute(text("SET LOCAL TIME ZONE 'Asia/Taipei'"))
+            return pd.read_sql(
+                text(f"SELECT * FROM strategy_signal_outbox ORDER BY signal_time DESC LIMIT {int(n)}"),
+                con=conn,
+            )
+    except Exception as e:
+        return pd.DataFrame({"error": [str(e)]})
+
+
 def load_outbox_signals(symbol, tf, since_time):
     """從資料庫讀回已發出的訊號 {K 棒時間(台灣時間, 無時區): "LONG"/"SHORT"}。
     資料庫是唯一可信來源：App 重啟、換 session、K 棒收完後條件改變，圖上與面板都還是看得到。"""
@@ -455,11 +469,12 @@ def load_outbox_signals(symbol, tf, since_time):
                 text("""
                     SELECT signal_time, direction
                     FROM strategy_signal_outbox
-                    WHERE symbol = :sym AND timeframe = :tf AND signal_time >= :since
+                    WHERE UPPER(symbol) LIKE :sym AND LOWER(timeframe) = :tf AND signal_time >= :since
                     ORDER BY signal_time
                 """),
                 con=conn,
-                params={"sym": symbol, "tf": tf, "since": pd.Timestamp(since_time).to_pydatetime()},
+                params={"sym": str(symbol).upper() + "%", "tf": str(tf).lower(),
+                        "since": pd.Timestamp(since_time).to_pydatetime()},
             )
         if df.empty:
             return {}
@@ -1413,6 +1428,8 @@ def render_live_kline_chart(table, symbol, pair, tf, follow=True):
                 st.write(f"對上圖上 K 棒：{diag['matched']} 筆")
                 st.write(f"資料庫最新 signal_time：{diag['db_latest']}")
                 st.write(f"圖上資料範圍：{diag['chart_first']} ～ {diag['chart_last']}")
+                st.caption("資料表最新 8 筆原始內容（不加任何條件）：")
+                st.dataframe(peek_outbox(8), use_container_width=True, hide_index=True)
 
     st.markdown("---")
     st.markdown("### 🧠 歷史訊號學習紀錄 (動態 TP/SL 結算)")
