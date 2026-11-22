@@ -848,11 +848,6 @@ def render_live_kline_chart(table, symbol, pair, tf):
         start_time = view_df["open_time"].iloc[0]
         end_time = view_df["open_time"].iloc[-1] + pd.Timedelta(minutes=75 if tf in ['5m','15m'] else 300)
 
-    # 檢查資料庫第一筆 K 線：若不在目前顯示範圍內（被擠到左邊看不見），就把顯示範圍往左延伸讓它出現在圖上
-    first_kline_time = view_df["open_time"].iloc[0]
-    if first_kline_time < start_time:
-        start_time = first_kline_time
-
     visible_df = view_df[(view_df["open_time"] >= start_time) & (view_df["open_time"] <= end_time)]
     if visible_df.empty:
         visible_df = view_df
@@ -862,6 +857,15 @@ def render_live_kline_chart(table, symbol, pair, tf):
 
     span = max(high - low, abs(high) * 0.001, 1e-8)
     y_range = [low - span * 0.12, high + span * 0.12]
+
+    # 檢查資料庫第一筆 K 線：若其價格落在目前 Y 軸範圍外（左移時會看不見），
+    # 就只把 Y 軸範圍擴到剛好能容納它；X 軸顯示根數 (display_len) 與 K 棒寬度不變
+    first_low = float(view_df["low_price"].iloc[0])
+    first_high = float(view_df["high_price"].iloc[0])
+    if first_low < y_range[0]:
+        y_range[0] = first_low - span * 0.05
+    if first_high > y_range[1]:
+        y_range[1] = first_high + span * 0.05
 
     change_pct = (
         (latest_close - latest["open_price"]) / latest["open_price"] * 100
