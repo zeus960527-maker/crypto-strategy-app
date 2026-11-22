@@ -421,75 +421,60 @@ def get_db_engine():
 
 
 def save_signal_to_outbox(symbol, tf, signal_time, direction, price, ai_prob):
-    try:
-        engine = get_db_engine()
-        with engine.begin() as conn:
-            # 讓「沒帶時區的台灣時間」被正確解讀（否則 Supabase 預設 UTC，會差 8 小時，之後對不上 K 棒）
-            conn.execute(text("SET LOCAL TIME ZONE 'Asia/Taipei'"))
-            sql = text("""
-                INSERT INTO strategy_signal_outbox 
-                (symbol, timeframe, signal_time, direction, price, ai_prob, status)
-                VALUES (:sym, :tf, :time, :dir, :price, :prob, 'PENDING')
-                ON CONFLICT DO NOTHING;
-            """)
-            conn.execute(sql, {
-                "sym": symbol,
-                "tf": tf,
-                "time": signal_time,
-                "dir": direction,
-                "price": price,
-                "prob": ai_prob
-            })
-    except Exception as e:
-        print(f"寫入 strategy_signal_outbox 失敗: {e}")
+    # 此資料表由 Scanner Bot 負責寫入（欄位：signal_time_taipei / entry_price / stop_loss ...），
+    # 且 Bot 會依 status 發 Discord 通知；App 若再寫入會造成重複通知，所以 App 這邊不寫入，只讀取。
+    return
 
 
 def outbox_stamp(symbol, tf):
-    """輕量查詢：該商品/週期在 outbox 的筆數與最新時間，用來判斷圖要不要重算。"""
+    """輕量查詢：該商品/週期在 outbox 的筆數與最新 id，用來判斷圖要不要重算。"""
     try:
         engine = get_db_engine()
         with engine.connect() as conn:
             r = conn.execute(
-                text("SELECT COUNT(*), MAX(signal_time) FROM strategy_signal_outbox "
+                text("SELECT COUNT(*), MAX(id) FROM strategy_signal_outbox "
                      "WHERE UPPER(symbol) LIKE :sym AND LOWER(timeframe) = :tf"),
                 {"sym": str(symbol).upper() + "%", "tf": str(tf).lower()},
             ).fetchone()
         return (int(r[0]), str(r[1]))
-    except Exception:
+    except Exception as e:
+        print(f"讀取 outbox 狀態失敗: {e}")
         return None
 
 
 def load_outbox_signals(symbol, tf, since_time):
-    """從資料庫讀回已發出的訊號 {K 棒時間(台灣時間, 無時區): "LONG"/"SHORT"}。
-    資料庫是唯一可信來源：App 重啟、換 session、K 棒收完後條件改變，圖上與面板都還是看得到。"""
+    """從 outbox 讀回 Bot 已發出的訊號：
+    {訊號時間(台灣, 無時區): (方向, 進場價, 止損, 止盈)}"""
     try:
         engine = get_db_engine()
-        with engine.begin() as conn:
-            conn.execute(text("SET LOCAL TIME ZONE 'Asia/Taipei'"))
+        with engine.connect() as conn:
             df = pd.read_sql(
                 text("""
-                    SELECT signal_time, direction
+                    SELECT signal_time_taipei, direction, entry_price, stop_loss, take_profit
                     FROM strategy_signal_outbox
-                    WHERE UPPER(symbol) LIKE :sym AND LOWER(timeframe) = :tf AND signal_time >= :since
-                    ORDER BY signal_time
+                    WHERE UPPER(symbol) LIKE :sym AND LOWER(timeframe) = :tf
+                    ORDER BY id DESC LIMIT 500
                 """),
                 con=conn,
-                params={"sym": str(symbol).upper() + "%", "tf": str(tf).lower(),
-                        "since": pd.Timestamp(since_time).to_pydatetime()},
+                params={"sym": str(symbol).upper() + "%", "tf": str(tf).lower()},
             )
         if df.empty:
             return {}
-        t = pd.to_datetime(df["signal_time"], errors="coerce")
+        t = pd.to_datetime(df["signal_time_taipei"], errors="coerce")
         if getattr(t.dt, "tz", None) is not None:
             t = t.dt.tz_convert("Asia/Taipei").dt.tz_localize(None)
+        ep = pd.to_numeric(df["entry_price"], errors="coerce")
+        sl = pd.to_numeric(df["stop_loss"], errors="coerce")
+        tp = pd.to_numeric(df["take_profit"], errors="coerce")
+        since = pd.Timestamp(since_time)
         out = {}
-        for ts, d in zip(t, df["direction"].astype(str).str.strip().str.upper()):
-            if pd.isna(ts):
+        for ts, d, e, l, p_ in zip(t, df["direction"].astype(str).str.strip().str.upper(), ep, sl, tp):
+            if pd.isna(ts) or ts < since:
                 continue
             if "LONG" in d or "BUY" in d or "多" in d:
-                out[ts] = "LONG"
+                out[ts] = ("LONG", e, l, p_)
             elif "SHORT" in d or "SELL" in d or "空" in d:
-                out[ts] = "SHORT"
+                out[ts] = ("SHORT", e, l, p_)
         return out
     except Exception as e:
         print(f"讀取 strategy_signal_outbox 失敗: {e}")
@@ -929,16 +914,6 @@ def _fired_signals():
     return {}
 
 
-# 手動補上的訊號（來自 Discord 通知）：(商品, 週期, 訊號時間(台灣), 方向, 進場價, 止損, 止盈)
-MANUAL_SIGNALS = [
-    ("BTC", "15m", "2026-11-22 17:24:11", "LONG", 60039.20, 59574.97, 61199.77),
-    ("ETH", "15m", "2026-11-22 17:24:12", "LONG", 1683.00, 1670.15, 1715.12),
-    ("BTC", "5m",  "2026-11-22 17:51:08", "LONG", 60661.30, 60368.52, 61393.25),
-    ("ETH", "5m",  "2026-11-22 17:52:12", "LONG", 1706.92, 1698.14, 1728.86),
-    ("ETH", "5m",  "2026-11-22 17:58:12", "LONG", 1715.52, 1705.90, 1739.58),
-]
-
-
 def remember_and_apply_signals(view_df, symbol, tf):
     """最新 K 棒還在跳動時，訊號可能一下成立一下不成立。
     這裡把「曾經成立並發出」的訊號記起來，之後即使這根 K 棒條件變了，圖上與面板仍保留該訊號。"""
@@ -954,15 +929,20 @@ def remember_and_apply_signals(view_df, symbol, tf):
         for k in sorted(store)[:-300]:
             store.pop(k, None)
 
-    # 合併資料庫裡已寫入的訊號（資料庫的優先）
+    # 合併資料庫裡 Bot 已發出的訊號（資料庫的優先）
     db_sigs = load_outbox_signals(symbol, tf, view_df["open_time"].iloc[0])
-    merged = {**store, **db_sigs}
+    nan = float("nan")
+    merged = {t: (d, nan, nan, nan) for t, d in store.items()}
+    merged.update(db_sigs)
 
     step = pd.Timedelta({"5m": "5min", "15m": "15min", "1h": "1h", "4h": "4h"}.get(tf, "5min"))
     view_df = view_df.copy()
+    if "Sig_Price" not in view_df.columns:
+        view_df["Sig_Price"] = np.nan
     times = view_df["open_time"].values
-    matched = 0
-    for t, direction in merged.items():
+    ci = view_df.columns.get_loc
+
+    for t, (direction, e_price, sl, tp) in merged.items():
         # 訊號時間落在哪一根 K 棒的區間內，就標在那一根（容許秒數誤差）
         idx = int(np.searchsorted(times, np.datetime64(t), side="right")) - 1
         if idx < 0:
@@ -970,35 +950,16 @@ def remember_and_apply_signals(view_df, symbol, tf):
         bar_t = view_df["open_time"].iloc[idx]
         if not (bar_t <= t < bar_t + step):
             continue
-        matched += 1
-        if direction == "LONG":
-            view_df.iloc[idx, view_df.columns.get_loc("Long_Signal")] = True
-            view_df.iloc[idx, view_df.columns.get_loc("Short_Signal")] = False
-        else:
-            view_df.iloc[idx, view_df.columns.get_loc("Short_Signal")] = True
-            view_df.iloc[idx, view_df.columns.get_loc("Long_Signal")] = False
-
-
-    # 套用手動補上的訊號（顯示 Discord 通知上的進場價 / 止損 / 止盈）
-    if "Sig_Price" not in view_df.columns:
-        view_df["Sig_Price"] = np.nan
-    for m_sym, m_tf, m_time, m_dir, m_price, m_sl, m_tp in MANUAL_SIGNALS:
-        if m_sym != symbol or m_tf != tf:
-            continue
-        t = pd.Timestamp(m_time)
-        idx = int(np.searchsorted(times, np.datetime64(t), side="right")) - 1
-        if idx < 0:
-            continue
-        bar_t = view_df["open_time"].iloc[idx]
-        if not (bar_t <= t < bar_t + step):
-            continue
-        ci = view_df.columns.get_loc
-        view_df.iloc[idx, ci("Long_Signal")] = (m_dir == "LONG")
-        view_df.iloc[idx, ci("Short_Signal")] = (m_dir == "SHORT")
-        view_df.iloc[idx, ci("Sig_Price")] = m_price
-        view_df.iloc[idx, ci("Stop_Loss")] = m_sl
-        view_df.iloc[idx, ci("Take_Profit")] = m_tp
-        view_df.iloc[idx, ci("Trade_Result")] = "觀察中"
+        view_df.iloc[idx, ci("Long_Signal")] = (direction == "LONG")
+        view_df.iloc[idx, ci("Short_Signal")] = (direction == "SHORT")
+        if pd.notna(e_price):
+            view_df.iloc[idx, ci("Sig_Price")] = e_price
+        if pd.notna(sl):
+            view_df.iloc[idx, ci("Stop_Loss")] = sl
+        if pd.notna(tp):
+            view_df.iloc[idx, ci("Take_Profit")] = tp
+        if view_df.iloc[idx, ci("Trade_Result")] == "非訊號":
+            view_df.iloc[idx, ci("Trade_Result")] = "觀察中"
     return view_df
 
 
