@@ -11,24 +11,45 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import lightgbm as lgb
 from zoneinfo import ZoneInfo
-from flask import Flask, jsonify
+import threading
+import time
+import urllib.request
 
 TAIWAN_TZ = ZoneInfo('Asia/Taipei')
 
 # ============================================================
-# 0. 頁面設定、圖片與背景（含頂級精緻手機 RWD 響應式 CSS）與 Flask 路由 (保持 Render 活躍)
+# 0. 頁面設定、圖片與背景（含頂級精緻手機 RWD 響應式 CSS）與 Render 保活機制
 # ============================================================
 BASE_DIR = Path(__file__).resolve().parent
 
-app = Flask(__name__)
+# ------------------------------------------------------------
+# 保持 Render 活躍：Streamlit 內建健康檢查端點是 /_stcore/health（回傳 200 "ok"）。
+# 原本的 Flask 只定義了路由、從未啟動，也無法與 Streamlit 共用同一個 $PORT，
+# 而且若 requirements.txt 沒有 flask，import 失敗會讓整個服務起不來 → 503。
+# 所以移除 Flask，改成：
+#   1) 外部監控（UptimeRobot / 測試執行）請打  https://你的網址/_stcore/health
+#   2) 這裡額外開一條背景執行緒，定時 ping 自己，避免 Render 免費版閒置休眠
+# ------------------------------------------------------------
+@st.cache_resource
+def _start_keep_alive():
+    base = (os.getenv("RENDER_EXTERNAL_URL") or os.getenv("APP_PUBLIC_URL") or "").rstrip("/")
+    if not base:
+        return False
 
-@app.route("/")
-def home():
-    return "Crypto AI Streamlit Web App is running 24/7! 🚀"
+    def _loop():
+        url = base + "/_stcore/health"
+        while True:
+            time.sleep(600)  # 每 10 分鐘一次（Render 免費版 15 分鐘無流量會休眠）
+            try:
+                urllib.request.urlopen(url, timeout=15).read()
+            except Exception as e:
+                print(f"keep-alive ping 失敗: {e}")
 
-@app.route("/health", methods=["GET"])
-def health_check():
-    return jsonify({"status": "healthy"}), 200
+    threading.Thread(target=_loop, daemon=True, name="keep-alive").start()
+    return True
+
+
+_start_keep_alive()
 
 
 def load_image_safe(filename):
