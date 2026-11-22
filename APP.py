@@ -386,7 +386,7 @@ st.markdown("---")
 
 
 # ============================================================
-# 2. Supabase 連線與 K 棒資料載入
+# 2. Supabase 連線與 K 棒資料載入（從第一筆資料開始檢查並自動填補缺漏 K 線，再讀取最新資料）
 # ============================================================
 def get_database_url():
     url = os.getenv("SUPABASE_DB_URL", "").strip()
@@ -450,19 +450,18 @@ def load_historical_data(table_name, symbol_name):
 
     try:
         engine = get_db_engine()
+        # 💡 從資料表的第一筆資料開始（ASC 排序）讀取完整歷史資料，以進行缺漏檢查與填補
         sql = text(f"""
             SELECT timeframe, open_time, open_price, high_price,
                    low_price, close_price, volume
             FROM {table_name}
-            ORDER BY open_time DESC
-            LIMIT 1000
+            ORDER BY open_time ASC
         """)
         with engine.connect() as conn:
             df = pd.read_sql(sql, con=conn)
 
         if df.empty:
             return df
-        df = df.sort_values("open_time").drop_duplicates(subset=["timeframe", "open_time"]).reset_index(drop=True)
 
     except Exception as e:
         st.error(f"Supabase 連線或讀取錯誤：{e}")
@@ -489,52 +488,50 @@ def load_historical_data(table_name, symbol_name):
     for col in ["open_price", "high_price", "low_price", "close_price", "volume"]:
         df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    return df.dropna(subset=[
+    df = df.dropna(subset=[
         "open_time", "open_price", "high_price",
         "low_price", "close_price", "volume"
     ])
 
-
-def fill_missing_candles(df_tf, tf, symbol_name):
-    """
-    從第一筆資料開始檢查，將 K 線圖時間軸中所有缺失、沒有在 K 線圖中的 K 線資料自動補齊。
-    - 價格類 (Open, High, Low, Close) 採用前值填補 (ffill)
-    - 成交量 (Volume) 填補為 0
-    """
-    if df_tf.empty:
-        return df_tf
-    
-    # 確保依時間正向排序，從第一筆資料開始檢查
-    df_tf = df_tf.sort_values("open_time").reset_index(drop=True)
-    
-    freq_map = {
+    # 💡 執行時檢查每個 timeframe，從第一筆資料開始補齊圖表中沒有的空白 K 線資料
+    filled_dfs = []
+    tf_freq_map = {
         "5m": "5min",
         "15m": "15min",
         "1h": "1h",
         "4h": "4h"
     }
-    freq = freq_map.get(tf, "1h")
-    
-    # 設定 open_time 為 index 進行完整連續時間序列重構
-    df_tf = df_tf.set_index("open_time")
-    full_idx = pd.date_range(start=df_tf.index.min(), end=df_tf.index.max(), freq=freq)
-    
-    df_tf = df_tf.reindex(full_idx)
-    
-    # 補齊價格與成交量
-    price_cols = ["open_price", "high_price", "low_price", "close_price"]
-    for col in price_cols:
-        if col in df_tf.columns:
-            df_tf[col] = df_tf[col].ffill().bfill()
-            
-    if "volume" in df_tf.columns:
-        df_tf["volume"] = df_tf["volume"].fillna(0.0)
+
+    for tf, freq in tf_freq_map.items():
+        sub_df = df[df["timeframe"] == tf].copy()
+        if sub_df.empty:
+            continue
         
-    df_tf["timeframe"] = tf
-    df_tf["symbol"] = symbol_name
-    
-    df_tf = df_tf.reset_index().rename(columns={"index": "open_time"})
-    return df_tf
+        sub_df = sub_df.sort_values("open_time").drop_duplicates(subset=["open_time"])
+        sub_df.set_index("open_time", inplace=True)
+        
+        # 建立從頭到尾完整的時間序列網格
+        full_idx = pd.date_range(start=sub_df.index.min(), end=sub_df.index.max(), freq=freq)
+        sub_df = sub_df.reindex(full_idx)
+        
+        sub_df["timeframe"] = tf
+        sub_df["symbol"] = symbol_name
+        
+        # 填補漏失的 K 線數據（價格前值填充 ffill，成交量補 0）
+        sub_df["close_price"] = sub_df["close_price"].ffill()
+        sub_df["open_price"] = sub_df["open_price"].fillna(sub_df["close_price"])
+        sub_df["high_price"] = sub_df["high_price"].fillna(sub_df["close_price"])
+        sub_df["low_price"] = sub_df["low_price"].fillna(sub_df["close_price"])
+        sub_df["volume"] = sub_df["volume"].fillna(0.0)
+        
+        sub_df.reset_index(inplace=True)
+        sub_df.rename(columns={"index": "open_time"}, inplace=True)
+        filled_dfs.append(sub_df)
+
+    if filled_dfs:
+        df = pd.concat(filled_dfs, ignore_index=True).sort_values(["timeframe", "open_time"]).reset_index(drop=True)
+
+    return df
 
 
 # ============================================================
@@ -856,9 +853,6 @@ def render_live_kline_chart(table, symbol, pair, tf):
     if df_tf.empty:
         st.warning(f"{tf} 週期目前尚無資料。")
         return
-
-    # 💡 執行時從第一筆資料開始檢查，並將沒有在 K 線圖中的所有 K 線資料補進 K 線圖
-    df_tf = fill_missing_candles(df_tf, tf, symbol)
 
     df_tf, win, dev = calculate_indicators(df_tf, tf)
     df_tf = build_candidate_signals(df_tf, tf)
