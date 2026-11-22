@@ -386,7 +386,7 @@ st.markdown("---")
 
 
 # ============================================================
-# 2. Supabase 連線與 K 棒資料載入 (從資料表第一筆開始檢查並補齊)
+# 2. Supabase 連線與 K 棒資料載入 (移除快取，確保每 5 秒抓取最新資料庫內容)
 # ============================================================
 def get_database_url():
     url = os.getenv("SUPABASE_DB_URL", "").strip()
@@ -442,7 +442,7 @@ def save_signal_to_outbox(symbol, tf, signal_time, direction, price, ai_prob):
         print(f"寫入 strategy_signal_outbox 失敗: {e}")
 
 
-def load_historical_data(table_name, symbol_name, tf=None):
+def load_historical_data(table_name, symbol_name):
     allowed_tables = {"btc_contract_klines", "eth_contract_klines"}
     if table_name not in allowed_tables:
         st.error("資料表名稱不合法。")
@@ -450,30 +450,21 @@ def load_historical_data(table_name, symbol_name, tf=None):
 
     try:
         engine = get_db_engine()
-        # 💡 從資料表的第一筆資料開始檢查 (ORDER BY open_time ASC)
-        if tf:
-            sql = text(f"""
-                SELECT timeframe, open_time, open_price, high_price,
-                       low_price, close_price, volume
-                FROM {table_name}
-                WHERE timeframe = :tf
-                ORDER BY open_time ASC
-            """)
-            params = {"tf": tf}
-        else:
-            sql = text(f"""
-                SELECT timeframe, open_time, open_price, high_price,
-                       low_price, close_price, volume
-                FROM {table_name}
-                ORDER BY open_time ASC
-            """)
-            params = {}
-
+        # 💡 每次呼叫強制重新從 Supabase 讀取最新的 1000 筆資料，確保資料即時更新
+        sql = text(f"""
+            SELECT timeframe, open_time, open_price, high_price,
+                   low_price, close_price, volume
+            FROM {table_name}
+            ORDER BY open_time DESC
+            LIMIT 1000
+        """)
         with engine.connect() as conn:
-            df = pd.read_sql(sql, con=conn, params=params)
+            df = pd.read_sql(sql, con=conn)
 
         if df.empty:
             return df
+        # 抓出來後重新依時間正向排序
+        df = df.sort_values("open_time").drop_duplicates(subset=["timeframe", "open_time"]).reset_index(drop=True)
 
     except Exception as e:
         st.error(f"Supabase 連線或讀取錯誤：{e}")
@@ -809,29 +800,18 @@ def render_homepage():
 # 6. K 線圖渲染與即時訊號自動寫入
 # ============================================================
 def render_live_kline_chart(table, symbol, pair, tf):
-    # 1. 從資料庫讀取所有資料（從第一筆開始檢查）
-    db_df = load_historical_data(table, symbol, tf=tf)
+    df = load_historical_data(table, symbol)
 
-    if db_df.empty:
+    if df.empty:
         st.warning("目前無法取得資料，請確認 Supabase 連線及資料表內容。")
         return
 
-    # 2. 確保執行時先把資料庫中「沒有在K線圖」的所有K線資料補進K線圖，再讀取新的資料
-    cache_key = f"chart_df_{table}_{tf}"
-    if cache_key not in st.session_state or st.session_state[cache_key].empty:
-        st.session_state[cache_key] = db_df.copy()
-    else:
-        existing_df = st.session_state[cache_key]
-        # 合併並補齊缺漏或新增的 K 線資料，依照時間排序並去除重複
-        combined_df = (
-            pd.concat([existing_df, db_df])
-            .drop_duplicates(subset=["timeframe", "open_time"])
-            .sort_values("open_time")
-            .reset_index(drop=True)
-        )
-        st.session_state[cache_key] = combined_df
-
-    df_tf = st.session_state[cache_key].copy()
+    df_tf = (
+        df[df["timeframe"] == tf]
+        .sort_values("open_time")
+        .copy()
+        .reset_index(drop=True)
+    )
 
     if df_tf.empty:
         st.warning(f"{tf} 週期目前尚無資料。")
@@ -1072,6 +1052,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
             font=dict(size=10),
         ),
         margin=dict(l=10, r=85, t=65, b=30),
+        # 💡 移除舊版固定的 uirevision 字串，允許每次新資料帶動圖表自動捲動至最新狀態
         uirevision=str(latest["open_time"]),
         hoverlabel=dict(
             bgcolor="rgba(30,35,41,.95)",
