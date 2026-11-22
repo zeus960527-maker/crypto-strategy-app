@@ -12,25 +12,35 @@ TAIWAN_TZ = ZoneInfo('Asia/Taipei')
 ATR_STOP_MULTIPLIER = 1.5
 RISK_REWARD_RATIO = 2.5
 
-# 建立獨立的 Flask 伺服器，供 Render Web Service 常駐與定時 Ping 觸發
 app = Flask(__name__)
 
-@app.route("/")
+# ---- 全域狀態：避免重複執行、重複建立連線 ----
+_scan_lock = threading.Lock()
+_engine = None
+_engine_lock = threading.Lock()
+
+
+@app.route("/", methods=["GET", "HEAD"])
 def home():
     return "OKX Signal Scanner Worker is running 24/7! 🚀"
 
-@app.route("/health", methods=["GET"])
+
+@app.route("/health", methods=["GET", "HEAD"])
 def health_check():
     return jsonify({"status": "healthy"}), 200
 
-# 💡 修正：改回傳極簡的 JSON，避免 cron-job.org 報 output too large 錯誤
-@app.route("/run-scanner", methods=["GET", "POST"])
+
+@app.route("/run-scanner", methods=["GET", "POST", "HEAD"])
 def webhook_trigger():
+    """立即回應，背景執行；若上一輪還沒跑完就跳過，避免堆積拖垮免費方案記憶體"""
+    if _scan_lock.locked():
+        return jsonify({"status": "busy"}), 200
     try:
-        t = threading.Thread(target=run_scanner_job)
+        t = threading.Thread(target=run_scanner_job, daemon=True)
         t.start()
         return jsonify({"status": "ok"}), 200
     except Exception as e:
+        print(f"❌ 啟動背景執行緒失敗: {e}")
         return jsonify({"status": "error"}), 500
 
 
@@ -43,8 +53,26 @@ def get_database_url():
     return url or None
 
 
+def get_engine():
+    """重複使用同一個 engine（連線池），不要每次都 create_engine"""
+    global _engine
+    if _engine is None:
+        with _engine_lock:
+            if _engine is None:
+                db_url = get_database_url()
+                if not db_url:
+                    return None
+                _engine = create_engine(
+                    db_url,
+                    pool_size=2,
+                    max_overflow=0,
+                    pool_pre_ping=True,
+                    pool_recycle=300,
+                )
+    return _engine
+
+
 def ensure_signal_outbox_table(engine):
-    """確保 strategy_signal_outbox 資料表存在"""
     try:
         with engine.begin() as conn:
             conn.execute(text("""
@@ -60,7 +88,7 @@ def ensure_signal_outbox_table(engine):
                     take_profit DOUBLE PRECISION NOT NULL,
                     atr DOUBLE PRECISION,
                     ai_probability DOUBLE PRECISION,
-                    status TEXT NOT NULL DEFAULT 'pending' 
+                    status TEXT NOT NULL DEFAULT 'pending'
                         CHECK (status IN ('pending', 'processing', 'sent')),
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     sent_at TIMESTAMPTZ,
@@ -78,15 +106,16 @@ def calculate_indicators_and_signals(df, tf):
     df["EMA_50"] = df["close_price"].ewm(span=50, adjust=False).mean()
     df["EMA_100"] = df["close_price"].ewm(span=100, adjust=False).mean()
 
-    # 趨勢通道計算
     window = 20 if tf in ["5m", "15m"] else 40
     num_dev = 1.5 if tf in ["5m", "15m"] else 2.0
-    
+
     close = df["close_price"].astype(float).values
     n = len(close)
     upper = np.full(n, np.nan)
     lower = np.full(n, np.nan)
-    for i in range(window - 1, n):
+    # 只用到最新一根 K 線，因此只計算最後一根的通道（省 CPU）
+    if n >= window:
+        i = n - 1
         y = close[i - window + 1:i + 1]
         x = np.arange(window)
         slope, intercept = np.polyfit(x, y, 1)
@@ -115,7 +144,6 @@ def calculate_indicators_and_signals(df, tf):
     candle_range = df["high_price"] - df["low_price"]
     df["Body_Ratio"] = (body / candle_range.replace(0, np.nan)).fillna(0)
 
-    # 策略進場條件
     if tf in ["5m", "15m"]:
         df["Long_Signal"] = (
             (df["close_price"] > df["Trend_Resistance"])
@@ -145,7 +173,6 @@ def calculate_indicators_and_signals(df, tf):
 
 
 def scan_and_import_latest_signal(engine, table_name, symbol, timeframe):
-    """只抓取最新 K 線計算指標，並使用當下臺灣時間記錄訊號"""
     try:
         query = text(f"""
             SELECT timeframe, open_time, open_price, high_price,
@@ -170,7 +197,6 @@ def scan_and_import_latest_signal(engine, table_name, symbol, timeframe):
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
         df = calculate_indicators_and_signals(df, timeframe)
-        
         if df.empty:
             return
 
@@ -228,32 +254,31 @@ def scan_and_import_latest_signal(engine, table_name, symbol, timeframe):
                 "atr": atr,
             })
             if result.rowcount > 0:
-                print(f"[{symbol} {timeframe}] 偵測到最新即時訊號 ({direction})，已成功加入佇列！時間: {signal_time_text}")
+                print(f"[{symbol} {timeframe}] 偵測到最新即時訊號 ({direction})，已加入佇列！時間: {signal_time_text}")
 
     except Exception as e:
         print(f"[{symbol} {timeframe}] 最新訊號掃描發生錯誤: {e}")
 
 
 def process_outbox_and_notify(engine, webhook_url):
-    """讀取佇列中 pending 的訊號，發送到 Discord 並更新為 sent"""
     try:
         with engine.begin() as conn:
-            result = conn.execute(text("""
+            rows = conn.execute(text("""
                 SELECT id, symbol, timeframe, direction, signal_time_taipei,
                        entry_price, stop_loss, take_profit
                 FROM strategy_signal_outbox
                 WHERE status = 'pending'
                 ORDER BY created_at ASC
                 LIMIT 10
-            """))
-            rows = result.fetchall()
+                FOR UPDATE SKIP LOCKED
+            """)).fetchall()
 
             for row in rows:
                 sig_id, symbol, tf, direction, sig_time, entry, sl, tp = row
                 emoji = "🟢" if direction == "LONG" else "🔴"
-                
+
                 payload = {
-                    "content": f"🚨 **加密貨幣技術分析 AI 策略新訊號** 🚨",
+                    "content": "🚨 **加密貨幣技術分析 AI 策略新訊號** 🚨",
                     "embeds": [{
                         "title": f"{emoji} {symbol} ({tf}) - {direction}",
                         "color": 3066993 if direction == "LONG" else 15158332,
@@ -267,14 +292,19 @@ def process_outbox_and_notify(engine, webhook_url):
                     }]
                 }
 
-                res = requests.post(webhook_url, json=payload, timeout=10)
-                if res.status_code in [200, 204]:
+                try:
+                    res = requests.post(webhook_url, json=payload, timeout=10)
+                except requests.RequestException as e:
+                    print(f"⚠️ 訊號 ID {sig_id} 發送例外: {e}")
+                    continue
+
+                if res.status_code in (200, 204):
                     conn.execute(text("""
                         UPDATE strategy_signal_outbox
                         SET status = 'sent', sent_at = NOW()
                         WHERE id = :id
                     """), {"id": sig_id})
-                    print(f"✅ 訊號 ID {sig_id} ({symbol} {tf} {direction}) 已成功發送到 Discord！")
+                    print(f"✅ 訊號 ID {sig_id} ({symbol} {tf} {direction}) 已發送到 Discord！")
                 else:
                     print(f"⚠️ 訊號 ID {sig_id} 發送失敗，HTTP Status: {res.status_code}")
     except Exception as e:
@@ -282,23 +312,25 @@ def process_outbox_and_notify(engine, webhook_url):
 
 
 def run_scanner_job():
+    if not _scan_lock.acquire(blocking=False):
+        print("⏭️ 上一輪掃描尚未結束，本次略過")
+        return
     try:
         now_taipei = datetime.now(TAIWAN_TZ).strftime('%Y-%m-%d %H:%M:%S')
         print(f"🕒 [臺灣時間 {now_taipei}] OKX 技術分析策略訊號掃描與派送執行中...")
 
-        db_url = get_database_url()
         webhook_url = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
+        engine = get_engine()
 
-        if not db_url or not webhook_url:
+        if engine is None or not webhook_url:
             print("❌ 錯誤：未設定 SUPABASE_DB_URL 或 DISCORD_WEBHOOK_URL")
             return
 
-        engine = create_engine(db_url)
         ensure_signal_outbox_table(engine)
 
         pairs = [
             ("btc_contract_klines", "BTC"),
-            ("eth_contract_klines", "ETH")
+            ("eth_contract_klines", "ETH"),
         ]
         timeframes = ["5m", "15m", "1h", "4h"]
 
@@ -310,6 +342,8 @@ def run_scanner_job():
         print(f"✨ [臺灣時間 {datetime.now(TAIWAN_TZ).strftime('%Y-%m-%d %H:%M:%S')}] 本次掃描與派送任務執行完畢。")
     except Exception as e:
         print(f"❌ 背景掃描任務發生未預期錯誤: {e}")
+    finally:
+        _scan_lock.release()
 
 
 if __name__ == "__main__":
