@@ -8,7 +8,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 import streamlit as st
 
-# ---- 隱藏 Streamlit 的網頁介面元素並保持空白 ----
+# ---- 隱藏 Streamlit 的網頁介面元素，並保留乾淨的狀態 ----
 st.set_page_config(page_title="OKX Signal Scanner", page_icon="🚀", layout="centered")
 
 hide_streamlit_style = """
@@ -21,16 +21,14 @@ hide_streamlit_style = """
 """
 st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 
-# 支援外部 Cron Ping 的簡單檢測點
-query_params = st.query_params
-if "ping" in query_params:
-    st.write("OKX Scanner Worker is alive! 🚀")
-    st.stop()
+# 顯示簡單文字讓 UptimeRobot 訪問時有內容迴應（也可以保持空白，只要 HTTP 狀態碼是 200 即可）
+st.write("OKX Signal Scanner Worker is running 24/7! 🚀")
 
 TAIWAN_TZ = ZoneInfo('Asia/Taipei')
 ATR_STOP_MULTIPLIER = 1.5
 RISK_REWARD_RATIO = 2.5
 
+# ---- 全域快取：避免重複建立連線 ----
 @st.cache_resource
 def get_engine():
     db_url = os.getenv("SUPABASE_DB_URL", "").strip()
@@ -289,7 +287,7 @@ def run_scanner_job():
 
     process_outbox_and_notify(engine, webhook_url)
 
-# ---- 背景常駐迴圈 (每 60 秒執行一次) ----
+# ---- 背景常駐執行緒 (確保背景定時掃描) ----
 if "initialized" not in st.session_state:
     st.session_state["initialized"] = True
     def background_loop():
@@ -298,7 +296,7 @@ if "initialized" not in st.session_state:
                 run_scanner_job()
             except Exception as e:
                 print(f"❌ 背景迴圈異常: {e}")
-            time.sleep(60)
+            time.sleep(60)  # 每 60 秒執行一次
 
     import threading
     t = threading.Thread(target=background_loop, daemon=True)
