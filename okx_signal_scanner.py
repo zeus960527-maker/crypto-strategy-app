@@ -1,76 +1,48 @@
 import os
+import time
 import requests
 import pandas as pd
 import numpy as np
 from sqlalchemy import create_engine, text
 from datetime import datetime
 from zoneinfo import ZoneInfo
-from flask import Flask, jsonify
-import threading
+import streamlit as st
+
+# ---- 隱藏 Streamlit 的網頁介面元素 ----
+st.set_page_config(page_title="OKX Signal Scanner", page_icon="🚀", layout="centered")
+
+# 使用 CSS 將整個頁面內容隱藏，達到「不用顯示網頁」的效果
+hide_streamlit_style = """
+    <style>
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    header {visibility: hidden;}
+    .block-container {display: none;}
+    </style>
+"""
+st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 
 TAIWAN_TZ = ZoneInfo('Asia/Taipei')
 ATR_STOP_MULTIPLIER = 1.5
 RISK_REWARD_RATIO = 2.5
 
-app = Flask(__name__)
-
-# ---- 全域狀態：避免重複執行、重複建立連線 ----
-_scan_lock = threading.Lock()
-_engine = None
-_engine_lock = threading.Lock()
-
-
-@app.route("/", methods=["GET", "HEAD"])
-def home():
-    return "OKX Signal Scanner Worker is running 24/7! 🚀"
-
-
-@app.route("/health", methods=["GET", "HEAD"])
-def health_check():
-    return jsonify({"status": "healthy"}), 200
-
-
-@app.route("/run-scanner", methods=["GET", "POST", "HEAD"])
-def webhook_trigger():
-    """立即回應，背景執行；若上一輪還沒跑完就跳過，避免堆積拖垮免費方案記憶體"""
-    if _scan_lock.locked():
-        return jsonify({"status": "busy"}), 200
-    try:
-        t = threading.Thread(target=run_scanner_job, daemon=True)
-        t.start()
-        return jsonify({"status": "ok"}), 200
-    except Exception as e:
-        print(f"❌ 啟動背景執行緒失敗: {e}")
-        return jsonify({"status": "error"}), 500
-
-
-def get_database_url():
-    url = os.getenv("SUPABASE_DB_URL", "").strip()
-    if url.startswith("postgres://"):
-        url = "postgresql://" + url[len("postgres://"):]
-    if url.startswith("postgresql://"):
-        url = "postgresql+psycopg2://" + url[len("postgresql://"):]
-    return url or None
-
-
+# ---- 全域快取：避免重複建立連線 ----
+@st.cache_resource
 def get_engine():
-    """重複使用同一個 engine（連線池），不要每次都 create_engine"""
-    global _engine
-    if _engine is None:
-        with _engine_lock:
-            if _engine is None:
-                db_url = get_database_url()
-                if not db_url:
-                    return None
-                _engine = create_engine(
-                    db_url,
-                    pool_size=2,
-                    max_overflow=0,
-                    pool_pre_ping=True,
-                    pool_recycle=300,
-                )
-    return _engine
-
+    db_url = os.getenv("SUPABASE_DB_URL", "").strip()
+    if url := db_url:
+        if url.startswith("postgres://"):
+            url = "postgresql://" + url[len("postgres://"):]
+        if url.startswith("postgresql://"):
+            url = "postgresql+psycopg2://" + url[len("postgresql://"):]
+        return create_engine(
+            url,
+            pool_size=2,
+            max_overflow=0,
+            pool_pre_ping=True,
+            pool_recycle=300,
+        )
+    return None
 
 def ensure_signal_outbox_table(engine):
     try:
@@ -99,7 +71,6 @@ def ensure_signal_outbox_table(engine):
     except Exception as e:
         print(f"❌ 建立資料表失敗: {e}")
 
-
 def calculate_indicators_and_signals(df, tf):
     df = df.copy()
     df["EMA_21"] = df["close_price"].ewm(span=21, adjust=False).mean()
@@ -113,7 +84,6 @@ def calculate_indicators_and_signals(df, tf):
     n = len(close)
     upper = np.full(n, np.nan)
     lower = np.full(n, np.nan)
-    # 只用到最新一根 K 線，因此只計算最後一根的通道（省 CPU）
     if n >= window:
         i = n - 1
         y = close[i - window + 1:i + 1]
@@ -171,7 +141,6 @@ def calculate_indicators_and_signals(df, tf):
 
     return df
 
-
 def scan_and_import_latest_signal(engine, table_name, symbol, timeframe):
     try:
         query = text(f"""
@@ -189,7 +158,6 @@ def scan_and_import_latest_signal(engine, table_name, symbol, timeframe):
             return
 
         df = df.sort_values("open_time", ascending=True).reset_index(drop=True)
-
         df["open_time"] = pd.to_datetime(df["open_time"], errors="coerce", utc=True)
         df["open_time"] = df["open_time"].dt.tz_convert(TAIWAN_TZ).dt.tz_localize(None)
 
@@ -243,22 +211,14 @@ def scan_and_import_latest_signal(engine, table_name, symbol, timeframe):
                 ON CONFLICT (symbol, timeframe, candle_open_time, direction)
                 DO NOTHING
             """), {
-                "symbol": symbol,
-                "timeframe": timeframe,
-                "direction": direction,
-                "candle_open_time": candle_time,
-                "signal_time_text": signal_time_text,
-                "entry_price": entry,
-                "stop_loss": stop_loss,
-                "take_profit": take_profit,
-                "atr": atr,
+                "symbol": symbol, "timeframe": timeframe, "direction": direction,
+                "candle_open_time": candle_time, "signal_time_text": signal_time_text,
+                "entry_price": entry, "stop_loss": stop_loss, "take_profit": take_profit, "atr": atr,
             })
             if result.rowcount > 0:
-                print(f"[{symbol} {timeframe}] 偵測到最新即時訊號 ({direction})，已加入佇列！時間: {signal_time_text}")
-
+                print(f"[{symbol} {timeframe}] 偵測到最新即時訊號 ({direction})，已加入佇列！")
     except Exception as e:
-        print(f"[{symbol} {timeframe}] 最新訊號掃描發生錯誤: {e}")
-
+        print(f"[{symbol} {timeframe}] 掃描錯誤: {e}")
 
 def process_outbox_and_notify(engine, webhook_url):
     try:
@@ -276,7 +236,6 @@ def process_outbox_and_notify(engine, webhook_url):
             for row in rows:
                 sig_id, symbol, tf, direction, sig_time, entry, sl, tp = row
                 emoji = "🟢" if direction == "LONG" else "🔴"
-
                 payload = {
                     "content": "🚨 **加密貨幣技術分析 AI 策略新訊號** 🚨",
                     "embeds": [{
@@ -288,14 +247,12 @@ def process_outbox_and_notify(engine, webhook_url):
                             {"name": "🛡️ 建議止損價 (SL)", "value": f"`{sl:,.2f}`", "inline": True},
                             {"name": "🎯 建議止盈價 (TP)", "value": f"`{tp:,.2f}`", "inline": True},
                         ],
-                        "footer": {"text": f"OKX Strategy Scanner Bot | 臺灣時間: {datetime.now(TAIWAN_TZ).strftime('%Y-%m-%d %H:%M:%S')}"}
+                        "footer": {"text": f"OKX Strategy Scanner Bot | {datetime.now(TAIWAN_TZ).strftime('%Y-%m-%d %H:%M:%S')}"}
                     }]
                 }
-
                 try:
                     res = requests.post(webhook_url, json=payload, timeout=10)
-                except requests.RequestException as e:
-                    print(f"⚠️ 訊號 ID {sig_id} 發送例外: {e}")
+                except requests.RequestException:
                     continue
 
                 if res.status_code in (200, 204):
@@ -305,47 +262,40 @@ def process_outbox_and_notify(engine, webhook_url):
                         WHERE id = :id
                     """), {"id": sig_id})
                     print(f"✅ 訊號 ID {sig_id} ({symbol} {tf} {direction}) 已發送到 Discord！")
-                else:
-                    print(f"⚠️ 訊號 ID {sig_id} 發送失敗，HTTP Status: {res.status_code}")
     except Exception as e:
-        print(f"❌ 處理 Discord 通知佇列發生錯誤: {e}")
-
+        print(f"❌ Discord 通知錯誤: {e}")
 
 def run_scanner_job():
-    if not _scan_lock.acquire(blocking=False):
-        print("⏭️ 上一輪掃描尚未結束，本次略過")
+    now_taipei = datetime.now(TAIWAN_TZ).strftime('%Y-%m-%d %H:%M:%S')
+    print(f"🕒 [臺灣時間 {now_taipei}] 掃描執行中...")
+    webhook_url = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
+    engine = get_engine()
+
+    if engine is None or not webhook_url:
+        print("❌ 錯誤：未設定 SUPABASE_DB_URL 或 DISCORD_WEBHOOK_URL")
         return
-    try:
-        now_taipei = datetime.now(TAIWAN_TZ).strftime('%Y-%m-%d %H:%M:%S')
-        print(f"🕒 [臺灣時間 {now_taipei}] OKX 技術分析策略訊號掃描與派送執行中...")
 
-        webhook_url = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
-        engine = get_engine()
+    ensure_signal_outbox_table(engine)
+    pairs = [("btc_contract_klines", "BTC"), ("eth_contract_klines", "ETH")]
+    timeframes = ["5m", "15m", "1h", "4h"]
 
-        if engine is None or not webhook_url:
-            print("❌ 錯誤：未設定 SUPABASE_DB_URL 或 DISCORD_WEBHOOK_URL")
-            return
+    for table_name, symbol in pairs:
+        for tf in timeframes:
+            scan_and_import_latest_signal(engine, table_name, symbol, tf)
 
-        ensure_signal_outbox_table(engine)
+    process_outbox_and_notify(engine, webhook_url)
 
-        pairs = [
-            ("btc_contract_klines", "BTC"),
-            ("eth_contract_klines", "ETH"),
-        ]
-        timeframes = ["5m", "15m", "1h", "4h"]
+# ---- 背景常駐迴圈 (每 60 秒執行一次) ----
+if "initialized" not in st.session_state:
+    st.session_state["initialized"] = True
+    def background_loop():
+        while True:
+            try:
+                run_scanner_job()
+            except Exception as e:
+                print(f"❌ 背景迴圈異常: {e}")
+            time.sleep(60)  # 每 60 秒執行一次掃描
 
-        for table_name, symbol in pairs:
-            for tf in timeframes:
-                scan_and_import_latest_signal(engine, table_name, symbol, tf)
-
-        process_outbox_and_notify(engine, webhook_url)
-        print(f"✨ [臺灣時間 {datetime.now(TAIWAN_TZ).strftime('%Y-%m-%d %H:%M:%S')}] 本次掃描與派送任務執行完畢。")
-    except Exception as e:
-        print(f"❌ 背景掃描任務發生未預期錯誤: {e}")
-    finally:
-        _scan_lock.release()
-
-
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+    import threading
+    t = threading.Thread(target=background_loop, daemon=True)
+    t.start()
