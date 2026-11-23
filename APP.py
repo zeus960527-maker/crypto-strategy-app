@@ -796,11 +796,15 @@ def build_candidate_signals(df, tf):
     return df
 
 
+AI_FEATURE_COLS = [
+    "RSI", "vol_ratio", "body_ratio", "atr_ratio", "ema_diff",
+    "macro_trend_bias", "macro_sentiment"
+]
+AI_MIN_PROB = 0.60  # 模型預測「會先碰到止盈」的機率達此門檻才進場
+
+
 def train_or_get_ai_model(df, key):
-    feature_cols = [
-        "RSI", "vol_ratio", "body_ratio", "atr_ratio", "ema_diff",
-        "macro_trend_bias", "macro_sentiment"
-    ]
+    feature_cols = AI_FEATURE_COLS
     candidates = df[
         df["Base_Long"] | df["Base_Short"]
         | df["Long_Signal"] | df["Short_Signal"]
@@ -832,7 +836,7 @@ def train_or_get_ai_model(df, key):
 
 def add_trade_signals(df, model):
     df = df.copy()
-    df["AI_Prob"] = np.random.uniform(0.90, 0.98, len(df))
+    df["AI_Prob"] = np.nan  # 由訓練後的模型填入真實機率
     df["Long_Signal"] = df["Base_Long"]
     df["Short_Signal"] = df["Base_Short"]
     return df
@@ -892,6 +896,7 @@ def remember_and_apply_signals(view_df, symbol, tf):
     view_df = view_df.copy()
     if "Sig_Price" not in view_df.columns:
         view_df["Sig_Price"] = np.nan
+    view_df["Live_Fired"] = False
     times = view_df["open_time"].values
     high_arr = view_df["high_price"].values
     low_arr = view_df["low_price"].values
@@ -904,6 +909,7 @@ def remember_and_apply_signals(view_df, symbol, tf):
         bar_t = view_df["open_time"].iloc[idx]
         if not (bar_t <= t < bar_t + step):
             continue
+        view_df.iloc[idx, ci("Live_Fired")] = True
         view_df.iloc[idx, ci("Long_Signal")] = (direction == "LONG")
         view_df.iloc[idx, ci("Short_Signal")] = (direction == "SHORT")
         if pd.notna(e_price):
@@ -940,6 +946,17 @@ def _build_chart_bundle(df_tf, symbol, pair, tf):
     model, training_count, winning_count = train_or_get_ai_model(
         view_df, f"{symbol}_{tf}"
     )
+
+    # 用模型機率篩選訊號：低於門檻的候選不進場（已即時發出的訊號保留）
+    if model is not None:
+        try:
+            prob = model.predict_proba(view_df[AI_FEATURE_COLS])[:, 1]
+            view_df["AI_Prob"] = prob
+            keep = (prob >= AI_MIN_PROB) | view_df["Live_Fired"].values
+            view_df["Long_Signal"] = view_df["Long_Signal"] & keep
+            view_df["Short_Signal"] = view_df["Short_Signal"] & keep
+        except Exception as e:
+            print(f"AI 機率計算失敗: {e}")
 
     latest = view_df.iloc[-1]
     latest_close = float(latest["close_price"])
@@ -1304,11 +1321,11 @@ def render_live_kline_chart(table, symbol, pair, tf):
         )
 
     with panel_col:
-        st.markdown("### 🎯 AI 即時操作建議 (90%+ 高勝率)")
+        st.markdown("### 🎯 AI 即時操作建議")
         st.caption(
             f"歷史訓練樣本：{training_count} 筆｜"
             f"成功標籤：{winning_count} 筆｜"
-            f"模型精準度：90.0%+"
+            f"歷史成功率：{(winning_count / training_count if training_count else 0):.1%}"
         )
 
         st.markdown(f"""
@@ -1347,7 +1364,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
             for _, signal in recent_signals.iloc[::-1].iterrows():
                 signal_time = signal["open_time"].strftime("%m/%d %H:%M")
                 signal_price = float(signal["Sig_Price"]) if pd.notna(signal["Sig_Price"]) else float(signal["close_price"])
-                signal_prob = float(signal["AI_Prob"]) * 100
+                signal_prob = float(signal["AI_Prob"]) * 100 if pd.notna(signal["AI_Prob"]) else float("nan")
 
                 is_long_sig = bool(signal["Long_Signal"])
                 st.markdown(
@@ -1355,7 +1372,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
                     f'<div><div class="sig-dir">{"🟢 LONG" if is_long_sig else "🔴 SHORT"}</div>'
                     f'<div class="sig-time">{signal_time}</div></div>'
                     f'<div><div class="sig-price">{signal_price:,.2f}</div>'
-                    f'<div class="sig-prob">AI {signal_prob:.1f}%</div></div>'
+                    f'<div class="sig-prob">AI {"—" if pd.isna(signal_prob) else f"{signal_prob:.1f}%"}</div></div>'
                     f'</div>',
                     unsafe_allow_html=True,
                 )
