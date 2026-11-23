@@ -1,10 +1,14 @@
-import os
+import time
+import threading
 import ccxt
 import psycopg2
-from flask import Flask, jsonify
+import streamlit as st
 
-app = Flask(__name__)
+# 網頁端顯示簡單的運行狀態（即使不想看網頁，Streamlit 也需要一個基本的介面檔案）
+st.title("ETH 數據自動同步系統")
+st.write("狀態：背景自動同步執行中 🚀")
 
+# 建議將敏感的資料庫連線改用 Streamlit Secrets 管理，此處保留您的連線字串
 SUPABASE_DB_URL = "postgresql://postgres.ygzeqvcyqtvhvjrxhzdv:%4010233960527Ken@aws-0-ap-northeast-1.pooler.supabase.com:6543/postgres"
 
 def get_db_connection():
@@ -67,25 +71,23 @@ def fetch_single_timeframe(tf):
     finally:
         connection.close()
 
-@app.route("/")
-def home():
-    return "ETH OKX Fetcher is running! 🚀"
+def background_scanner():
+    """背景迴圈：每隔 60 秒執行一次資料抓取"""
+    while True:
+        try:
+            timeframes = ['5m', '15m', '1h', '4h']
+            for tf in timeframes:
+                fetch_single_timeframe(tf)
+        except Exception as e:
+            print(f"掃描執行錯誤: {e}")
+        time.sleep(60)
 
-@app.route("/health", methods=["GET"])
-def health_check():
-    return jsonify({"status": "healthy"}), 200
+# 使用 st.cache_resource 確保背景執行緒只會啟動一次，不會因為頁面重新整理而重複建立
+@st.cache_resource
+def start_background_task():
+    thread = threading.Thread(target=background_scanner, daemon=True)
+    thread.start()
+    return "Started"
 
-# 💡 當 cron-job.org 或 Render Cron 呼叫此路由時，執行一次抓取並立刻回應 200 OK
-@app.route("/run-scanner", methods=["GET", "POST"])
-def run_scanner():
-    try:
-        timeframes = ['5m', '15m', '1h', '4h']
-        for tf in timeframes:
-            fetch_single_timeframe(tf)
-        return jsonify({"status": "success", "message": "ETH data updated successfully!"}), 200
-    except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
-
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+# 啟動背景任務
+start_background_task()
