@@ -1,14 +1,13 @@
 import time
-import threading
 import ccxt
 import psycopg2
 import streamlit as st
+from apscheduler.schedulers.background import BackgroundScheduler
 
-# 網頁端顯示簡單的運行狀態（即使不想看網頁，Streamlit 也需要一個基本的介面檔案）
+# 網頁端顯示簡單的運行狀態
 st.title("ETH 數據自動同步系統")
-st.write("狀態：背景自動同步執行中 🚀")
+st.write("狀態：內建 Cron 執行緒排程中 🚀")
 
-# 建議將敏感的資料庫連線改用 Streamlit Secrets 管理，此處保留您的連線字串
 SUPABASE_DB_URL = "postgresql://postgres.ygzeqvcyqtvhvjrxhzdv:%4010233960527Ken@aws-0-ap-northeast-1.pooler.supabase.com:6543/postgres"
 
 def get_db_connection():
@@ -71,23 +70,23 @@ def fetch_single_timeframe(tf):
     finally:
         connection.close()
 
-def background_scanner():
-    """背景迴圈：每隔 60 秒執行一次資料抓取"""
-    while True:
-        try:
-            timeframes = ['5m', '15m', '1h', '4h']
-            for tf in timeframes:
-                fetch_single_timeframe(tf)
-        except Exception as e:
-            print(f"掃描執行錯誤: {e}")
-        time.sleep(60)
+def run_scanner():
+    """每次排程觸發時執行的動作"""
+    try:
+        timeframes = ['5m', '15m', '1h', '4h']
+        for tf in timeframes:
+            fetch_single_timeframe(tf)
+    except Exception as e:
+        print(f"排程執行錯誤: {e}")
 
-# 使用 st.cache_resource 確保背景執行緒只會啟動一次，不會因為頁面重新整理而重複建立
+# 使用 st.cache_resource 確保排程器只初始化一次，避免重複建立
 @st.cache_resource
-def start_background_task():
-    thread = threading.Thread(target=background_scanner, daemon=True)
-    thread.start()
-    return "Started"
+def init_scheduler():
+    scheduler = BackgroundScheduler()
+    # 設定每 1 分鐘執行一次 run_scanner（可根據需求調整秒數或改用其他 cron 表達式）
+    scheduler.add_job(run_scanner, 'interval', minutes=1)
+    scheduler.start()
+    return scheduler
 
-# 啟動背景任務
-start_background_task()
+# 啟動排程器
+init_scheduler()
