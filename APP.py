@@ -441,8 +441,42 @@ def get_db_engine():
     )
 
 
-def save_signal_to_outbox(symbol, tf, signal_time, direction, price, ai_prob):
-    return
+def save_signal_to_outbox(symbol, tf, signal_time, direction, price, ai_prob,
+                          stop_loss=None, take_profit=None):
+    """訊號已先顯示在網頁上，再把同一筆寫入資料庫。
+    同一根 K 線在資料庫已有訊號就不重複寫入。"""
+    if stop_loss is None or take_profit is None:
+        return
+    try:
+        step = pd.Timedelta(
+            {"5m": "5min", "15m": "15min", "1h": "1h", "4h": "4h"}.get(tf, "5min")
+        )
+        t0 = pd.Timestamp(signal_time).to_pydatetime().replace(tzinfo=TAIWAN_TZ)
+        t1 = t0 + step
+        engine = get_db_engine()
+        with engine.begin() as conn:
+            conn.execute(
+                text("""
+                    INSERT INTO strategy_signal_outbox
+                        (symbol, timeframe, signal_time_taipei, direction,
+                         entry_price, stop_loss, take_profit)
+                    SELECT :sym, :tf, :t0, :d, :e, :sl, :tp
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM strategy_signal_outbox
+                        WHERE UPPER(symbol) LIKE :symlike
+                          AND LOWER(timeframe) = :tf
+                          AND signal_time_taipei >= :t0
+                          AND signal_time_taipei < :t1
+                    )
+                """),
+                {
+                    "sym": str(symbol).upper(), "symlike": str(symbol).upper() + "%",
+                    "tf": str(tf).lower(), "t0": t0, "t1": t1, "d": direction,
+                    "e": float(price), "sl": float(stop_loss), "tp": float(take_profit),
+                },
+            )
+    except Exception as e:
+        print(f"寫入 strategy_signal_outbox 失敗: {e}")
 
 
 def outbox_stamp(symbol, tf):
@@ -946,10 +980,13 @@ def _build_chart_bundle(df_tf, symbol, pair, tf):
     ai_score = float(latest["AI_Prob"]) * 100 if pd.notna(latest["AI_Prob"]) else 0.0
     latest_time = latest["open_time"]
 
+    # 訊號已先在畫面上標出，這裡再把同一筆（含 SL / TP）寫入資料庫
+    latest_sl = float(latest["Stop_Loss"]) if pd.notna(latest["Stop_Loss"]) else None
+    latest_tp = float(latest["Take_Profit"]) if pd.notna(latest["Take_Profit"]) else None
     if bool(latest["Long_Signal"]):
-        save_signal_to_outbox(symbol, tf, latest_time, "LONG", latest_close, ai_score)
+        save_signal_to_outbox(symbol, tf, latest_time, "LONG", latest_close, ai_score, latest_sl, latest_tp)
     elif bool(latest["Short_Signal"]):
-        save_signal_to_outbox(symbol, tf, latest_time, "SHORT", latest_close, ai_score)
+        save_signal_to_outbox(symbol, tf, latest_time, "SHORT", latest_close, ai_score, latest_sl, latest_tp)
 
     full_view_df = view_df
     if MAX_PLOT_BARS and len(view_df) > MAX_PLOT_BARS:
