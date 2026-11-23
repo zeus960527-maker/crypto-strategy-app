@@ -6,11 +6,12 @@ import time
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import streamlit as st
+import schedule
 
-# 設定頁面空白或僅顯示簡單提示（不顯示多餘網頁介面）
+# 設定頁面空白或僅顯示簡單提示
 st.set_page_config(page_title="OKX Background Worker", layout="centered")
 st.title("🔄 OKX 數據同步背景服務運行中")
-st.write("此服務正在背景 24/7 自動回補與抓取 OKX K 棒數據並寫入 Supabase。")
+st.write("此服務正在背景 24/7 自動回補與定時抓取 OKX K 棒數據並寫入 Supabase。")
 
 SUPABASE_DB_URL = "postgresql://postgres.ygzeqvcyqtvhvjrxhzdv:%4010233960527Ken@aws-0-ap-northeast-1.pooler.supabase.com:6543/postgres"
 
@@ -99,7 +100,7 @@ def catch_up_historical_data(tf):
     finally:
         connection.close()
 
-# 💡 即時高頻抓取最新 10 根 K 棒
+# 💡 定時抓取最新資料的任務
 def fetch_single_timeframe_realtime(tf):
     exchange = ccxt.okx({'enableRateLimit': True})
     symbol = 'BTC/USDT:USDT'
@@ -145,7 +146,7 @@ def fetch_single_timeframe_realtime(tf):
                 cursor.executemany(sql, batch_data)
                 connection.commit()
                 latest_close = batch_data[-1][4]
-                print(f" -> [BTC-{tf}] 即時同步成功 | 最新收盤價: {latest_close:,.2f}")
+                print(f" -> [BTC-{tf}] Cron 定時同步成功 | 最新收盤價: {latest_close:,.2f}")
 
     except Exception as e:
         connection.rollback()
@@ -162,27 +163,36 @@ def run_sync_task(task_func):
             except Exception as e:
                 pass
 
+def scheduled_job():
+    """由 Cron Job 觸發的排程任務"""
+    try:
+        print("⏰ [Cron Job] 開始執行定時抓取任務...")
+        run_sync_task(fetch_single_timeframe_realtime)
+    except Exception as e:
+        print(f"Cron Job 執行錯誤: {e}")
+
 def background_worker():
     print("==========================================")
-    print(" BTC 雲端高頻即時數據同步背景執行緒已啟動")
+    print(" BTC 雲端定時排程（Cron）背景執行緒已啟動")
     print("==========================================")
     
-    print("🔄 正在檢查並補齊自上次關閉以來遺漏的歷史 K 棒...")
+    # 💡 啟動時先執行一次歷史斷點補齊
+    print("🔄 正在檢查並補齊歷史 K 棒...")
     run_sync_task(catch_up_historical_data)
-    print("🚀 歷史回補完畢，正式進入即時高頻監控迴圈！")
+    print("🚀 歷史回補完畢，正式註冊 Cron 定時排程！")
 
+    # 💡 設定 Cron 排程規則（例如：每隔 1 分鐘執行一次，你也可以改為 schedule.every(5).minutes）
+    schedule.every(1).minutes.do(scheduled_job)
+    
+    # 也可以設定特定時間（例如每天早上 8 點執行）：
+    # schedule.every().day.at("08:00").do(scheduled_job)
+
+    # 持續檢查並執行排程
     while True:
-        try:
-            start_time = time.time()
-            run_sync_task(fetch_single_timeframe_realtime)
-            elapsed = time.time() - start_time
-            sleep_time = max(1.0, 3.0 - elapsed)
-            time.sleep(sleep_time)
-        except Exception as e:
-            print(f"背景迴圈錯誤: {e}")
-            time.sleep(5)
+        schedule.run_pending()
+        time.sleep(1)
 
-# 利用 Streamlit 的 cache_resource 確保背景執行緒只會全域啟動一次
+# 利用 Streamlit 的 cache_resource 確保背景排程執行緒只會啟動一次
 @st.cache_resource
 def start_background_service():
     t = threading.Thread(target=background_worker, daemon=True)
