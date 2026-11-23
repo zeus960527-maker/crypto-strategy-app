@@ -1,42 +1,16 @@
+# okx_fetcher.py
 import os
 import ccxt
 import psycopg2
 import time
-import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from flask import Flask, jsonify
+import streamlit as st
 
-app = Flask(__name__)
-
-# 用來確保 BTC 背景執行緒只會被安全啟動一次的鎖與旗標
-_worker_started = False
-_worker_lock = threading.Lock()
-
-def ensure_background_worker_running():
-    global _worker_started
-    if not _worker_started:
-        with _worker_lock:
-            if not _worker_started:
-                t = threading.Thread(target=background_worker, daemon=True)
-                t.start()
-                _worker_started = True
-
-@app.before_request
-def before_request_func():
-    ensure_background_worker_running()
-
-@app.route("/")
-def home():
-    return "BTC OKX Fetcher is running 24/7! 🚀"
-
-@app.route("/health", methods=["GET"])
-def health_check():
-    return jsonify({"status": "healthy"}), 200
-
-@app.route("/run-scanner", methods=["GET", "POST"])
-def run_scanner():
-    return jsonify({"status": "success", "message": "BTC Ping received, background worker is active!"}), 200
+# 設定頁面空白或僅顯示簡單提示（不顯示多餘網頁介面）
+st.set_page_config(page_title="OKX Background Worker", layout="centered")
+st.title("🔄 OKX 數據同步背景服務運行中")
+st.write("此服務正在背景 24/7 自動回補與抓取 OKX K 棒數據並寫入 Supabase。")
 
 SUPABASE_DB_URL = "postgresql://postgres.ygzeqvcyqtvhvjrxhzdv:%4010233960527Ken@aws-0-ap-northeast-1.pooler.supabase.com:6543/postgres"
 
@@ -47,7 +21,7 @@ def get_db_connection():
         options="-c statement_timeout=15000"
     )
 
-# 💡 啟動時自動補齊歷史資料（從資料庫最新時間開始接續往後抓，直到追到最新）
+# 💡 啟動時自動補齊歷史資料
 def catch_up_historical_data(tf):
     exchange = ccxt.okx({'enableRateLimit': True})
     symbol = 'BTC/USDT:USDT'
@@ -86,7 +60,6 @@ def catch_up_historical_data(tf):
                     for candle in ohlcv
                 ]
 
-                # 避免重複抓到邊界的那一根
                 if current_since and all_data_to_insert and batch_data[0][1] == all_data_to_insert[-1][1]:
                     batch_data = batch_data[1:]
 
@@ -95,7 +68,6 @@ def catch_up_historical_data(tf):
 
                 all_data_to_insert.extend(batch_data)
                 
-                # 如果抓回來的數量小於 limit，代表已經追到交易所最新資料
                 if len(ohlcv) < params['limit']:
                     break
                 
@@ -104,7 +76,6 @@ def catch_up_historical_data(tf):
                     break
                 current_since = next_since
                 
-                # 避免請求過快觸發交易所限制
                 time.sleep(0.2)
 
             if all_data_to_insert:
@@ -196,12 +167,10 @@ def background_worker():
     print(" BTC 雲端高頻即時數據同步背景執行緒已啟動")
     print("==========================================")
     
-    # 💡 步驟 1：每次啟動時，先執行歷史斷點補齊
     print("🔄 正在檢查並補齊自上次關閉以來遺漏的歷史 K 棒...")
     run_sync_task(catch_up_historical_data)
     print("🚀 歷史回補完畢，正式進入即時高頻監控迴圈！")
 
-    # 💡 步驟 2：進入無限迴圈，每幾秒同步最新即時資料
     while True:
         try:
             start_time = time.time()
@@ -213,6 +182,12 @@ def background_worker():
             print(f"背景迴圈錯誤: {e}")
             time.sleep(5)
 
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+# 利用 Streamlit 的 cache_resource 確保背景執行緒只會全域啟動一次
+@st.cache_resource
+def start_background_service():
+    t = threading.Thread(target=background_worker, daemon=True)
+    t.start()
+    return "Started"
+
+# 自動啟動背景服務
+start_background_service()
