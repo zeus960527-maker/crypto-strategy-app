@@ -1050,6 +1050,15 @@ def remember_and_apply_signals(view_df, symbol, tf):
     return view_df
 
 
+def is_mobile_client():
+    """依瀏覽器 User-Agent 判斷是否為手機（判斷不到時視為桌機）。"""
+    try:
+        ua = str(st.context.headers.get("User-Agent", "")).lower()
+    except Exception:
+        return False
+    return any(k in ua for k in ("iphone", "android", "mobile", "ipad"))
+
+
 def _build_chart_bundle(df_tf, symbol, pair, tf):
     df_tf, win, dev = calculate_indicators(df_tf, tf)
     df_tf = build_candidate_signals(df_tf, tf)
@@ -1081,7 +1090,9 @@ def _build_chart_bundle(df_tf, symbol, pair, tf):
     if MAX_PLOT_BARS and len(view_df) > MAX_PLOT_BARS:
         view_df = view_df.tail(MAX_PLOT_BARS)
 
-    display_len = 85
+    # 手機螢幕窄：同一畫面少放一些 K 棒，每根 K 棒就會比較粗
+    mobile = is_mobile_client()
+    display_len = 40 if mobile else 85
     if len(view_df) > display_len:
         start_time = view_df["open_time"].iloc[-display_len]
         end_time = view_df["open_time"].iloc[-1] + pd.Timedelta(minutes=75 if tf in ['5m','15m'] else 300)
@@ -1129,7 +1140,7 @@ def _build_chart_bundle(df_tf, symbol, pair, tf):
         low=view_df["low_price"],
         close=view_df["close_price"],
         name=symbol,
-        line=dict(width=1.3),
+        line=dict(width=2.2 if mobile else 1.3),
         increasing_line_color="#0ECB81",
         increasing_fillcolor="#0ECB81",
         decreasing_line_color="#F6465D",
