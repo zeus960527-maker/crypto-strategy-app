@@ -8,10 +8,9 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 import streamlit as st
 
-# ---- 隱藏 Streamlit 的網頁介面元素 ----
+# ---- 隱藏 Streamlit 的網頁介面元素並保持空白 ----
 st.set_page_config(page_title="OKX Signal Scanner", page_icon="🚀", layout="centered")
 
-# 使用 CSS 將整個頁面內容隱藏，達到「不用顯示網頁」的效果
 hide_streamlit_style = """
     <style>
     #MainMenu {visibility: hidden;}
@@ -22,11 +21,16 @@ hide_streamlit_style = """
 """
 st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 
+# 支援外部 Cron Ping 的簡單檢測點
+query_params = st.query_params
+if "ping" in query_params:
+    st.write("OKX Scanner Worker is alive! 🚀")
+    st.stop()
+
 TAIWAN_TZ = ZoneInfo('Asia/Taipei')
 ATR_STOP_MULTIPLIER = 1.5
 RISK_REWARD_RATIO = 2.5
 
-# ---- 全域快取：避免重複建立連線 ----
 @st.cache_resource
 def get_engine():
     db_url = os.getenv("SUPABASE_DB_URL", "").strip()
@@ -294,7 +298,7 @@ if "initialized" not in st.session_state:
                 run_scanner_job()
             except Exception as e:
                 print(f"❌ 背景迴圈異常: {e}")
-            time.sleep(60)  # 每 60 秒執行一次掃描
+            time.sleep(60)
 
     import threading
     t = threading.Thread(target=background_loop, daemon=True)
