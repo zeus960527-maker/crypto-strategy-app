@@ -878,15 +878,60 @@ def build_candidate_signals(df, tf):
     return df
 
 
+def fill_missing_tp_sl(df):
+    """圖上有進場點位、但缺少止損 / 止盈（例如只存在於資料庫或本機記錄的訊號）時，
+    用與 build_candidate_signals 相同的邏輯補齊，並以碰到 TP / SL 結算，
+    讓圖上每一個進場點位都能成為 AI 訓練樣本。"""
+    df = df.copy()
+    need = (df["Long_Signal"] | df["Short_Signal"]) & (
+        df["Stop_Loss"].isna() | df["Take_Profit"].isna()
+    )
+    if not need.any():
+        return df
+
+    close_arr = df["close_price"].values
+    high_arr = df["high_price"].values
+    low_arr = df["low_price"].values
+    atr_arr = df["ATR"].values
+    swing_low_arr = df["low_price"].rolling(10).min().values
+    swing_high_arr = df["high_price"].rolling(10).max().values
+    ci = df.columns.get_loc
+
+    for i in np.flatnonzero(need.values):
+        is_l = bool(df["Long_Signal"].iloc[i])
+        sp = df["Sig_Price"].iloc[i] if "Sig_Price" in df.columns else np.nan
+        entry = float(sp) if pd.notna(sp) else float(close_arr[i])
+        atr = atr_arr[i]
+        if pd.isna(atr) or atr <= 0 or entry <= 0:
+            continue
+
+        dyn_stop_mult, dyn_rr = calculate_dynamic_tp_sl(df.iloc[i], is_l)
+        if is_l:
+            sw = swing_low_arr[i]
+            struct_sl = (sw - atr * 0.2) if pd.notna(sw) else entry - atr * dyn_stop_mult
+            risk = min(max(entry - struct_sl, atr * 1.0), atr * 3.0)
+            sl, tp, direction = entry - risk, entry + risk * dyn_rr, "LONG"
+        else:
+            sw = swing_high_arr[i]
+            struct_sl = (sw + atr * 0.2) if pd.notna(sw) else entry + atr * dyn_stop_mult
+            risk = min(max(struct_sl - entry, atr * 1.0), atr * 3.0)
+            sl, tp, direction = entry + risk, entry - risk * dyn_rr, "SHORT"
+
+        df.iloc[i, ci("Stop_Loss")] = sl
+        df.iloc[i, ci("Take_Profit")] = tp
+        df.iloc[i, ci("Trade_Result")] = judge_tp_sl(
+            direction, sl, tp, high_arr, low_arr, i + 1
+        )
+    return df
+
+
 def train_or_get_ai_model(df, key):
     feature_cols = [
         "RSI", "vol_ratio", "body_ratio", "atr_ratio", "ema_diff",
         "macro_trend_bias", "macro_sentiment"
     ]
-    candidates = df[
-        df["Base_Long"] | df["Base_Short"]
-        | df["Long_Signal"] | df["Short_Signal"]
-    ].copy()
+    # 訓練樣本 = K 線圖上標出的每一個進場點位
+    candidates = df[df["Long_Signal"] | df["Short_Signal"]].copy()
     train_df = candidates[candidates["Trade_Result"].isin(["成功", "未達標"])].copy()
 
     if len(train_df) < 10 or train_df["Trade_Result"].nunique() < 2:
@@ -1017,6 +1062,7 @@ def _build_chart_bundle(df_tf, symbol, pair, tf):
         return None
 
     view_df = remember_and_apply_signals(view_df, symbol, tf)
+    view_df = fill_missing_tp_sl(view_df)
 
     # 以「碰到 TP / SL」結算後的結果作為 AI 訓練標籤
     model, training_count, winning_count = train_or_get_ai_model(
