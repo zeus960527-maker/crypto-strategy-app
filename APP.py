@@ -1073,7 +1073,7 @@ def _build_chart_bundle(df_tf, symbol, pair, tf):
         cols=1,
         shared_xaxes=True,
         vertical_spacing=0.015,
-        row_heights=[0.66, 0.34],
+        row_heights=[0.58, 0.42],
     )
 
     fig.add_trace(go.Candlestick(
@@ -1311,6 +1311,7 @@ def _build_chart_bundle(df_tf, symbol, pair, tf):
         spikecolor="#a0a6b2",
         row=2,
         col=1,
+        range=[0, float(visible_df["volume"].max()) * 1.05],
         fixedrange=False,
     )
 
