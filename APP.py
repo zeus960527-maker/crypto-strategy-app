@@ -740,6 +740,8 @@ def build_candidate_signals(df, tf):
     high_arr = df["high_price"].values
     low_arr = df["low_price"].values
     atr_arr = df["ATR"].values
+    swing_low_arr = df["low_price"].rolling(10).min().values
+    swing_high_arr = df["high_price"].rolling(10).max().values
     base_long_arr = df["Base_Long"].values
     base_short_arr = df["Base_Short"].values
     n = len(df)
@@ -764,13 +766,21 @@ def build_candidate_signals(df, tf):
         current_row = df.iloc[i]
         dyn_stop_mult, dyn_rr = calculate_dynamic_tp_sl(current_row, is_l)
 
+        # 止損放在近 10 根的波段高低點之外再加 0.2 ATR 緩衝（避免被雜訊掃到），
+        # 但風險距離限制在 1.0 ~ 3.0 ATR 之間；止盈依動態盈虧比由風險距離推算。
+        sw_low = swing_low_arr[i]
+        sw_high = swing_high_arr[i]
         if is_l:
-            sl = entry - atr * dyn_stop_mult
-            tp = entry + (entry - sl) * dyn_rr
+            struct_sl = (sw_low - atr * 0.2) if pd.notna(sw_low) else entry - atr * dyn_stop_mult
+            risk = min(max(entry - struct_sl, atr * 1.0), atr * 3.0)
+            sl = entry - risk
+            tp = entry + risk * dyn_rr
             direction = 'LONG'
         else:
-            sl = entry + atr * dyn_stop_mult
-            tp = entry - (sl - entry) * dyn_rr
+            struct_sl = (sw_high + atr * 0.2) if pd.notna(sw_high) else entry + atr * dyn_stop_mult
+            risk = min(max(struct_sl - entry, atr * 1.0), atr * 3.0)
+            sl = entry + risk
+            tp = entry - risk * dyn_rr
             direction = 'SHORT'
 
         stop_losses.append(sl)
