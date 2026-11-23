@@ -666,6 +666,30 @@ def calculate_dynamic_tp_sl(row, is_long):
     return stop_mult, rr_ratio
 
 
+def judge_tp_sl(direction, sl, tp, high_arr, low_arr, start):
+    """以「碰到止盈 / 止損」判斷單筆訊號是否成功（AI 訓練標籤的唯一依據）。
+    從 start 起逐根 K 線檢查，先碰到 TP → 成功；先碰到 SL → 未達標；
+    都還沒碰到 → 觀察中（不納入訓練）。同一根同時碰到 TP 與 SL 時
+    無法得知先後，保守視為未達標。"""
+    h = high_arr[start:]
+    l = low_arr[start:]
+    if len(h) == 0:
+        return "觀察中"
+    if direction == "LONG":
+        hit_sl, hit_tp = l <= sl, h >= tp
+    else:
+        hit_sl, hit_tp = h >= sl, l <= tp
+    sl_pos = np.flatnonzero(hit_sl)
+    tp_pos = np.flatnonzero(hit_tp)
+    if sl_pos.size == 0 and tp_pos.size == 0:
+        return "觀察中"
+    if tp_pos.size == 0:
+        return "未達標"
+    if sl_pos.size == 0:
+        return "成功"
+    return "成功" if tp_pos[0] < sl_pos[0] else "未達標"
+
+
 def build_candidate_signals(df, tf):
     df = df.copy()
 
@@ -752,51 +776,7 @@ def build_candidate_signals(df, tf):
         stop_losses.append(sl)
         take_profits.append(tp)
 
-        outcome = "觀察中"
-        matured = False
-
-        for j in range(i + 1, min(n, i + 100)):
-            h = high_arr[j]
-            l = low_arr[j]
-            if pd.isna(h) or pd.isna(l):
-                continue
-
-            if direction == 'LONG':
-                if l <= sl:
-                    outcome = "未達標"
-                    matured = True
-                    break
-                elif h >= tp:
-                    outcome = "成功"
-                    matured = True
-                    break
-            else:
-                if h >= sl:
-                    outcome = "未達標"
-                    matured = True
-                    break
-                elif l <= tp:
-                    outcome = "成功"
-                    matured = True
-                    break
-
-        if not matured:
-            current_h = high_arr[n - 1]
-            current_l = low_arr[n - 1]
-            if direction == 'LONG':
-                if current_l <= sl:
-                    outcome = "未達標"
-                elif current_h >= tp:
-                    outcome = "成功"
-                else:
-                    outcome = "觀察中"
-            else:
-                if current_h >= sl:
-                    outcome = "未達標"
-                elif current_l <= tp:
-                    outcome = "成功"
-                else:
-                    outcome = "觀察中"
+        outcome = judge_tp_sl(direction, sl, tp, high_arr, low_arr, i + 1)
 
         trade_results.append(outcome)
 
@@ -811,7 +791,10 @@ def train_or_get_ai_model(df, key):
         "RSI", "vol_ratio", "body_ratio", "atr_ratio", "ema_diff",
         "macro_trend_bias", "macro_sentiment"
     ]
-    candidates = df[df["Base_Long"] | df["Base_Short"]].copy()
+    candidates = df[
+        df["Base_Long"] | df["Base_Short"]
+        | df["Long_Signal"] | df["Short_Signal"]
+    ].copy()
     train_df = candidates[candidates["Trade_Result"].isin(["成功", "未達標"])].copy()
 
     if len(train_df) < 10 or train_df["Trade_Result"].nunique() < 2:
@@ -900,6 +883,8 @@ def remember_and_apply_signals(view_df, symbol, tf):
     if "Sig_Price" not in view_df.columns:
         view_df["Sig_Price"] = np.nan
     times = view_df["open_time"].values
+    high_arr = view_df["high_price"].values
+    low_arr = view_df["low_price"].values
     ci = view_df.columns.get_loc
 
     for t, (direction, e_price, sl, tp) in merged.items():
@@ -917,7 +902,13 @@ def remember_and_apply_signals(view_df, symbol, tf):
             view_df.iloc[idx, ci("Stop_Loss")] = sl
         if pd.notna(tp):
             view_df.iloc[idx, ci("Take_Profit")] = tp
-        if view_df.iloc[idx, ci("Trade_Result")] == "非訊號":
+        sl_v = view_df.iloc[idx, ci("Stop_Loss")]
+        tp_v = view_df.iloc[idx, ci("Take_Profit")]
+        if pd.notna(sl_v) and pd.notna(tp_v) and ((sl_v < tp_v) == (direction == "LONG")):
+            view_df.iloc[idx, ci("Trade_Result")] = judge_tp_sl(
+                direction, sl_v, tp_v, high_arr, low_arr, idx + 1
+            )
+        elif view_df.iloc[idx, ci("Trade_Result")] == "非訊號":
             view_df.iloc[idx, ci("Trade_Result")] = "觀察中"
     return view_df
 
@@ -925,10 +916,7 @@ def remember_and_apply_signals(view_df, symbol, tf):
 def _build_chart_bundle(df_tf, symbol, pair, tf):
     df_tf, win, dev = calculate_indicators(df_tf, tf)
     df_tf = build_candidate_signals(df_tf, tf)
-    model, training_count, winning_count = train_or_get_ai_model(
-        df_tf, f"{symbol}_{tf}"
-    )
-    df_tf = add_trade_signals(df_tf, model)
+    df_tf = add_trade_signals(df_tf, None)
 
     view_df = df_tf.copy()
 
@@ -937,6 +925,11 @@ def _build_chart_bundle(df_tf, symbol, pair, tf):
         return None
 
     view_df = remember_and_apply_signals(view_df, symbol, tf)
+
+    # 以「碰到 TP / SL」結算後的結果作為 AI 訓練標籤
+    model, training_count, winning_count = train_or_get_ai_model(
+        view_df, f"{symbol}_{tf}"
+    )
 
     latest = view_df.iloc[-1]
     latest_close = float(latest["close_price"])
