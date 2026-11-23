@@ -1119,7 +1119,7 @@ def _build_chart_bundle(df_tf, symbol, pair, tf):
         cols=1,
         shared_xaxes=True,
         vertical_spacing=0.015,
-        row_heights=[0.58, 0.42],
+        row_heights=[0.68, 0.32],
     )
 
     fig.add_trace(go.Candlestick(
@@ -1291,7 +1291,7 @@ def _build_chart_bundle(df_tf, symbol, pair, tf):
         spikedistance=1000,
         xaxis_rangeslider_visible=False,
         dragmode="pan",
-        height=990,
+        height=860,
         bargap=0.08,
         showlegend=True,
         legend=dict(
