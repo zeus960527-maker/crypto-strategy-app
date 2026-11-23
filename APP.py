@@ -783,27 +783,48 @@ def build_candidate_signals(df, tf):
     df["Prev_High"] = df["high_price"].shift(1)
     df["Prev_Low"] = df["low_price"].shift(1)
 
-    macro_long_filter = df["macro_trend_bias"] > -0.02
-    macro_short_filter = df["macro_trend_bias"] < 0.02
+    # 勝率優化：收緊進場過濾，只保留「順大趨勢 + 放量實體突破 + 未過度追價」的訊號
+    macro_long_filter = df["macro_trend_bias"] > 0
+    macro_short_filter = df["macro_trend_bias"] < 0
+
+    # 均線多空排列：多單要求 EMA21 > EMA50 且收盤在 EMA50 之上（空單反之）
+    ema_long_ok = (df["EMA_21"] > df["EMA_50"]) & (df["close_price"] > df["EMA_50"])
+    ema_short_ok = (df["EMA_21"] < df["EMA_50"]) & (df["close_price"] < df["EMA_50"])
+
+    # 收盤位置：多單收在 K 棒上 30%、空單收在下 30%，代表突破有實際力道
+    candle_rng = (df["high_price"] - df["low_price"]).replace(0, np.nan)
+    close_pos = (df["close_price"] - df["low_price"]) / candle_rng
+    close_strong_long = close_pos >= 0.7
+    close_strong_short = close_pos <= 0.3
+
+    # 避免追高殺低：突破幅度超過 1 ATR 通常已是尾段，回檔機率高
+    not_chasing_long = (df["close_price"] - df["Trend_Resistance"]) <= df["ATR"] * 1.0
+    not_chasing_short = (df["Trend_Support"] - df["close_price"]) <= df["ATR"] * 1.0
 
     df["Rule1_Long_Break"] = (df["close_price"] > df["Trend_Resistance"]) & (df["close_price"] > df["open_price"])
     df["Base_Long"] = (
         df["Rule1_Long_Break"]
-        & (df["Body_Ratio"] > 0.3)
-        & df["RSI"].between(45, 80)
-        & (df["volume"] > df["Vol_SMA20"] * 1.05)
+        & (df["Body_Ratio"] > 0.5)
+        & df["RSI"].between(50, 72)
+        & (df["volume"] > df["Vol_SMA20"] * 1.3)
         & (df["close_price"] >= df["SNR_Support"] * 0.995)
         & macro_long_filter
+        & ema_long_ok
+        & close_strong_long
+        & not_chasing_long
     )
 
     df["Rule1_Short_Break"] = (df["close_price"] < df["Trend_Support"]) & (df["close_price"] < df["open_price"])
     df["Base_Short"] = (
         df["Rule1_Short_Break"]
-        & (df["Body_Ratio"] > 0.3)
-        & df["RSI"].between(20, 55)
-        & (df["volume"] > df["Vol_SMA20"] * 1.05)
+        & (df["Body_Ratio"] > 0.5)
+        & df["RSI"].between(28, 50)
+        & (df["volume"] > df["Vol_SMA20"] * 1.3)
         & (df["close_price"] <= df["SNR_Resistance"] * 1.005)
         & macro_short_filter
+        & ema_short_ok
+        & close_strong_short
+        & not_chasing_short
     )
 
     df["vol_ratio"] = df["volume"] / df["Vol_SMA20"].replace(0, np.nan)
