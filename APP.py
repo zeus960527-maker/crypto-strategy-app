@@ -1051,7 +1051,11 @@ def _build_chart_bundle(df_tf, symbol, pair, tf):
     high = visible_df["high_price"].max()
 
     span = max(high - low, abs(high) * 0.001, 1e-8)
-    y_range = [low - span * 0.12, high + span * 0.12]
+    # 最新 K 棒垂直置中：以最新 K 棒的中點為圖面正中央，
+    # 上下半幅取「可見範圍內離中心最遠的價格」並加 12% 邊距，確保所有 K 線仍完整顯示
+    center_y = (float(latest["high_price"]) + float(latest["low_price"])) / 2
+    half = max(high - center_y, center_y - low, span * 0.05) * 1.12
+    y_range = [center_y - half, center_y + half]
 
     change_pct = (
         (latest_close - latest["open_price"]) / latest["open_price"] * 100
