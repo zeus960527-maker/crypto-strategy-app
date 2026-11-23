@@ -479,6 +479,54 @@ def save_signal_to_outbox(symbol, tf, signal_time, direction, price, ai_prob,
         print(f"寫入 strategy_signal_outbox 失敗: {e}")
 
 
+def save_all_signals_to_outbox(symbol, tf, view_df):
+    """把畫面上「每一次進場」都寫入資料庫（已存在的 K 線不重複寫）。"""
+    try:
+        sigs = view_df[view_df["Long_Signal"] | view_df["Short_Signal"]]
+        sigs = sigs[sigs["Stop_Loss"].notna() & sigs["Take_Profit"].notna()]
+        if sigs.empty:
+            return
+        step = pd.Timedelta(
+            {"5m": "5min", "15m": "15min", "1h": "1h", "4h": "4h"}.get(tf, "5min")
+        )
+        existing = load_outbox_signals(symbol, tf, sigs["open_time"].iloc[0])
+        ex_times = np.array(sorted(existing.keys()), dtype="datetime64[ns]")
+
+        rows = []
+        for _, r in sigs.iterrows():
+            t0 = pd.Timestamp(r["open_time"])
+            if len(ex_times):
+                lo = np.searchsorted(ex_times, np.datetime64(t0), side="left")
+                hi = np.searchsorted(ex_times, np.datetime64(t0 + step), side="left")
+                if hi > lo:
+                    continue
+            price = r["Sig_Price"] if pd.notna(r.get("Sig_Price")) else r["close_price"]
+            rows.append({
+                "sym": str(symbol).upper(),
+                "tf": str(tf).lower(),
+                "t0": t0.to_pydatetime().replace(tzinfo=TAIWAN_TZ),
+                "d": "LONG" if bool(r["Long_Signal"]) else "SHORT",
+                "e": float(price),
+                "sl": float(r["Stop_Loss"]),
+                "tp": float(r["Take_Profit"]),
+            })
+        if not rows:
+            return
+        engine = get_db_engine()
+        with engine.begin() as conn:
+            conn.execute(
+                text("""
+                    INSERT INTO strategy_signal_outbox
+                        (symbol, timeframe, signal_time_taipei, direction,
+                         entry_price, stop_loss, take_profit)
+                    VALUES (:sym, :tf, :t0, :d, :e, :sl, :tp)
+                """),
+                rows,
+            )
+    except Exception as e:
+        print(f"批次寫入 strategy_signal_outbox 失敗: {e}")
+
+
 def outbox_stamp(symbol, tf):
     try:
         engine = get_db_engine()
@@ -980,13 +1028,8 @@ def _build_chart_bundle(df_tf, symbol, pair, tf):
     ai_score = float(latest["AI_Prob"]) * 100 if pd.notna(latest["AI_Prob"]) else 0.0
     latest_time = latest["open_time"]
 
-    # 訊號已先在畫面上標出，這裡再把同一筆（含 SL / TP）寫入資料庫
-    latest_sl = float(latest["Stop_Loss"]) if pd.notna(latest["Stop_Loss"]) else None
-    latest_tp = float(latest["Take_Profit"]) if pd.notna(latest["Take_Profit"]) else None
-    if bool(latest["Long_Signal"]):
-        save_signal_to_outbox(symbol, tf, latest_time, "LONG", latest_close, ai_score, latest_sl, latest_tp)
-    elif bool(latest["Short_Signal"]):
-        save_signal_to_outbox(symbol, tf, latest_time, "SHORT", latest_close, ai_score, latest_sl, latest_tp)
+    # 訊號已先在畫面上標出，這裡把「每一次進場」（含 SL / TP）都寫入資料庫
+    save_all_signals_to_outbox(symbol, tf, view_df)
 
     full_view_df = view_df
     if MAX_PLOT_BARS and len(view_df) > MAX_PLOT_BARS:
@@ -1376,26 +1419,28 @@ def render_live_kline_chart(table, symbol, pair, tf):
 
         recent_signals = view_df[
             view_df["Long_Signal"] | view_df["Short_Signal"]
-        ].tail(5).copy()
+        ].copy()
 
         if recent_signals.empty:
             st.caption("目前查詢資料中沒有符合策略的進場訊號。")
         else:
-            for _, signal in recent_signals.iloc[::-1].iterrows():
-                signal_time = signal["open_time"].strftime("%m/%d %H:%M")
-                signal_price = float(signal["Sig_Price"]) if pd.notna(signal["Sig_Price"]) else float(signal["close_price"])
-                signal_prob = float(signal["AI_Prob"]) * 100
+            st.caption(f"共 {len(recent_signals)} 次進場")
+            with st.container(height=420):
+                for _, signal in recent_signals.iloc[::-1].iterrows():
+                    signal_time = signal["open_time"].strftime("%m/%d %H:%M")
+                    signal_price = float(signal["Sig_Price"]) if pd.notna(signal["Sig_Price"]) else float(signal["close_price"])
+                    signal_prob = float(signal["AI_Prob"]) * 100
 
-                is_long_sig = bool(signal["Long_Signal"])
-                st.markdown(
-                    f'<div class="sig-card {"long" if is_long_sig else "short"}">'
-                    f'<div><div class="sig-dir">{"🟢 LONG" if is_long_sig else "🔴 SHORT"}</div>'
-                    f'<div class="sig-time">{signal_time}</div></div>'
-                    f'<div><div class="sig-price">{signal_price:,.2f}</div>'
-                    f'<div class="sig-prob">AI {signal_prob:.1f}%</div></div>'
-                    f'</div>',
-                    unsafe_allow_html=True,
-                )
+                    is_long_sig = bool(signal["Long_Signal"])
+                    st.markdown(
+                        f'<div class="sig-card {"long" if is_long_sig else "short"}">'
+                        f'<div><div class="sig-dir">{"🟢 LONG" if is_long_sig else "🔴 SHORT"}</div>'
+                        f'<div class="sig-time">{signal_time}</div></div>'
+                        f'<div><div class="sig-price">{signal_price:,.2f}</div>'
+                        f'<div class="sig-prob">AI {signal_prob:.1f}%</div></div>'
+                        f'</div>',
+                        unsafe_allow_html=True,
+                    )
 
         st.caption("進場價格為訊號 K 線收盤價參考值，不代表實際成交價。")
 
@@ -1404,7 +1449,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
     history = view_df[
         view_df["Base_Long"] | view_df["Base_Short"]
         | view_df["Long_Signal"] | view_df["Short_Signal"]
-    ].tail(15).copy()
+    ].copy()
     if history.empty:
         st.caption("目前載入中沒有歷史候選訊號。")
     else:
