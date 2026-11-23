@@ -6,12 +6,12 @@ import time
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import streamlit as st
-import schedule
+from flask import Flask, jsonify
 
-# 設定頁面空白或僅顯示簡單提示
+# 1. 設定 Streamlit 頁面（保持簡潔，不顯示多餘網頁畫面）
 st.set_page_config(page_title="OKX Background Worker", layout="centered")
 st.title("🔄 OKX 數據同步背景服務運行中")
-st.write("此服務正在背景 24/7 自動回補與定時抓取 OKX K 棒數據並寫入 Supabase。")
+st.write("此服務正在背景 24/7 自動回補與抓取 OKX K 棒數據並寫入 Supabase。")
 
 SUPABASE_DB_URL = "postgresql://postgres.ygzeqvcyqtvhvjrxhzdv:%4010233960527Ken@aws-0-ap-northeast-1.pooler.supabase.com:6543/postgres"
 
@@ -22,7 +22,7 @@ def get_db_connection():
         options="-c statement_timeout=15000"
     )
 
-# 💡 啟動時自動補齊歷史資料
+# 💡 歷史資料回補
 def catch_up_historical_data(tf):
     exchange = ccxt.okx({'enableRateLimit': True})
     symbol = 'BTC/USDT:USDT'
@@ -100,7 +100,7 @@ def catch_up_historical_data(tf):
     finally:
         connection.close()
 
-# 💡 定時抓取最新資料的任務
+# 💡 即時高頻抓取最新 10 根 K 棒
 def fetch_single_timeframe_realtime(tf):
     exchange = ccxt.okx({'enableRateLimit': True})
     symbol = 'BTC/USDT:USDT'
@@ -146,7 +146,7 @@ def fetch_single_timeframe_realtime(tf):
                 cursor.executemany(sql, batch_data)
                 connection.commit()
                 latest_close = batch_data[-1][4]
-                print(f" -> [BTC-{tf}] Cron 定時同步成功 | 最新收盤價: {latest_close:,.2f}")
+                print(f" -> [BTC-{tf}] 即時同步成功 | 最新收盤價: {latest_close:,.2f}")
 
     except Exception as e:
         connection.rollback()
@@ -163,41 +163,49 @@ def run_sync_task(task_func):
             except Exception as e:
                 pass
 
-def scheduled_job():
-    """由 Cron Job 觸發的排程任務"""
-    try:
-        print("⏰ [Cron Job] 開始執行定時抓取任務...")
-        run_sync_task(fetch_single_timeframe_realtime)
-    except Exception as e:
-        print(f"Cron Job 執行錯誤: {e}")
-
 def background_worker():
     print("==========================================")
-    print(" BTC 雲端定時排程（Cron）背景執行緒已啟動")
+    print(" BTC 雲端高頻即時數據同步背景執行緒已啟動")
     print("==========================================")
     
-    # 💡 啟動時先執行一次歷史斷點補齊
-    print("🔄 正在檢查並補齊歷史 K 棒...")
+    print("🔄 正在檢查並補齊自上次關閉以來遺漏的歷史 K 棒...")
     run_sync_task(catch_up_historical_data)
-    print("🚀 歷史回補完畢，正式註冊 Cron 定時排程！")
+    print("🚀 歷史回補完畢，正式進入即時高頻監控迴圈！")
 
-    # 💡 設定 Cron 排程規則（例如：每隔 1 分鐘執行一次，你也可以改為 schedule.every(5).minutes）
-    schedule.every(1).minutes.do(scheduled_job)
-    
-    # 也可以設定特定時間（例如每天早上 8 點執行）：
-    # schedule.every().day.at("08:00").do(scheduled_job)
-
-    # 持續檢查並執行排程
     while True:
-        schedule.run_pending()
-        time.sleep(1)
+        try:
+            start_time = time.time()
+            run_sync_task(fetch_single_timeframe_realtime)
+            elapsed = time.time() - start_time
+            sleep_time = max(1.0, 3.0 - elapsed)
+            time.sleep(sleep_time)
+        except Exception as e:
+            print(f"背景迴圈錯誤: {e}")
+            time.sleep(5)
 
-# 利用 Streamlit 的 cache_resource 確保背景排程執行緒只會啟動一次
+# 2. 建立輕量 Flask 伺服器專門給 UptimeRobot Ping 用
+flask_app = Flask(__name__)
+
+@flask_app.route("/health", methods=["GET"])
+def health_check():
+    return jsonify({"status": "healthy", "service": "OKX Fetcher is running 24/7"}), 200
+
+def run_flask():
+    # Streamlit 通常跑在 8501，我們讓 Flask 跑在 8080 或環境變數指定的 PORT
+    port = int(os.environ.get("PORT", 8080))
+    flask_app.run(host="0.0.0.0", port=port, use_reloader=False)
+
+# 3. 利用 Streamlit 的 cache_resource 同時啟動「爬蟲執行緒」與「Flask 監聽執行緒」
 @st.cache_resource
-def start_background_service():
-    t = threading.Thread(target=background_worker, daemon=True)
-    t.start()
+def start_services():
+    # 啟動爬蟲背景執行緒
+    t_worker = threading.Thread(target=background_worker, daemon=True)
+    t_worker.start()
+    
+    # 啟動 Flask 健康檢查伺服器執行緒（給 UptimeRobot 訪問）
+    t_flask = threading.Thread(target=run_flask, daemon=True)
+    t_flask.start()
+    
     return "Started"
 
-# 自動啟動背景服務
-start_background_service()
+start_services()
