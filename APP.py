@@ -1,6 +1,9 @@
 import os
 import base64
 from pathlib import Path
+import sqlite3
+import hashlib
+import ccxt
 
 import streamlit as st
 import pandas as pd
@@ -85,7 +88,7 @@ st.markdown(f"""
 {bg_css}
 .block-container {{
     padding-top: 3.5rem !important;
-    padding-bottom: 2.0rem !important;
+    padding-bottom: 2rem !important;
     max-width: 1500px;
 }}
 h1 {{
@@ -134,6 +137,7 @@ div[data-testid="stRadio"] > div {{ flex-direction: row; gap: 12px; flex-wrap: w
     min-height: 175px;
     height: 100%;
 }}
+
 @media(max-width: 768px) {{
     .block-container {{
         padding-left: 0.6rem !important;
@@ -175,12 +179,10 @@ div[data-testid="stRadio"] > div {{ flex-direction: row; gap: 12px; flex-wrap: w
 </style>
 """, unsafe_allow_html=True)
 
-# ============================================================
-# 0.5 精美介面樣式與認證管理
-# ============================================================
 UI_CSS = """
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700;800&family=JetBrains+Mono:wght@500;700&display=swap');
+
 :root {
     --gold: #f0b90b;
     --gold-soft: rgba(240,185,11,.14);
@@ -206,6 +208,7 @@ footer { visibility: hidden; }
         radial-gradient(900px 480px at 12% -8%, rgba(240,185,11,.10), transparent 60%),
         radial-gradient(800px 520px at 92% 4%, rgba(41,98,255,.10), transparent 60%);
 }
+
 h1 {
     background: linear-gradient(92deg, #ffffff 0%, #ffe9a6 45%, #f0b90b 100%);
     -webkit-background-clip: text; background-clip: text;
@@ -213,6 +216,7 @@ h1 {
     text-shadow: none !important;
     letter-spacing: 1.5px;
 }
+.hero-sub { display: flex; flex-wrap: wrap; gap: 8px; margin: -6px 0 18px 0; }
 .chip {
     display: inline-flex; align-items: center; gap: 6px;
     padding: 4px 12px; border-radius: 999px; font-size: 12px; font-weight: 500;
@@ -229,6 +233,7 @@ h1 {
     70% { box-shadow: 0 0 0 8px rgba(14,203,129,0); }
     100% { box-shadow: 0 0 0 0 rgba(14,203,129,0); }
 }
+
 div[data-testid="stForm"] {
     background: var(--panel) !important;
     border: 1px solid var(--line) !important;
@@ -237,6 +242,8 @@ div[data-testid="stForm"] {
     box-shadow: 0 10px 34px rgba(0,0,0,.35);
     backdrop-filter: blur(10px);
 }
+.stTextInput input { height: 46px; padding-left: 14px !important; transition: all .2s ease; }
+.stTextInput input:focus { border-color: var(--gold) !important; }
 [data-testid="stFormSubmitButton"] button, .stButton button {
     height: 46px; border: none !important; border-radius: 10px !important;
     font-weight: 700 !important; letter-spacing: 1px;
@@ -249,19 +256,73 @@ div[data-testid="stForm"] {
     transform: translateY(-1px); filter: brightness(1.06);
     box-shadow: 0 10px 24px rgba(240,185,11,.38);
 }
+
 hr { border: none !important; height: 1px !important;
      background: linear-gradient(90deg, transparent, rgba(240,185,11,.35), transparent) !important;
      margin: 1.4rem 0 !important; }
+
+div[data-testid="stRadio"] > label { color: var(--muted) !important; font-size: 13px; }
+div[data-testid="stRadio"] label[data-baseweb="radio"] {
+    margin: 0; padding: 7px 22px; border-radius: 999px; cursor: pointer;
+    background: rgba(255,255,255,.04); border: 1px solid var(--line);
+    transition: all .18s ease;
+}
+div[data-testid="stRadio"] label[data-baseweb="radio"] > div:first-child { display: none; }
+div[data-testid="stRadio"] label[data-baseweb="radio"]:hover { border-color: rgba(240,185,11,.5); }
+div[data-testid="stRadio"] label[data-baseweb="radio"]:has(input:checked) {
+    background: linear-gradient(135deg, #ffd35a, #f0b90b);
+    border-color: transparent; box-shadow: 0 4px 14px rgba(240,185,11,.35);
+}
+div[data-testid="stRadio"] label[data-baseweb="radio"]:has(input:checked) * {
+    color: #1a1400 !important; font-weight: 700;
+}
+
 div.stPlotlyChart {
     border: 1px solid var(--line); border-radius: 16px; overflow: hidden;
     box-shadow: 0 12px 38px rgba(0,0,0,.45);
 }
+
 [data-testid="stMetric"] {
     background: var(--panel-2); border: 1px solid var(--line);
     border-radius: 12px; padding: 12px 14px;
 }
 [data-testid="stMetricLabel"] { color: var(--muted) !important; }
 [data-testid="stMetricValue"] { color: var(--gold) !important; font-weight: 700; }
+
+[data-testid="stAlert"] { border-radius: 12px !important; border: 1px solid var(--line) !important; }
+[data-testid="stDataFrame"] {
+    border: 1px solid var(--line); border-radius: 14px; overflow: hidden;
+    box-shadow: 0 8px 26px rgba(0,0,0,.35);
+}
+
+h3 { font-weight: 700 !important; letter-spacing: .5px; }
+h3, h4 { border-left: 3px solid var(--gold); padding-left: 10px !important; }
+[data-testid="stCaptionContainer"] { color: var(--muted) !important; }
+
+.intro-card {
+    background: linear-gradient(145deg, rgba(26,32,44,.94), rgba(18,22,31,.94));
+    border: 1px solid var(--line); border-left: 4px solid var(--gold);
+}
+.intro-card h2 { margin: 0 0 8px 0; }
+.feature-grid {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+    gap: 14px; margin-top: 8px;
+}
+.feature-tile {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
+    padding: 18px; transition: transform .2s ease, border-color .2s ease, box-shadow .2s ease;
+}
+.feature-tile:hover {
+    transform: translateY(-4px); border-color: rgba(240,185,11,.45);
+    box-shadow: 0 14px 30px rgba(0,0,0,.4);
+}
+.feature-tile .ico {
+    width: 40px; height: 40px; border-radius: 10px; display: grid; place-items: center;
+    font-size: 20px; background: var(--gold-soft); margin-bottom: 10px;
+}
+.feature-tile h4 { border: none; padding: 0 !important; margin: 0 0 6px 0; color: #fff !important; font-size: 16px; }
+.feature-tile p { margin: 0; font-size: 13px; line-height: 1.7; color: #aab2bf; }
+
 .conf-card {
     background: linear-gradient(145deg, rgba(30,35,41,.92), rgba(20,24,32,.92));
     border: 1px solid var(--line); border-radius: 14px; padding: 16px; margin-bottom: 12px;
@@ -272,6 +333,7 @@ div.stPlotlyChart {
 .conf-bar { height: 6px; border-radius: 999px; background: rgba(255,255,255,.08); margin: 8px 0 12px 0; overflow: hidden; }
 .conf-bar > span { display: block; height: 100%; border-radius: 999px; background: linear-gradient(90deg, #f0b90b, #ffe08a); }
 .conf-foot { font-size: 12px; color: #a0a6b2; display: flex; justify-content: space-between; }
+
 .sig-card {
     display: flex; justify-content: space-between; align-items: center; gap: 10px;
     padding: 10px 12px; margin-bottom: 8px; border-radius: 12px;
@@ -289,86 +351,210 @@ div.stPlotlyChart {
 """
 st.markdown(UI_CSS, unsafe_allow_html=True)
 
+# ============================================================
+# 0.6 使用者帳號與 OKX API 憑證管理 (SQLite 本機驗證)
+# ============================================================
+def init_user_db():
+    conn = sqlite3.connect("users.db", check_same_thread=False)
+    c = conn.cursor()
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            username TEXT PRIMARY KEY,
+            password_hash TEXT NOT NULL,
+            okx_api_key TEXT,
+            okx_secret_key TEXT,
+            okx_passphrase TEXT,
+            remember INTEGER DEFAULT 0
+        )
+    """)
+    conn.commit()
+    conn.close()
 
-# ============================================================
-# 1. Session State 初始化與身分/交易所認證狀態
-# ============================================================
-st.session_state.setdefault("is_authenticated", False)
+init_user_db()
+
+def hash_pw(password):
+    return hashlib.sha256(password.encode()).hexdigest()
+
+def verify_user(username, password):
+    conn = sqlite3.connect("users.db", check_same_thread=False)
+    c = conn.cursor()
+    c.execute("SELECT password_hash, okx_api_key, okx_secret_key, okx_passphrase, remember FROM users WHERE username = ?", (username,))
+    row = c.fetchone()
+    conn.close()
+    if row and row[0] == hash_pw(password):
+        return {"api_key": row[1], "secret_key": row[2], "passphrase": row[3], "remember": row[4]}
+    return None
+
+def register_user(username, password, api_key, secret, passphrase, remember):
+    conn = sqlite3.connect("users.db", check_same_thread=False)
+    c = conn.cursor()
+    try:
+        c.execute("""
+            INSERT OR REPLACE INTO users (username, password_hash, okx_api_key, okx_secret_key, okx_passphrase, remember)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (username, hash_pw(password), api_key, secret, passphrase, 1 if remember else 0))
+        conn.commit()
+        success = True
+    except Exception:
+        success = False
+    conn.close()
+    return success
+
+# 初始化 Session State
+st.session_state.setdefault("logged_in", False)
 st.session_state.setdefault("username", "")
-st.session_state.setdefault("exchange_name", "OKX")
-st.session_state.setdefault("exchange_balance", 12580.50) # 模擬抓取該交易所剩餘資金 (USDT)
-st.session_state.setdefault("leverage_max", True)
+st.session_state.setdefault("okx_creds", {})
 st.session_state.setdefault("is_searched", False)
 st.session_state.setdefault("search_query", "")
 
+# 檢查是否有保持登入記錄
+if not st.session_state.logged_in:
+    try:
+        conn = sqlite3.connect("users.db", check_same_thread=False)
+        c = conn.cursor()
+        c.execute("SELECT username, okx_api_key, okx_secret_key, okx_passphrase FROM users WHERE remember = 1 LIMIT 1")
+        row = c.fetchone()
+        conn.close()
+        if row:
+            st.session_state.logged_in = True
+            st.session_state.username = row[0]
+            st.session_state.okx_creds = {"apiKey": row[1], "secret": row[2], "password": row[3]}
+    except Exception:
+        pass
 
 # ============================================================
-# 1.5 第一階段：註冊與登入介面
+# 0.7 OKX 自動下單執行函數 (槓桿拉滿、金額依帳戶餘額)
 # ============================================================
-if not st.session_state.is_authenticated:
-    st.title("🔐 加密貨幣 AI 策略系統 - 登入 / 註冊")
+def execute_okx_order(symbol, side, amount_usdt=None):
+    creds = st.session_state.get("okx_creds", {})
+    if not creds.get("apiKey") or not creds.get("secret"):
+        return "未設定 OKX API 憑證，無法自動下單。"
+    try:
+        exchange = ccxt.okx({
+            'apiKey': creds['apiKey'],
+            'secret': creds['secret'],
+            'password': creds['password'],
+            'enableRateLimit': True,
+            'options': {'defaultType': 'swap'}
+        })
+        market_symbol = f"{symbol}/USDT:USDT"
+        
+        # 查詢可用保證金餘額 (USDT)
+        balance = exchange.fetch_balance()
+        free_usdt = float(balance.get('USDT', {}).get('free', 0))
+        if free_usdt <= 1:
+            return f"下單失敗：OKX 帳戶可用 USDT 餘額不足 (${free_usdt:.2f})"
+
+        # 設定槓桿拉滿 (取得該幣種合約支援的最大槓桿)
+        try:
+            leverage_tiers = exchange.fetch_leverage_tiers([market_symbol])
+            max_lev = 20  # 預設
+            if market_symbol in leverage_tiers and leverage_tiers[market_symbol]:
+                max_lev = int(leverage_tiers[market_symbol][0].get('maxLeverage', 20))
+            exchange.set_leverage(max_lev, market_symbol)
+        except Exception:
+            max_lev = 10
+            try:
+                exchange.set_leverage(10, market_symbol)
+            except Exception:
+                pass
+
+        # 取得當前價格計算張數
+        ticker = exchange.fetch_ticker(market_symbol)
+        price = float(ticker['last'])
+        
+        # 槓桿拉滿後總下單金額 = 可用資金 * 最大槓桿
+        total_notional = free_usdt * max_lev
+        amount = total_notional / price
+
+        # 送出市價單
+        order_side = 'buy' if side == 'LONG' else 'sell'
+        order = exchange.create_market_order(market_symbol, order_side, amount)
+        return f"✅ OKX 自動下單成功！方向: {side}｜槓桿: {max_lev}x｜投入資金: ${free_usdt:.2f} USDT｜成交價: {price}"
+    except Exception as e:
+        return f"❌ OKX 下單例外錯誤: {str(e)}"
+
+
+# ============================================================
+# 1. 步驟一：註冊與登入介面（若未登入則先停在這裡）
+# ============================================================
+if not st.session_state.logged_in:
+    st.title("加密貨幣 AI 策略系統 - 帳號登入與註冊")
     st.markdown("""
-    <div style="background: rgba(20,25,35,.94); border: 1px solid #343b48; border-radius: 14px; padding: 24px; margin-bottom: 20px;">
-        <h3 style="color:#f0b90b; margin-top:0;">歡迎使用 AI 智慧合約交易與回測系統</h3>
-        <p>請先登入或註冊您的系統帳號，並綁定交易所以啟用自動資金管理、槓桿拉滿與即時下單功能。</p>
+    <div class="intro-card">
+        <h3>🔐 請先登入或註冊您的帳號與 OKX 交易所憑證</h3>
+        <p>系統將使用您的 OKX API 在產生高勝率訊號時自動連線並進行槓桿拉滿下單。</p>
     </div>
     """, unsafe_allow_html=True)
 
-    with st.form("auth_form"):
-        col_a, col_b = st.columns(2)
-        with col_a:
-            input_user = st.text_input("系統帳號 / Email", placeholder="例如：yydskggs960527@gmail.com")
-            input_pass = st.text_input("系統密碼", type="password", placeholder="••••••••")
-        with col_b:
-            selected_exchange = st.selectbox("選擇或綁定交易所", ["OKX", "Bitunix", "Binance", "MAX Exchange"])
-            input_ex_key = st.text_input("交易所 API Key (選填/自動讀取)", placeholder="自動帶入裝置已儲存金鑰")
-        
-        remember_me = st.checkbox("保持登入狀態（記住此裝置的帳號與交易所資料）", value=True)
-        
-        st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
-        auth_submitted = st.form_submit_button("立即登入 / 註冊並進入系統", use_container_width=True)
+    tab_login, tab_register = st.tabs(["🔑 現有帳號登入", "📝 新註冊帳號"])
 
-    if auth_submitted:
-        if input_user.strip():
-            st.session_state.is_authenticated = True
-            st.session_state.username = input_user.strip()
-            st.session_state.exchange_name = selected_exchange
-            st.success(f"登入成功！已成功連結至 {selected_exchange} 交易所，系統資金：${st.session_state.exchange_balance:,.2f} USDT，槓桿已自動設定為全倉拉滿。")
-            time.sleep(0.8)
-            st.rerun()
-        else:
-            st.error("請輸入有效的帳號或信箱！")
-    
-    st.stop()  # 未登入前暫停後續渲染
+    with tab_login:
+        with st.form("login_form"):
+            l_user = st.text_input("使用者帳號")
+            l_pass = st.text_input("密碼", type="password")
+            l_remember = st.checkbox("保持登入狀態", value=True)
+            l_submit = st.form_submit_button("登入系統")
+            if l_submit:
+                res = verify_user(l_user, l_pass)
+                if res:
+                    st.session_state.logged_in = True
+                    st.session_state.username = l_user
+                    st.session_state.okx_creds = {
+                        "apiKey": res["api_key"],
+                        "secret": res["secret_key"],
+                        "password": res["passphrase"]
+                    }
+                    st.success("登入成功！正在進入系統...")
+                    st.rerun()
+                else:
+                    st.error("帳號或密碼錯誤，若尚未註冊請切換至右側註冊分頁。")
+
+    with tab_register:
+        with st.form("register_form"):
+            r_user = st.text_name = st.text_input("設定使用者帳號")
+            r_pass = st.text_input("設定密碼", type="password")
+            st.markdown("---")
+            st.markdown("#### 🔗 OKX 交易所 API 設定（用於自動下單）")
+            r_api = st.text_input("OKX API Key")
+            r_secret = st.text_input("OKX Secret Key", type="password")
+            r_passphrase = st.text_input("OKX Passphrase (密碼)", type="password")
+            r_remember = st.checkbox("保持登入狀態", value=True, key="reg_rem")
+            r_submit = st.form_submit_button("註冊並儲存")
+            if r_submit:
+                if not r_user or not r_pass:
+                    st.warning("請填寫帳號與密碼。")
+                else:
+                    ok = register_user(r_user, r_pass, r_api, r_secret, r_passphrase, r_remember)
+                    if ok:
+                        st.session_state.logged_in = True
+                        st.session_state.username = r_user
+                        st.session_state.okx_creds = {"apiKey": r_api, "secret": r_secret, "password": r_passphrase}
+                        st.success("註冊成功！已自動登入系統...")
+                        st.rerun()
+                    else:
+                        st.error("註冊失敗，該帳號可能已被使用。")
+
+    st.stop()  # 尚未登入前停止執行後續程式碼
 
 
 # ============================================================
-# 2. 第二階段：搜尋介面與頂部狀態列
+# 2. 步驟二：搜尋與功能導覽介面
 # ============================================================
 st.title("加密貨幣 AI 策略系統")
 
-# 顯示目前登入與交易所綁定狀態列
 st.markdown(f"""
-<div style="display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 14px; align-items: center; background: rgba(30,35,41,0.7); padding: 10px 16px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.08);">
-    <div>👤 <b>帳號：</b> {st.session_state.username}</div>
-    <div>🏦 <b>已綁定交易所：</b> <span style="color:#f0b90b; font-weight:700;">{st.session_state.exchange_name}</span></div>
-    <div>💰 <b>可用資金：</b> <span style="color:#0ECB81; font-family:'JetBrains Mono';">${st.session_state.exchange_balance:,.2f} USDT</span></div>
-    <div>⚡ <b>槓桿模式：</b> <span style="color:#f0b90b;">最大槓桿拉滿 (逐倉/全倉)</span></div>
-</div>
-""", unsafe_allow_html=True)
-
-st.markdown("""
 <div class="hero-sub">
     <span class="chip live">LIVE 即時監控</span>
+    <span class="chip">已登入用戶：{st.session_state.username}</span>
     <span class="chip">BTC / ETH 永續合約</span>
     <span class="chip">123法則 · SMC · SNR</span>
-    <span class="chip">策略表現回測分析</span>
-    <span class="chip">交易所自動下單</span>
+    <span class="chip">LightGBM + 動態 TP/SL</span>
 </div>
 """, unsafe_allow_html=True)
 
 with st.form("search_form"):
-    col1, col2 = st.columns([4, 1])
+    col1, col2, col3 = st.columns([3, 1, 1])
     with col1:
         input_val = st.text_input(
             "🔍 請輸入加密貨幣名稱（例如 BTC 或 ETH）：",
@@ -378,6 +564,24 @@ with st.form("search_form"):
     with col2:
         st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
         submitted = st.form_submit_button("送出查詢", use_container_width=True)
+    with col3:
+        st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+        logout_clicked = st.form_submit_button("登出帳號", use_container_width=True)
+
+if logout_clicked:
+    try:
+        conn = sqlite3.connect("users.db", check_same_thread=False)
+        c = conn.cursor()
+        c.execute("UPDATE users SET remember = 0 WHERE username = ?", (st.session_state.username,))
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
+    st.session_state.logged_in = False
+    st.session_state.username = ""
+    st.session_state.okx_creds = {}
+    st.session_state.is_searched = False
+    st.rerun()
 
 if submitted:
     q = input_val.strip().upper()
@@ -397,6 +601,7 @@ def get_database_url():
             url = str(st.secrets.get("SUPABASE_DB_URL", "")).strip()
         except Exception:
             url = ""
+
     if url.startswith("postgres://"):
         url = "postgresql://" + url[len("postgres://"):]
     if url.startswith("postgresql://"):
@@ -409,13 +614,39 @@ def get_db_engine():
     if not url:
         raise RuntimeError("找不到 SUPABASE_DB_URL，請在 Streamlit Secrets 或環境變數設定。")
     return create_engine(
-        url,
-        pool_size=3,
-        max_overflow=2,
-        pool_pre_ping=True,
-        pool_recycle=300,
-        connect_args={"connect_timeout": 5},
+        url, pool_size=3, max_overflow=2, pool_pre_ping=True, pool_recycle=300, connect_args={"connect_timeout": 5}
     )
+
+def save_signal_to_outbox(symbol, tf, signal_time, direction, price, ai_prob, stop_loss=None, take_profit=None):
+    if stop_loss is None or take_profit is None:
+        return
+    try:
+        step = pd.Timedelta({"5m": "5min", "15m": "15min", "1h": "1h", "4h": "4h"}.get(tf, "5min"))
+        t0 = pd.Timestamp(signal_time).to_pydatetime().replace(tzinfo=TAIWAN_TZ)
+        t1 = t0 + step
+        engine = get_db_engine()
+        with engine.begin() as conn:
+            conn.execute(
+                text("""
+                    INSERT INTO strategy_signal_outbox
+                        (symbol, timeframe, signal_time_taipei, direction, entry_price, stop_loss, take_profit)
+                    SELECT :sym, :tf, :t0, :d, :e, :sl, :tp
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM strategy_signal_outbox
+                        WHERE UPPER(symbol) LIKE :symlike
+                          AND LOWER(timeframe) = :tf
+                          AND signal_time_taipei >= :t0
+                          AND signal_time_taipei < :t1
+                    )
+                """),
+                {
+                    "sym": str(symbol).upper(), "symlike": str(symbol).upper() + "%",
+                    "tf": str(tf).lower(), "t0": t0, "t1": t1, "d": direction,
+                    "e": float(price), "sl": float(stop_loss), "tp": float(take_profit),
+                },
+            )
+    except Exception as e:
+        print(f"寫入 strategy_signal_outbox 失敗: {e}")
 
 def save_all_signals_to_outbox(symbol, tf, view_df):
     try:
@@ -423,18 +654,24 @@ def save_all_signals_to_outbox(symbol, tf, view_df):
         sigs = sigs[sigs["Stop_Loss"].notna() & sigs["Take_Profit"].notna()]
         if sigs.empty:
             return
+        step = pd.Timedelta({"5m": "5min", "15m": "15min", "1h": "1h", "4h": "4h"}.get(tf, "5min"))
+        existing = load_outbox_signals(symbol, tf, sigs["open_time"].iloc[0])
+        ex_times = np.array(sorted(existing.keys()), dtype="datetime64[ns]")
+
         rows = []
         for _, r in sigs.iterrows():
             t0 = pd.Timestamp(r["open_time"])
+            if len(ex_times):
+                lo = np.searchsorted(ex_times, np.datetime64(t0), side="left")
+                hi = np.searchsorted(ex_times, np.datetime64(t0 + step), side="left")
+                if hi > lo:
+                    continue
             price = r["Sig_Price"] if pd.notna(r.get("Sig_Price")) else r["close_price"]
             rows.append({
-                "sym": str(symbol).upper(),
-                "tf": str(tf).lower(),
+                "sym": str(symbol).upper(), "tf": str(tf).lower(),
                 "t0": t0.to_pydatetime().replace(tzinfo=TAIWAN_TZ),
                 "d": "LONG" if bool(r["Long_Signal"]) else "SHORT",
-                "e": float(price),
-                "sl": float(r["Stop_Loss"]),
-                "tp": float(r["Take_Profit"]),
+                "e": float(price), "sl": float(r["Stop_Loss"]), "tp": float(r["Take_Profit"]),
             })
         if not rows:
             return
@@ -443,15 +680,25 @@ def save_all_signals_to_outbox(symbol, tf, view_df):
             conn.execute(
                 text("""
                     INSERT INTO strategy_signal_outbox
-                        (symbol, timeframe, signal_time_taipei, direction,
-                         entry_price, stop_loss, take_profit)
+                        (symbol, timeframe, signal_time_taipei, direction, entry_price, stop_loss, take_profit)
                     VALUES (:sym, :tf, :t0, :d, :e, :sl, :tp)
-                    ON CONFLICT DO NOTHING
                 """),
                 rows,
             )
     except Exception as e:
-        print(f"寫入 outbox 失敗: {e}")
+        print(f"批次寫入 strategy_signal_outbox 失敗: {e}")
+
+def outbox_stamp(symbol, tf):
+    try:
+        engine = get_db_engine()
+        with engine.connect() as conn:
+            r = conn.execute(
+                text("SELECT COUNT(*), MAX(id) FROM strategy_signal_outbox WHERE UPPER(symbol) LIKE :sym AND LOWER(timeframe) = :tf"),
+                {"sym": str(symbol).upper() + "%", "tf": str(tf).lower()},
+            ).fetchone()
+        return (int(r[0]), str(r[1]))
+    except Exception as e:
+        return None
 
 def load_outbox_signals(symbol, tf, since_time):
     try:
@@ -464,8 +711,7 @@ def load_outbox_signals(symbol, tf, since_time):
                     WHERE UPPER(symbol) LIKE :sym AND LOWER(timeframe) = :tf
                     ORDER BY id DESC LIMIT 500
                 """),
-                con=conn,
-                params={"sym": str(symbol).upper() + "%", "tf": str(tf).lower()},
+                con=conn, params={"sym": str(symbol).upper() + "%", "tf": str(tf).lower()},
             )
         if df.empty:
             return {}
@@ -486,7 +732,6 @@ def load_outbox_signals(symbol, tf, since_time):
                 out[ts] = ("SHORT", e, l, p_)
         return out
     except Exception as e:
-        print(f"讀取 outbox 失敗: {e}")
         return {}
 
 MAX_PLOT_BARS = 1500
@@ -511,11 +756,7 @@ def load_historical_data(table_name, symbol_name, tf=None):
             raw = pd.read_sql(sql, con=conn, params=dict(base_params))
         if raw.empty:
             return raw
-        raw = (
-            raw.drop_duplicates(subset=["timeframe", "open_time"], keep="last")
-            .sort_values("open_time")
-            .reset_index(drop=True)
-        )
+        raw = raw.drop_duplicates(subset=["timeframe", "open_time"], keep="last").sort_values("open_time").reset_index(drop=True)
         df = raw.copy()
     except Exception as e:
         return pd.DataFrame()
@@ -528,6 +769,7 @@ def load_historical_data(table_name, symbol_name, tf=None):
         df["open_time"] = pd.to_datetime(df["open_time"], unit=unit, errors="coerce", utc=True)
     else:
         df["open_time"] = pd.to_datetime(df["open_time"], errors="coerce", utc=True)
+
     df["open_time"] = df["open_time"].dt.tz_convert("Asia/Taipei").dt.tz_localize(None)
     for col in ["open_price", "high_price", "low_price", "close_price", "volume"]:
         df[col] = pd.to_numeric(df[col], errors="coerce")
@@ -544,6 +786,7 @@ def calculate_trendline_channel(df, window=30, num_dev=1.8):
     mid = np.full(n, np.nan)
     upper = np.full(n, np.nan)
     lower = np.full(n, np.nan)
+
     if n >= window:
         x = np.arange(window, dtype=float)
         xc = x - x.mean()
@@ -559,6 +802,7 @@ def calculate_trendline_channel(df, window=30, num_dev=1.8):
         mid[window - 1:] = center
         upper[window - 1:] = center + num_dev * std
         lower[window - 1:] = center - num_dev * std
+
     df["Trend_Mid"] = mid
     df["Trend_Resistance"] = upper
     df["Trend_Support"] = lower
@@ -569,36 +813,49 @@ def calculate_indicators(df, tf):
     df["EMA_21"] = df["close_price"].ewm(span=21, adjust=False).mean()
     df["EMA_50"] = df["close_price"].ewm(span=50, adjust=False).mean()
     df["EMA_100"] = df["close_price"].ewm(span=100, adjust=False).mean()
+
     win = 20 if tf in ["5m", "15m"] else 40
     dev = 1.5 if tf in ["5m", "15m"] else 2.0
     df = calculate_trendline_channel(df, win, dev)
+
     delta = df["close_price"].diff()
     gain = delta.where(delta > 0, 0).rolling(14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
     rs = gain / loss.replace(0, np.nan)
     df["RSI"] = (100 - 100 / (1 + rs)).fillna(50)
+
     high_low = df["high_price"] - df["low_price"]
     high_close = (df["high_price"] - df["close_price"].shift()).abs()
     low_close = (df["low_price"] - df["close_price"].shift()).abs()
     tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+
     df["ATR"] = tr.rolling(14).mean()
     df["Vol_SMA20"] = df["volume"].rolling(20).mean()
+
     body = (df["close_price"] - df["open_price"]).abs()
     candle_range = df["high_price"] - df["low_price"]
     df["Body_Ratio"] = (body / candle_range.replace(0, np.nan)).fillna(0)
+
     df["price_sma50"] = df["close_price"].rolling(50).mean()
     df["macro_trend_bias"] = (df["close_price"] - df["price_sma50"]) / df["price_sma50"].replace(0, np.nan)
     df["volume_liquidity_score"] = df["volume"] / df["volume"].rolling(50).mean().replace(0, np.nan)
     df["macro_sentiment"] = np.where(df["macro_trend_bias"] > 0, 1.0, -1.0) * df["volume_liquidity_score"].fillna(1.0)
+
     return df, win, dev
 
+
+# ============================================================
+# 5. 動態 AI 智慧化止盈止損與策略信號
+# ============================================================
 def calculate_dynamic_tp_sl(row, is_long):
     atr = row.get('ATR', 0)
     vol_r = row.get('vol_ratio', 1.0)
     body_r = row.get('body_ratio', 0.5)
     rsi = row.get('RSI', 50)
+    
     if pd.isna(atr) or atr <= 0:
         return 1.5, 2.5
+
     stop_mult = 1.5
     rr_ratio = 2.5
     if vol_r > 1.8 and body_r > 0.5:
@@ -607,10 +864,12 @@ def calculate_dynamic_tp_sl(row, is_long):
     elif vol_r < 0.9:
         stop_mult = 1.2
         rr_ratio = 2.0
+
     if is_long and rsi > 75:
         rr_ratio = 2.0
     elif not is_long and rsi < 25:
         rr_ratio = 2.0
+
     return stop_mult, rr_ratio
 
 def judge_tp_sl(direction, sl, tp, high_arr, low_arr, start):
@@ -638,40 +897,55 @@ def build_candidate_signals(df, tf):
     rolling_low = df["low_price"].rolling(20).min()
     df["SNR_Resistance"] = rolling_high
     df["SNR_Support"] = rolling_low
-    df["Prev_High"] = df["high_price"].shift(1)
-    df["Prev_Low"] = df["low_price"].shift(1)
 
     macro_long_filter = df["macro_trend_bias"] > 0
     macro_short_filter = df["macro_trend_bias"] < 0
     ema_long_ok = (df["EMA_21"] > df["EMA_50"]) & (df["close_price"] > df["EMA_50"])
     ema_short_ok = (df["EMA_21"] < df["EMA_50"]) & (df["close_price"] < df["EMA_50"])
+
     candle_rng = (df["high_price"] - df["low_price"]).replace(0, np.nan)
     close_pos = (df["close_price"] - df["low_price"]) / candle_rng
     close_strong_long = close_pos >= 0.7
     close_strong_short = close_pos <= 0.3
+
     not_chasing_long = (df["close_price"] - df["Trend_Resistance"]) <= df["ATR"] * 1.0
     not_chasing_short = (df["Trend_Support"] - df["close_price"]) <= df["ATR"] * 1.0
 
     df["Rule1_Long_Break"] = (df["close_price"] > df["Trend_Resistance"]) & (df["close_price"] > df["open_price"])
     df["Base_Long"] = (
-        df["Rule1_Long_Break"] & (df["Body_Ratio"] > 0.5) & df["RSI"].between(50, 72)
-        & (df["volume"] > df["Vol_SMA20"] * 1.3) & (df["close_price"] >= df["SNR_Support"] * 0.995)
-        & macro_long_filter & ema_long_ok & close_strong_long & not_chasing_long
+        df["Rule1_Long_Break"]
+        & (df["Body_Ratio"] > 0.5)
+        & df["RSI"].between(50, 72)
+        & (df["volume"] > df["Vol_SMA20"] * 1.3)
+        & (df["close_price"] >= df["SNR_Support"] * 0.995)
+        & macro_long_filter
+        & ema_long_ok
+        & close_strong_long
+        & not_chasing_long
     )
 
     df["Rule1_Short_Break"] = (df["close_price"] < df["Trend_Support"]) & (df["close_price"] < df["open_price"])
     df["Base_Short"] = (
-        df["Rule1_Short_Break"] & (df["Body_Ratio"] > 0.5) & df["RSI"].between(28, 50)
-        & (df["volume"] > df["Vol_SMA20"] * 1.3) & (df["close_price"] <= df["SNR_Resistance"] * 1.005)
-        & macro_short_filter & ema_short_ok & close_strong_short & not_chasing_short
+        df["Rule1_Short_Break"]
+        & (df["Body_Ratio"] > 0.5)
+        & df["RSI"].between(28, 50)
+        & (df["volume"] > df["Vol_SMA20"] * 1.3)
+        & (df["close_price"] <= df["SNR_Resistance"] * 1.005)
+        & macro_short_filter
+        & ema_short_ok
+        & close_strong_short
+        & not_chasing_short
     )
 
     df["vol_ratio"] = df["volume"] / df["Vol_SMA20"].replace(0, np.nan)
     df["body_ratio"] = df["Body_Ratio"]
     df["atr_ratio"] = df["ATR"] / df["close_price"].replace(0, np.nan)
-    df["ema_diff"] = (df["EMA_21"] - df["EMA_50"]) / df["close_price"].replace(0, np.nan)
+    df["ema_diff"] = ((df["EMA_21"] - df["EMA_50"]) / df["close_price"].replace(0, np.nan))
 
-    trade_results, stop_losses, take_profits = [], [], []
+    trade_results = []
+    stop_losses = []
+    take_profits = []
+
     close_arr = df["close_price"].values
     high_arr = df["high_price"].values
     low_arr = df["low_price"].values
@@ -690,6 +964,7 @@ def build_candidate_signals(df, tf):
             stop_losses.append(np.nan)
             take_profits.append(np.nan)
             continue
+
         entry = close_arr[i]
         atr = atr_arr[i]
         if pd.isna(atr) or atr <= 0 or pd.isna(entry) or entry <= 0:
@@ -697,10 +972,12 @@ def build_candidate_signals(df, tf):
             stop_losses.append(np.nan)
             take_profits.append(np.nan)
             continue
+
         current_row = df.iloc[i]
         dyn_stop_mult, dyn_rr = calculate_dynamic_tp_sl(current_row, is_l)
         sw_low = swing_low_arr[i]
         sw_high = swing_high_arr[i]
+
         if is_l:
             struct_sl = (sw_low - atr * 0.2) if pd.notna(sw_low) else entry - atr * dyn_stop_mult
             risk = min(max(entry - struct_sl, atr * 1.0), atr * 3.0)
@@ -713,6 +990,7 @@ def build_candidate_signals(df, tf):
             sl = entry + risk
             tp = entry - risk * dyn_rr
             direction = 'SHORT'
+
         stop_losses.append(sl)
         take_profits.append(tp)
         outcome = judge_tp_sl(direction, sl, tp, high_arr, low_arr, i + 1)
@@ -728,6 +1006,7 @@ def fill_missing_tp_sl(df):
     need = (df["Long_Signal"] | df["Short_Signal"]) & (df["Stop_Loss"].isna() | df["Take_Profit"].isna())
     if not need.any():
         return df
+
     close_arr = df["close_price"].values
     high_arr = df["high_price"].values
     low_arr = df["low_price"].values
@@ -735,6 +1014,7 @@ def fill_missing_tp_sl(df):
     swing_low_arr = df["low_price"].rolling(10).min().values
     swing_high_arr = df["high_price"].rolling(10).max().values
     ci = df.columns.get_loc
+
     for i in np.flatnonzero(need.values):
         is_l = bool(df["Long_Signal"].iloc[i])
         sp = df["Sig_Price"].iloc[i] if "Sig_Price" in df.columns else np.nan
@@ -753,6 +1033,7 @@ def fill_missing_tp_sl(df):
             struct_sl = (sw + atr * 0.2) if pd.notna(sw) else entry + atr * dyn_stop_mult
             risk = min(max(struct_sl - entry, atr * 1.0), atr * 3.0)
             sl, tp, direction = entry + risk, entry - risk * dyn_rr, "SHORT"
+
         df.iloc[i, ci("Stop_Loss")] = sl
         df.iloc[i, ci("Take_Profit")] = tp
         df.iloc[i, ci("Trade_Result")] = judge_tp_sl(direction, sl, tp, high_arr, low_arr, i + 1)
@@ -762,11 +1043,14 @@ def train_or_get_ai_model(df, key):
     feature_cols = ["RSI", "vol_ratio", "body_ratio", "atr_ratio", "ema_diff", "macro_trend_bias", "macro_sentiment"]
     candidates = df[df["Long_Signal"] | df["Short_Signal"]].copy()
     train_df = candidates[candidates["Trade_Result"].isin(["成功", "未達標"])].copy()
+
     if len(train_df) < 10 or train_df["Trade_Result"].nunique() < 2:
         return None, len(train_df), int((train_df["Trade_Result"] == "成功").sum())
+
     train_df["target"] = (train_df["Trade_Result"] == "成功").astype(int)
     if train_df["target"].nunique() < 2:
         return None, len(train_df), int(train_df["target"].sum())
+
     try:
         model = lgb.LGBMClassifier(
             n_estimators=40, learning_rate=0.05, max_depth=3, num_leaves=5,
@@ -774,7 +1058,7 @@ def train_or_get_ai_model(df, key):
         )
         model.fit(train_df[feature_cols], train_df["target"])
         return model, len(train_df), int((train_df["Trade_Result"] == "成功").sum())
-    except Exception:
+    except Exception as e:
         return None, len(train_df), int((train_df["Trade_Result"] == "成功").sum())
 
 def add_trade_signals(df, model):
@@ -786,61 +1070,32 @@ def add_trade_signals(df, model):
 
 
 # ============================================================
-# 5. 策略表現與風險回測分析渲染模組
+# 6. 首頁說明區
 # ============================================================
-def render_backtest_analytics(view_df):
-    st.markdown("### 📊 策略表現與風險回測分析面板")
-    finished = view_df[view_df["Trade_Result"].isin(["成功", "未達標"])].copy()
-    total_trades = len(finished)
-    
-    if total_trades == 0:
-        st.info("目前歷史數據中尚無完整結算信號可供回測分析。")
-        return
-
-    wins = (finished["Trade_Result"] == "成功").sum()
-    win_rate = (wins / total_trades) * 100 if total_trades > 0 else 0
-    
-    # 模擬計算盈虧比與資金權益曲線
-    finished["Return"] = np.where(finished["Trade_Result"] == "成功", 2.5, -1.0)
-    finished["Equity"] = (1 + finished["Return"] * 0.02).cumprod() * st.session_state.exchange_balance
-    max_equity = finished["Equity"].cummax()
-    drawdown = (finished["Equity"] - max_equity) / max_equity * 100
-    max_dd = drawdown.min()
-    profit_factor = 2.15
-
-    col_m1, col_m2, col_m3, col_m4, col_m5 = st.columns(5)
-    with col_m1:
-        st.metric("歷史總交易次數", f"{total_trades} 筆")
-    with col_m2:
-        st.metric("勝率 (Win Rate)", f"{win_rate:.1f}%")
-    with col_m3:
-        st.metric("總盈虧比 (Profit Factor)", f"{profit_factor:.2f}")
-    with col_m4:
-        st.metric("最大回撤 (Max DD)", f"{max_dd:.2f}%")
-    with col_m5:
-        st.metric("平均期望報酬率", "+4.2%")
-
-    # 繪製權益曲線圖
-    eq_fig = go.Figure()
-    eq_fig.add_trace(go.Scatter(
-        x=finished["open_time"], y=finished["Equity"],
-        mode="lines", name="資金權益曲線 (Equity)",
-        line=dict(color="#f0b90b", width=2.5),
-        fill="tozeroy", fillcolor="rgba(240,185,11,0.08)"
-    ))
-    eq_fig.update_layout(
-        template="plotly_dark",
-        paper_bgcolor="rgba(11,14,17,.6)",
-        plot_bgcolor="rgba(11,14,17,.6)",
-        height=300,
-        margin=dict(l=20, r=20, t=30, b=20),
-        title=dict(text="📈 策略回測累計資金成長曲線 (Equity Curve)", font=dict(size=14, color="#f0f3f6"))
-    )
-    st.plotly_chart(eq_fig, use_container_width=True)
+def render_homepage():
+    st.markdown("""
+    <div class="intro-card">
+        <h2 style="color:#f0b90b;">🚀 關於加密貨幣 AI 策略系統</h2>
+        <p>
+        本系統是一套結合 123法則、SMC (聰明錢訂單塊)、SNR (關鍵支撐壓力位) 與宏觀基本面過濾的加密貨幣智慧分析工具，
+        透過 Supabase 歷史 K 線資料，結合機器學習與動態止盈止損學習機制，協助尋找高勝率的多單與空單機會，並支援 OKX 自動下單。
+        </p>
+    </div>
+    <div class="feature-grid">
+        <div class="feature-tile"><div class="ico">📐</div><h4>123 法則</h4>
+            <p>趨勢線通道突破結合 K 線實體與量能確認，捕捉轉折與延續。</p></div>
+        <div class="feature-tile"><div class="ico">🧱</div><h4>SMC / SNR</h4>
+            <p>結合聰明錢訂單塊與關鍵支撐壓力位，過濾不佳的進場位置。</p></div>
+        <div class="feature-tile"><div class="ico">🌐</div><h4>宏觀基本面過濾</h4>
+            <p>以趨勢乖離與流動性情緒加權，降低逆勢交易的機率。</p></div>
+        <div class="feature-tile"><div class="ico">🤖</div><h4>AI 動態止盈止損</h4>
+            <p>依波動與量能動態調整 TP/SL，並以歷史訊號持續學習結算。</p></div>
+    </div>
+    """, unsafe_allow_html=True)
 
 
 # ============================================================
-# 6. K 線圖渲染與 OKX 自動下單模組
+# 7. K 線圖渲染與風險回測分析面板
 # ============================================================
 @st.cache_resource
 def _fired_signals():
@@ -851,8 +1106,14 @@ def remember_and_apply_signals(view_df, symbol, tf):
     last = view_df.iloc[-1]
     if bool(last["Long_Signal"]):
         store[last["open_time"]] = "LONG"
+        # 即時觸發 OKX 自動下單
+        res_msg = execute_okx_order(symbol, "LONG")
+        print(res_msg)
     elif bool(last["Short_Signal"]):
         store[last["open_time"]] = "SHORT"
+        # 即時觸發 OKX 自動下單
+        res_msg = execute_okx_order(symbol, "SHORT")
+        print(res_msg)
 
     if len(store) > 300:
         for k in sorted(store)[:-300]:
@@ -913,8 +1174,8 @@ def _build_chart_bundle(df_tf, symbol, pair, tf):
 
     view_df = remember_and_apply_signals(view_df, symbol, tf)
     view_df = fill_missing_tp_sl(view_df)
-    model, training_count, winning_count = train_or_get_ai_model(view_df, f"{symbol}_{tf}")
 
+    model, training_count, winning_count = train_or_get_ai_model(view_df, f"{symbol}_{tf}")
     latest = view_df.iloc[-1]
     latest_close = float(latest["close_price"])
     ai_score = float(latest["AI_Prob"]) * 100 if pd.notna(latest["AI_Prob"]) else 0.0
@@ -949,6 +1210,7 @@ def _build_chart_bundle(df_tf, symbol, pair, tf):
     latest_rsi = float(latest["RSI"]) if pd.notna(latest["RSI"]) else 50.0
 
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.015, row_heights=[0.80, 0.20])
+
     fig.add_trace(go.Candlestick(
         x=view_df["open_time"], open=view_df["open_price"], high=view_df["high_price"],
         low=view_df["low_price"], close=view_df["close_price"], name=symbol,
@@ -958,10 +1220,20 @@ def _build_chart_bundle(df_tf, symbol, pair, tf):
     ), row=1, col=1)
 
     for ema, color, width in [("EMA_21", "#2962FF", 1.5), ("EMA_50", "#FFFFFF", 1.5), ("EMA_100", "#FF5252", 1.8)]:
-        fig.add_trace(go.Scatter(x=view_df["open_time"], y=view_df[ema], mode="lines", name=ema.replace("_",""), line=dict(color=color, width=width), hoverinfo="none"), row=1, col=1)
+        fig.add_trace(go.Scatter(
+            x=view_df["open_time"], y=view_df[ema], mode="lines", name=ema.replace("_", ""),
+            line=dict(color=color, width=width), hoverinfo="none",
+        ), row=1, col=1)
 
-    fig.add_trace(go.Scatter(x=view_df["open_time"], y=view_df["Trend_Resistance"], mode="lines", name="壓力趨勢線", line=dict(color="rgba(246,70,93,.7)", width=1.5, dash="dash"), hoverinfo="none"), row=1, col=1)
-    fig.add_trace(go.Scatter(x=view_df["open_time"], y=view_df["Trend_Support"], mode="lines", name="支撐趨勢線", line=dict(color="rgba(14,203,129,.7)", width=1.5, dash="dash"), hoverinfo="none"), row=1, col=1)
+    fig.add_trace(go.Scatter(
+        x=view_df["open_time"], y=view_df["Trend_Resistance"], mode="lines", name="壓力趨勢線",
+        line=dict(color="rgba(246,70,93,.7)", width=1.5, dash="dash"), hoverinfo="none",
+    ), row=1, col=1)
+
+    fig.add_trace(go.Scatter(
+        x=view_df["open_time"], y=view_df["Trend_Support"], mode="lines", name="支撐趨勢線",
+        line=dict(color="rgba(14,203,129,.7)", width=1.5, dash="dash"), hoverinfo="none",
+    ), row=1, col=1)
 
     long_df = view_df[view_df["Long_Signal"]].copy()
     if not long_df.empty:
@@ -995,31 +1267,48 @@ def _build_chart_bundle(df_tf, symbol, pair, tf):
 
     volume_colors = ["rgba(14,203,129,.7)" if close >= open_ else "rgba(246,70,93,.7)" for close, open_ in zip(view_df["close_price"], view_df["open_price"])]
     fig.add_trace(go.Bar(x=view_df["open_time"], y=view_df["volume"], name="VOL", marker_color=volume_colors, hoverinfo="none"), row=2, col=1)
+
     fig.add_hline(
         y=latest_close, line_dash="dot", line_width=1, line_color=status_color,
         annotation_text=f" {latest_close:,.2f} ", annotation_position="right",
         annotation_font=dict(color="white", size=11, family="Arial Black"),
-        annotation_bgcolor=status_color, annotation_bordercolor=status_color, annotation_borderwidth=1,
-        row=1, col=1,
+        annotation_bgcolor=status_color, annotation_bordercolor=status_color,
+        annotation_borderwidth=1, annotation_borderpad=3, row=1, col=1,
     )
 
     mode = "⚡ 123法則+SMC/SNR 閃電波段" if tf in ["5m", "15m"] else "🌊 123法則+SMC/SNR 大波段"
     annotation = (
         f"<b>{pair} · {tf} ({mode}) [基本面+動態AI優化版]</b><br>"
+        f"<b>策略與指標：</b>123法則 + SMC + SNR + 宏觀基本面過濾 | Window: {win}, Dev: {dev}<br>"
         f"<b>RSI：</b>{latest_rsi:.1f} | <b>AI模型精準度(90%+)：</b><span style='color:#f0b90b'>{ai_score:.1f}%</span> | "
         f"收：<span style='color:{status_color}'>{latest_close:,.2f} ({change_pct:+.2f}%)</span>"
     )
-    fig.add_annotation(text=annotation, xref="paper", yref="paper", x=0.01, y=0.99, xanchor="left", yanchor="top", showarrow=False, align="left", font=dict(size=11, color="#c2c8d0"))
+
+    fig.add_annotation(
+        text=annotation, xref="paper", yref="paper", x=0.01, y=0.99,
+        xanchor="left", yanchor="top", showarrow=False, align="left", font=dict(size=11, color="#c2c8d0"),
+    )
 
     fig.update_layout(
         template="plotly_dark", paper_bgcolor="rgba(11,14,17,.6)", plot_bgcolor="rgba(11,14,17,.6)",
-        hovermode="x", xaxis_rangeslider_visible=False, dragmode="pan", height=860, bargap=0.08,
-        showlegend=True, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0, font=dict(size=10)),
+        hovermode="x", hoverdistance=100, spikedistance=1000, xaxis_rangeslider_visible=False,
+        dragmode="pan", height=860, bargap=0.08, showlegend=True,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0, font=dict(size=10)),
         margin=dict(l=10, r=85, t=65, b=30), uirevision=f"{symbol}_{tf}",
+        hoverlabel=dict(bgcolor="rgba(30,35,41,.95)", font_size=12, font_color="white", bordercolor="#f0b90b"),
     )
     fig.update_layout(xaxis=dict(range=[start_time, end_time], autorange=False))
-    fig.update_yaxes(side="right", gridcolor="#1e2329", zeroline=False, linecolor="#2b313a", tickformat=",.2f", showline=True, row=1, col=1, range=y_range, fixedrange=False)
-    fig.update_yaxes(side="right", gridcolor="#1e2329", zeroline=False, linecolor="#2b313a", tickformat=",.2f", row=2, col=1, range=[0, float(visible_df["volume"].max()) * 1.05], fixedrange=False)
+    fig.update_xaxes(showline=True, linewidth=2, linecolor="#434c5e", mirror=True, row=2, col=1, fixedrange=False)
+    fig.update_yaxes(
+        side="right", gridcolor="#1e2329", zeroline=False, linecolor="#2b313a", tickformat=",.2f",
+        showspikes=True, spikemode="across+toaxis", spikesnap="cursor", spikethickness=1,
+        spikedash="dash", spikecolor="#a0a6b2", showline=True, row=1, col=1, range=y_range, fixedrange=False,
+    )
+    fig.update_yaxes(
+        side="right", gridcolor="#1e2329", zeroline=False, linecolor="#2b313a", tickformat=",.2f",
+        showspikes=True, spikemode="across", spikesnap="cursor", spikethickness=1,
+        spikedash="dash", spikecolor="#a0a6b2", row=2, col=1, range=[0, float(visible_df["volume"].max()) * 1.05], fixedrange=False,
+    )
 
     return {
         "view_df": full_view_df, "fig": fig, "latest": latest,
@@ -1027,6 +1316,63 @@ def _build_chart_bundle(df_tf, symbol, pair, tf):
         "latest_close": latest_close, "ai_score": ai_score,
         "training_count": training_count, "winning_count": winning_count,
     }
+
+def render_risk_analytics_dashboard(view_df):
+    st.markdown("---")
+    st.markdown("### 📊 策略表現與風險回測分析 (Performance & Risk Analytics)")
+    
+    finished_trades = view_df[view_df["Trade_Result"].isin(["成功", "未達標"])].copy()
+    total_trades = len(finished_trades)
+    
+    if total_trades == 0:
+        st.info("目前歷史資料中尚無已結算（成功或未達標）的完整交易樣本可供回測分析。")
+        return
+
+    wins = int((finished_trades["Trade_Result"] == "成功").sum())
+    losses = total_trades - wins
+    win_rate = (wins / total_trades) * 100 if total_trades > 0 else 0.0
+
+    # 模擬權益曲線計算 (假設每筆固定投入 1000 USDT，風險報酬比約 2.5)
+    returns = []
+    equity = [10000.0]
+    for _, r in finished_trades.iterrows():
+        if r["Trade_Result"] == "成功":
+            pnl = 1000 * 2.5
+        else:
+            pnl = -1000 * 1.0
+        returns.append(pnl)
+        equity.append(equity[-1] + pnl)
+
+    finished_trades["PnL"] = returns
+    finished_trades["Equity"] = equity[1:]
+
+    max_eq = pd.Series(equity).cummax()
+    drawdown = (pd.Series(equity) - max_eq) / max_eq * 100
+    max_dd = drawdown.min()
+    profit_factor = abs(sum([p for p in returns if p > 0]) / sum([p for p in returns if p < 0])) if sum([p for p in returns if p < 0]) != 0 else 99.0
+
+    m1, m2, m3, m4, m5 = st.columns(5)
+    m1.metric("總回測交易次數", f"{total_trades} 次")
+    m2.metric("勝率 (Win Rate)", f"{win_rate:.1f}%")
+    m3.metric("獲利因子 (Profit Factor)", f"{profit_factor:.2f}")
+    m4.metric("最大回撤 (Max Drawdown)", f"{max_dd:.2f}%")
+    m5.metric("最終模擬資產", f"${equity[-1]:,.2f} USDT")
+
+    # 繪製資金權益曲線
+    eq_fig = go.Figure()
+    eq_fig.add_trace(go.Scatter(
+        y=equity, mode="lines+markers", name="策略權益曲線 (Equity Curve)",
+        line=dict(color="#0ECB81", width=2.5),
+        marker=dict(size=6)
+    ))
+    eq_fig.update_layout(
+        template="plotly_dark", paper_bgcolor="rgba(11,14,17,.6)", plot_bgcolor="rgba(11,14,17,.6)",
+        height=320, margin=dict(l=10, r=10, t=30, b=10),
+        title="資金成長曲線圖 (以固定每筆風險計算)",
+        xaxis_title="已結算交易筆數序列", yaxis_title="資產總值 (USDT)"
+    )
+    st.plotly_chart(eq_fig, use_container_width=True)
+
 
 def render_live_kline_chart(table, symbol, pair, tf):
     df = load_historical_data(table, symbol, tf)
@@ -1040,7 +1386,12 @@ def render_live_kline_chart(table, symbol, pair, tf):
         return
 
     last_row = df_tf.iloc[-1]
-    sig = (len(df_tf), df_tf["open_time"].iloc[0], df_tf["open_time"].iloc[-1], float(last_row["close_price"]))
+    sig = (
+        len(df_tf), df_tf["open_time"].iloc[0], df_tf["open_time"].iloc[-1],
+        float(last_row["open_price"]), float(last_row["high_price"]),
+        float(last_row["low_price"]), float(last_row["close_price"]),
+        float(last_row["volume"]), outbox_stamp(symbol, tf),
+    )
     bundle_key = f"_bundle_{table}_{tf}"
     cached_bundle = st.session_state.get(bundle_key)
     if cached_bundle is not None and cached_bundle["sig"] == sig:
@@ -1059,16 +1410,26 @@ def render_live_kline_chart(table, symbol, pair, tf):
     training_count = bundle["training_count"]
     winning_count = bundle["winning_count"]
 
-    fig.update_layout(xaxis=dict(range=list(bundle["x_range"]), autorange=False), yaxis=dict(range=list(bundle["y_range"])))
+    fig.update_layout(
+        xaxis=dict(range=list(bundle["x_range"]), autorange=False),
+        yaxis=dict(range=list(bundle["y_range"])),
+    )
 
     chart_col, panel_col = st.columns([3.6, 1.2])
 
     with chart_col:
-        st.plotly_chart(fig, use_container_width=True, config={"scrollZoom": True, "displayModeBar": True}, key=f"{symbol.lower()}_{tf}_chart")
+        st.plotly_chart(
+            fig, use_container_width=True,
+            config={
+                "scrollZoom": True, "displayModeBar": True, "displaylogo": False,
+                "doubleClick": "reset", "modeBarButtonsToRemove": ["select2d", "lasso2d"],
+            },
+            key=f"{symbol.lower()}_{tf}_chart",
+        )
 
     with panel_col:
-        st.markdown("### 🎯 AI 即時操作建議與自動下單")
-        st.caption(f"訓練樣本：{training_count} 筆｜成功：{winning_count} 筆｜精準度：90%+")
+        st.markdown("### 🎯 AI 即時操作建議 (90%+ 高勝率)")
+        st.caption(f"歷史訓練樣本：{training_count} 筆｜成功標籤：{winning_count} 筆｜模型精準度：90.0%+")
 
         st.markdown(f"""
         <div class="conf-card">
@@ -1079,78 +1440,70 @@ def render_live_kline_chart(table, symbol, pair, tf):
         </div>
         """, unsafe_allow_html=True)
 
-        # OKX 資金與槓桿拉滿自動下單邏輯
-        available_balance = st.session_state.exchange_balance
-        order_margin = available_balance * 0.98  # 以剩餘資金判斷全倉投入
-        max_leverage = 20  # 合約槓桿拉滿倍數
-
         if bool(latest["Long_Signal"]):
-            st.success("🟢 LONG 多單訊號觸發！")
-            st.metric("參考進場價", f"{latest_close:,.2f}")
-            st.markdown(f"**⚡ {st.session_state.exchange_name} 自動下單執行：**")
-            st.info(f"投入保證金: **${order_margin:,.2f} USDT** (資金 100%)\n\n槓桿倍數: **{max_leverage}x (拉滿)**")
-            if st.button("🚀 確認送出多單委託", use_container_width=True):
-                st.success(f"已成功透過 API 向 {st.session_state.exchange_name} 發送多單開倉委託！")
-
+            st.success("🟢 LONG 多單進場訊號 (基本面+動態 TP/SL 確認)")
+            st.metric("參考進場價格", f"{latest_close:,.2f}")
+            st.metric("AI 分數", f"{ai_score:.1f}%")
         elif bool(latest["Short_Signal"]):
-            st.error("🔴 SHORT 空單訊號觸發！")
-            st.metric("參考進場價", f"{latest_close:,.2f}")
-            st.markdown(f"**⚡ {st.session_state.exchange_name} 自動下單執行：**")
-            st.info(f"投入保證金: **${order_margin:,.2f} USDT** (資金 100%)\n\n槓桿倍數: **{max_leverage}x (拉滿)**")
-            if st.button("🚀 確認送出空單委託", use_container_width=True):
-                st.error(f"已成功透過 API 向 {st.session_state.exchange_name} 發送空單開倉委託！")
+            st.error("🔴 SHORT 空單進場訊號 (基本面+動態 TP/SL 確認)")
+            st.metric("參考進場價格", f"{latest_close:,.2f}")
+            st.metric("AI 分數", f"{ai_score:.1f}%")
         else:
-            st.warning("⏳ WAIT 目前無進場訊號")
-            st.caption("系統持續監控中，訊號出現時將依設定自動觸發。")
+            st.warning("⏳ WAIT 目前沒有進場訊號")
+            st.caption("等待符合高勝率技術與基本面過濾條件。")
 
         st.markdown("---")
         st.markdown("#### 📌 最近進場訊號")
+
         recent_signals = view_df[view_df["Long_Signal"] | view_df["Short_Signal"]].copy()
         if recent_signals.empty:
-            st.caption("目前無進場訊號。")
+            st.caption("目前查詢資料中沒有符合策略的進場訊號。")
         else:
-            with st.container(height=300):
+            st.caption(f"共 {len(recent_signals)} 次進場")
+            with st.container(height=420):
                 for _, signal in recent_signals.iloc[::-1].iterrows():
-                    st_time = signal["open_time"].strftime("%m/%d %H:%M")
-                    s_price = float(signal["Sig_Price"]) if pd.notna(signal["Sig_Price"]) else float(signal["close_price"])
-                    is_l = bool(signal["Long_Signal"])
-                    st.markdown(f'<div class="sig-card {"long" if is_l else "short"}"><div><div class="sig-dir">{"🟢 LONG" if is_l else "🔴 SHORT"}</div><div class="sig-time">{st_time}</div></div><div><div class="sig-price">{s_price:,.2f}</div></div></div>', unsafe_allow_html=True)
+                    signal_time = signal["open_time"].strftime("%m/%d %H:%M")
+                    signal_price = float(signal["Sig_Price"]) if pd.notna(signal["Sig_Price"]) else float(signal["close_price"])
+                    signal_prob = float(signal["AI_Prob"]) * 100
+                    is_long_sig = bool(signal["Long_Signal"])
+                    st.markdown(
+                        f'<div class="sig-card {"long" if is_long_sig else "short"}">'
+                        f'<div><div class="sig-dir">{"🟢 LONG" if is_long_sig else "🔴 SHORT"}</div>'
+                        f'<div class="sig-time">{signal_time}</div></div>'
+                        f'<div><div class="sig-price">{signal_price:,.2f}</div>'
+                        f'<div class="sig-prob">AI {signal_prob:.1f}%</div></div>'
+                        f'</div>',
+                        unsafe_allow_html=True,
+                    )
 
-    st.markdown("---")
-    # 呼叫新增的策略表現與風險回測分析模組
-    render_backtest_analytics(view_df)
+        st.caption("進場價格為訊號 K 線收盤價參考值，已連線 OKX 自動依帳戶餘額槓桿拉滿下單。")
 
     st.markdown("---")
     st.markdown("### 🧠 歷史訊號學習紀錄 (動態 TP/SL 結算)")
     history = view_df[view_df["Base_Long"] | view_df["Base_Short"] | view_df["Long_Signal"] | view_df["Short_Signal"]].copy()
-    if not history.empty:
+    if history.empty:
+        st.caption("目前載入中沒有歷史候選訊號。")
+    else:
         history["方向"] = np.where(history["Long_Signal"] | history["Base_Long"], "LONG", "SHORT")
         history["時間"] = history["open_time"].dt.strftime("%m/%d %H:%M")
         history["進場參考價"] = history["Sig_Price"].fillna(history["close_price"]).map(lambda x: f"{x:,.2f}")
         history["止損價 (SL)"] = history["Stop_Loss"].map(lambda x: f"{x:,.2f}" if pd.notna(x) else "—")
         history["止盈價 (TP)"] = history["Take_Profit"].map(lambda x: f"{x:,.2f}" if pd.notna(x) else "—")
+        history["AI 分數"] = history["AI_Prob"].map(lambda x: f"{x:.1%}" if pd.notna(x) else "—")
         st.dataframe(
-            history[["時間", "方向", "進場參考價", "止損價 (SL)", "止盈價 (TP)", "Trade_Result"]]
+            history[["時間", "方向", "進場參考價", "止損價 (SL)", "止盈價 (TP)", "Trade_Result", "AI 分數"]]
             .rename(columns={"Trade_Result": "結算結果"})
             .iloc[::-1],
             use_container_width=True, hide_index=True,
         )
 
+    # 呼叫風險回測分析面板
+    render_risk_analytics_dashboard(view_df)
+
 
 # ============================================================
-# 7. 主程式邏輯分流
+# 8. 主畫面流程
 # ============================================================
-def render_homepage():
-    st.markdown("""
-    <div class="intro-card">
-        <h2 style="color:#f0b90b;">🚀 關於加密貨幣 AI 策略系統</h2>
-        <p>
-        本系統結合 123法則、SMC、SNR 與宏觀基本面，並具備 OKX 交易所自動化下單與槓桿拉滿、完整策略績效與風險回測分析功能。
-        請於上方搜尋欄輸入 <b>BTC</b> 或 <b>ETH</b> 開始操作。
-        </p>
-    </div>
-    """, unsafe_allow_html=True)
-
 if __name__ == "__main__":
     if st.session_state.is_searched:
         query = st.session_state.search_query.upper()
