@@ -1,12 +1,12 @@
 import time
+import threading
 import ccxt
 import psycopg2
 import streamlit as st
-from apscheduler.schedulers.background import BackgroundScheduler
 
-# 網頁端顯示簡單的運行狀態
+# 1. 必須要有網頁內容，讓 UptimeRobot 訪問時能收到 200 OK 正常回應
 st.title("ETH 數據自動同步系統")
-st.write("狀態：內建 Cron 執行緒排程中 🚀")
+st.write("狀態：背景自動同步執行中 🚀")
 
 SUPABASE_DB_URL = "postgresql://postgres.ygzeqvcyqtvhvjrxhzdv:%4010233960527Ken@aws-0-ap-northeast-1.pooler.supabase.com:6543/postgres"
 
@@ -70,23 +70,23 @@ def fetch_single_timeframe(tf):
     finally:
         connection.close()
 
-def run_scanner():
-    """每次排程觸發時執行的動作"""
-    try:
-        timeframes = ['5m', '15m', '1h', '4h']
-        for tf in timeframes:
-            fetch_single_timeframe(tf)
-    except Exception as e:
-        print(f"排程執行錯誤: {e}")
+def background_scanner():
+    """背景迴圈：每隔 60 秒執行一次資料抓取"""
+    while True:
+        try:
+            timeframes = ['5m', '15m', '1h', '4h']
+            for tf in timeframes:
+                fetch_single_timeframe(tf)
+        except Exception as e:
+            print(f"掃描執行錯誤: {e}")
+        time.sleep(60)
 
-# 使用 st.cache_resource 確保排程器只初始化一次，避免重複建立
+# 使用 st.cache_resource 確保背景執行緒只會啟動一次
 @st.cache_resource
-def init_scheduler():
-    scheduler = BackgroundScheduler()
-    # 設定每 1 分鐘執行一次 run_scanner（可根據需求調整秒數或改用其他 cron 表達式）
-    scheduler.add_job(run_scanner, 'interval', minutes=1)
-    scheduler.start()
-    return scheduler
+def start_background_task():
+    thread = threading.Thread(target=background_scanner, daemon=True)
+    thread.start()
+    return "Started"
 
-# 啟動排程器
-init_scheduler()
+# 啟動背景任務
+start_background_task()
