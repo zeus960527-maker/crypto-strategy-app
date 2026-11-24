@@ -1,9 +1,18 @@
 import os
 import base64
-from pathlib import Path
+import hashlib
+import hmac
 import json
+import math
+import secrets
+from datetime import datetime, timezone, timedelta
+from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP
+from pathlib import Path
+from urllib.parse import urlencode
 
+import requests  # 🆕 OKX REST
 import streamlit as st
+import streamlit.components.v1 as components  # 🆕 寫入登入 cookie
 import pandas as pd
 import numpy as np
 from sqlalchemy import create_engine, text
@@ -25,6 +34,11 @@ BASE_DIR = Path(__file__).resolve().parent
 
 # ------------------------------------------------------------
 # 保持 Render 活躍：Streamlit 內建健康檢查端點是 /_stcore/health（回傳 200 "ok"）。
+# 原本的 Flask 只定義了路由、從未啟動，也無法與 Streamlit 共用同一個 $PORT，
+# 而且若 requirements.txt 沒有 flask，import 失敗會讓整個服務起不來 → 503。
+# 所以移除 Flask，改成：
+#   1) 外部監控（UptimeRobot / 測試執行）請打  https://你的網址/_stcore/health
+#   2) 這裡額外開一條背景執行緒，定時 ping 自己，避免 Render 免費版閒置休眠
 # ------------------------------------------------------------
 @st.cache_resource
 def _start_keep_alive():
@@ -35,7 +49,7 @@ def _start_keep_alive():
     def _loop():
         url = base + "/_stcore/health"
         while True:
-            time.sleep(600)  # 每 10 分鐘一次
+            time.sleep(600)  # 每 10 分鐘一次（Render 免費版 15 分鐘無流量會休眠）
             try:
                 urllib.request.urlopen(url, timeout=15).read()
             except Exception as e:
@@ -359,76 +373,23 @@ h3, h4 { border-left: 3px solid var(--gold); padding-left: 10px !important; }
 .sig-time { font-size: 11px; color: var(--muted); }
 .sig-price { font-family: 'JetBrains Mono', monospace; font-size: 14px; font-weight: 700; color: #eaecef; text-align: right; }
 .sig-prob { font-size: 11px; color: var(--gold); text-align: right; }
+
+/* 🆕 登入 / 使用者列 */
+.user-bar {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
+    padding: 10px 14px; margin-bottom: 10px; border-radius: 14px;
+    background: var(--panel); border: 1px solid var(--line);
+}
+.user-bar .name { font-weight: 800; color: #fff; }
+.chip.demo { color: #7dd3fc; border-color: rgba(125,211,252,.35); background: rgba(125,211,252,.08); }
+.chip.real { color: var(--down); border-color: rgba(246,70,93,.4); background: rgba(246,70,93,.10); }
 </style>
 """
 st.markdown(UI_CSS, unsafe_allow_html=True)
 
 
 # ============================================================
-# 1. Session State 初始化（含註冊/登入與保持登入狀態）
-# ============================================================
-st.session_state.setdefault("is_logged_in", False)
-st.session_state.setdefault("user_account", "")
-st.session_state.setdefault("exchange_data", {})
-st.session_state.setdefault("is_searched", False)
-st.session_state.setdefault("search_query", "")
-st.session_state.setdefault("ai_models", {})
-
-
-# ============================================================
-# 1.5 交易所註冊與登入介面層 (Stage 1)
-# ============================================================
-def render_auth_portal():
-    st.markdown("""
-    <div style="max-width: 500px; margin: 40px auto; padding: 30px; background: rgba(20,25,35,0.95); border: 1px solid rgba(240,185,11,0.3); border-radius: 16px; box-shadow: 0 12px 40px rgba(0,0,0,0.6);">
-        <h2 style="text-align: center; color: #f0b90b; margin-bottom: 10px;">🔐 OKX 交易所帳戶登入與綁定</h2>
-        <p style="text-align: center; color: #8b94a3; font-size: 13px; margin-bottom: 25px;">
-            首次使用者請填寫註冊，已有帳號直接登入。登入後將自動讀取剩餘資金並支援一鍵滿倉下單！
-        </p>
-    """, unsafe_allow_html=True)
-
-    with st.form("auth_form"):
-        auth_mode = st.radio("請選擇操作模式", ["已有帳號 (登入)", "新用戶 (註冊)"], horizontal=True)
-        acc = st.text_input("👤 交易所帳號 / Email / UID", placeholder="例如: yydskggs960527@gmail.com 或 UID12345")
-        pwd = st.text_input("🔑 密碼 / API Secret Key", type="password", placeholder="請輸入密碼或 API 金鑰")
-        
-        # 若為註冊模式，可讓使用者填入初始模擬資金
-        init_balance = 10000.0
-        if auth_mode == "新用戶 (註冊)":
-            init_balance = st.number_input("💰 初始模擬/真實合約資金 (USDT)", min_value=10.0, value=10000.0, step=100.0)
-
-        remember_me = st.checkbox("保持登入狀態 (下次訪問自動跳過登入)", value=True)
-        
-        st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
-        submitted = st.form_submit_button("立即進入 AI 策略系統", use_container_width=True)
-
-        if submitted:
-            if not acc.strip() or not pwd.strip():
-                st.error("帳號與密碼不能為空！")
-            else:
-                st.session_state.is_logged_in = True
-                st.session_state.user_account = acc.strip()
-                # 儲存交易所資料與帳號狀態
-                st.session_state.exchange_data = {
-                    "account": acc.strip(),
-                    "balance": float(init_balance) if auth_mode == "新用戶 (註冊)" else 12580.50, # 預設現有帳戶餘額示範
-                    "leverage": 20,  # 預設槓桿拉滿倍數
-                    "mode": auth_mode
-                }
-                st.success("登入成功！正在進入系統...")
-                st.rerun()
-
-    st.markdown("</div>", unsafe_allow_html=True)
-
-
-# 若未登入，強制顯示登入介面
-if not st.session_state.is_logged_in:
-    render_auth_portal()
-    st.stop()
-
-
-# ============================================================
-# 2. Supabase 連線與 K 棒資料載入
+# 0.8 🆕 資料庫連線（由原本第 2 節原封不動搬到這裡，讓登入閘門能先用到資料庫）
 # ============================================================
 def get_database_url():
     url = os.getenv("SUPABASE_DB_URL", "").strip()
@@ -462,9 +423,565 @@ def get_db_engine():
     )
 
 
+# ============================================================
+# 0.9 🆕 帳號系統 / 金鑰加密 / 保持登入
+# ============================================================
+SESSION_DAYS = 30
+
+
+@st.cache_resource
+def ensure_app_tables():
+    """建立帳號、登入 token、下單紀錄資料表（不存在才建立，不影響原有資料表）。"""
+    ddl = [
+        """CREATE TABLE IF NOT EXISTS app_users (
+            id SERIAL PRIMARY KEY,
+            username TEXT UNIQUE NOT NULL,
+            pw_salt TEXT NOT NULL,
+            pw_hash TEXT NOT NULL,
+            okx_key TEXT NOT NULL,
+            okx_secret TEXT NOT NULL,
+            okx_pass TEXT NOT NULL,
+            okx_demo BOOLEAN DEFAULT TRUE,
+            created_at TIMESTAMPTZ DEFAULT NOW()
+        )""",
+        """CREATE TABLE IF NOT EXISTS app_sessions (
+            token_hash TEXT PRIMARY KEY,
+            username TEXT NOT NULL,
+            expires_at TIMESTAMPTZ NOT NULL
+        )""",
+        """CREATE TABLE IF NOT EXISTS user_order_log (
+            id SERIAL PRIMARY KEY,
+            username TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            timeframe TEXT NOT NULL,
+            signal_time TIMESTAMP NOT NULL,
+            direction TEXT,
+            status TEXT,
+            detail TEXT,
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            UNIQUE (username, symbol, timeframe, signal_time)
+        )""",
+    ]
+    engine = get_db_engine()
+    for stmt in ddl:
+        with engine.begin() as conn:
+            conn.execute(text(stmt))
+    return True
+
+
+def _fernet():
+    from cryptography.fernet import Fernet
+    secret = os.getenv("APP_SECRET_KEY", "").strip()
+    if not secret:
+        try:
+            secret = str(st.secrets.get("APP_SECRET_KEY", "")).strip()
+        except Exception:
+            secret = ""
+    if not secret:
+        # 沒設定時退而用資料庫連線字串推導（建議自行設定 APP_SECRET_KEY）
+        secret = "fallback:" + (get_database_url() or "no-db")
+    key = base64.urlsafe_b64encode(hashlib.sha256(secret.encode()).digest())
+    return Fernet(key)
+
+
+def enc(s):
+    return _fernet().encrypt(s.encode()).decode()
+
+
+def dec(s):
+    return _fernet().decrypt(s.encode()).decode()
+
+
+def hash_password(password, salt=None):
+    salt = salt or secrets.token_hex(16)
+    h = hashlib.scrypt(password.encode(), salt=salt.encode(), n=2 ** 14, r=8, p=1, dklen=32)
+    return salt, h.hex()
+
+
+def verify_password(password, salt, pw_hash):
+    _, h = hash_password(password, salt)
+    return hmac.compare_digest(h, pw_hash)
+
+
+def _sha(s):
+    return hashlib.sha256(s.encode()).hexdigest()
+
+
+def users_exist():
+    try:
+        ensure_app_tables()
+        with get_db_engine().connect() as conn:
+            return conn.execute(text("SELECT COUNT(*) FROM app_users")).scalar() > 0
+    except Exception:
+        return False
+
+
+def create_user(username, password, k, s, p, demo):
+    salt, h = hash_password(password)
+    with get_db_engine().begin() as conn:
+        conn.execute(
+            text("""INSERT INTO app_users
+                    (username, pw_salt, pw_hash, okx_key, okx_secret, okx_pass, okx_demo)
+                    VALUES (:u, :salt, :h, :k, :s, :p, :d)"""),
+            {"u": username, "salt": salt, "h": h,
+             "k": enc(k), "s": enc(s), "p": enc(p), "d": bool(demo)},
+        )
+
+
+def fetch_user(username):
+    with get_db_engine().connect() as conn:
+        return conn.execute(
+            text("""SELECT username, pw_salt, pw_hash, okx_key, okx_secret, okx_pass, okx_demo
+                    FROM app_users WHERE username = :u"""),
+            {"u": username},
+        ).fetchone()
+
+
+def start_user_session(row):
+    """把使用者資料與（解密後的）OKX 金鑰放進此次 session（只存在伺服器記憶體）。"""
+    st.session_state["user"] = row[0]
+    st.session_state["okx"] = {
+        "key": dec(row[3]), "secret": dec(row[4]),
+        "passphrase": dec(row[5]), "demo": bool(row[6]),
+    }
+    st.session_state["logged_out"] = False
+
+
+def issue_login_token(username):
+    token = secrets.token_urlsafe(32)
+    exp = datetime.now(timezone.utc) + timedelta(days=SESSION_DAYS)
+    with get_db_engine().begin() as conn:
+        conn.execute(text("DELETE FROM app_sessions WHERE expires_at < NOW()"))
+        conn.execute(
+            text("INSERT INTO app_sessions (token_hash, username, expires_at) VALUES (:t, :u, :e)"),
+            {"t": _sha(token), "u": username, "e": exp},
+        )
+    st.session_state["cookie_op"] = ("set", token)
+
+
+def username_from_token(token):
+    try:
+        with get_db_engine().connect() as conn:
+            r = conn.execute(
+                text("SELECT username FROM app_sessions WHERE token_hash = :t AND expires_at > NOW()"),
+                {"t": _sha(token)},
+            ).fetchone()
+        return r[0] if r else None
+    except Exception:
+        return None
+
+
+def logout_user():
+    try:
+        tok = st.context.cookies.get("ai_token")
+        if tok:
+            with get_db_engine().begin() as conn:
+                conn.execute(text("DELETE FROM app_sessions WHERE token_hash = :t"), {"t": _sha(tok)})
+    except Exception:
+        pass
+    for k in ("user", "okx", "okx_balance", "auto_trade", "last_order_msg"):
+        st.session_state.pop(k, None)
+    st.session_state["logged_out"] = True
+    st.session_state["is_searched"] = False
+    st.session_state["search_query"] = ""
+    st.session_state["cookie_op"] = ("clear", "")
+
+
+def flush_cookie_op():
+    """在瀏覽器寫入 / 清除登入 cookie（用一個高度 0 的 iframe 執行）。"""
+    op = st.session_state.pop("cookie_op", None)
+    if not op:
+        return
+    kind, token = op
+    age = SESSION_DAYS * 86400 if kind == "set" else 0
+    val = token if kind == "set" else ""
+    components.html(
+        f"<script>window.parent.document.cookie="
+        f"'ai_token={val}; max-age={age}; path=/; SameSite=Lax';</script>",
+        height=0,
+    )
+
+
+# ============================================================
+# 0.95 🆕 OKX REST 用戶端與自動下單
+# ============================================================
+class OKXClient:
+    BASE = "https://www.okx.com"
+
+    def __init__(self, key, secret, passphrase, demo=True):
+        self.key, self.secret, self.passphrase, self.demo = key, secret, passphrase, demo
+
+    def _req(self, method, path, params=None, body=None):
+        ts = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        req_path = path + (("?" + urlencode(params)) if params else "")
+        body_str = json.dumps(body) if body else ""
+        sign = base64.b64encode(
+            hmac.new(self.secret.encode(), (ts + method + req_path + body_str).encode(),
+                     hashlib.sha256).digest()
+        ).decode()
+        headers = {
+            "OK-ACCESS-KEY": self.key, "OK-ACCESS-SIGN": sign,
+            "OK-ACCESS-TIMESTAMP": ts, "OK-ACCESS-PASSPHRASE": self.passphrase,
+            "Content-Type": "application/json",
+        }
+        if self.demo:
+            headers["x-simulated-trading"] = "1"
+        r = requests.request(method, self.BASE + req_path, headers=headers,
+                             data=body_str if body else None, timeout=10)
+        j = r.json()
+        if j.get("code") != "0":
+            detail = ""
+            try:
+                detail = j["data"][0].get("sMsg", "")
+            except Exception:
+                pass
+            raise RuntimeError(f"OKX 錯誤 {j.get('code')}: {j.get('msg') or detail} {detail}".strip())
+        return j.get("data", [])
+
+    def balance(self):
+        d = self._req("GET", "/api/v5/account/balance", {"ccy": "USDT"})
+        for item in d[0].get("details", []):
+            if item.get("ccy") == "USDT":
+                return float(item.get("availBal") or 0)
+        return 0.0
+
+    def config(self):
+        return self._req("GET", "/api/v5/account/config")[0]
+
+    def instrument(self, inst_id):
+        return self._req("GET", "/api/v5/public/instruments",
+                         {"instType": "SWAP", "instId": inst_id})[0]
+
+    def positions(self, inst_id):
+        return self._req("GET", "/api/v5/account/positions", {"instId": inst_id})
+
+    def set_leverage(self, inst_id, lever, pos_side=None):
+        body = {"instId": inst_id, "lever": str(lever), "mgnMode": "cross"}
+        if pos_side:
+            body["posSide"] = pos_side
+        return self._req("POST", "/api/v5/account/set-leverage", body=body)
+
+    def place_order(self, body):
+        return self._req("POST", "/api/v5/trade/order", body=body)
+
+
+def get_okx_client():
+    c = st.session_state.get("okx")
+    if not c:
+        return None
+    return OKXClient(c["key"], c["secret"], c["passphrase"], c["demo"])
+
+
+def _fmt_px(p, tick):
+    q = (Decimal(str(p)) / tick).quantize(Decimal("1"), rounding=ROUND_HALF_UP) * tick
+    return format(q, "f")
+
+
+def execute_okx_order(client, pair, direction, price, sl, tp, ratio):
+    """用帳戶可用 USDT 乘上資金比例，槓桿拉到該合約最大值，市價進場並附 TP/SL。"""
+    inst = client.instrument(pair)
+    ct_val = Decimal(inst["ctVal"])
+    lot = Decimal(inst["lotSz"])
+    min_sz = Decimal(inst["minSz"])
+    tick = Decimal(inst["tickSz"])
+    max_lev = int(float(inst.get("lever") or 20))
+
+    # 已有持倉就不重複進場
+    for p in client.positions(pair):
+        if abs(float(p.get("pos") or 0)) > 0:
+            return "略過：該合約已有持倉"
+
+    avail = client.balance()
+    if avail <= 0:
+        return "失敗：可用 USDT 為 0"
+
+    pos_mode = client.config().get("posMode")
+    pos_side = None
+    if pos_mode == "long_short_mode":
+        pos_side = "long" if direction == "LONG" else "short"
+
+    lever_used, last_err = None, None
+    for lv in [max_lev] + [x for x in (100, 50, 20, 10, 5, 3) if x < max_lev]:
+        try:
+            client.set_leverage(pair, lv, pos_side)
+            lever_used = lv
+            break
+        except Exception as e:
+            last_err = e
+    if lever_used is None:
+        return f"失敗：無法設定槓桿 ({last_err})"
+
+    notional = Decimal(str(avail)) * Decimal(str(ratio)) * Decimal(lever_used)
+    contracts = notional / (Decimal(str(price)) * ct_val)
+    sz = (contracts / lot).to_integral_value(rounding=ROUND_DOWN) * lot
+    if sz < min_sz:
+        return f"失敗：資金不足（可用 {avail:,.2f} USDT，算出 {sz} 張 < 最小 {min_sz} 張）"
+
+    body = {
+        "instId": pair, "tdMode": "cross",
+        "side": "buy" if direction == "LONG" else "sell",
+        "ordType": "market", "sz": format(sz, "f"),
+        "attachAlgoOrds": [{
+            "tpTriggerPx": _fmt_px(tp, tick), "tpOrdPx": "-1", "tpTriggerPxType": "last",
+            "slTriggerPx": _fmt_px(sl, tick), "slOrdPx": "-1", "slTriggerPxType": "last",
+        }],
+    }
+    if pos_side:
+        body["posSide"] = pos_side
+    res = client.place_order(body)
+    oid = res[0].get("ordId", "") if res else ""
+    return f"成功：{direction} {format(sz, 'f')} 張 · {lever_used}x · 單號 {oid}"
+
+
+def try_auto_trade(symbol, tf, pair, latest, latest_close):
+    """最新 K 線有訊號且開啟自動下單時，每一筆訊號只下一次單（資料庫唯一鍵去重）。"""
+    if not st.session_state.get("auto_trade") or not st.session_state.get("user"):
+        return
+    is_long, is_short = bool(latest["Long_Signal"]), bool(latest["Short_Signal"])
+    if not (is_long or is_short):
+        return
+    sl, tp = latest["Stop_Loss"], latest["Take_Profit"]
+    if pd.isna(sl) or pd.isna(tp):
+        return
+
+    direction = "LONG" if is_long else "SHORT"
+    price = float(latest["Sig_Price"]) if ("Sig_Price" in latest.index and pd.notna(latest["Sig_Price"])) else latest_close
+    if (is_long and not (sl < latest_close < tp)) or (is_short and not (tp < latest_close < sl)):
+        return  # 現價已超出 TP / SL 區間，不追單
+
+    step = pd.Timedelta({"5m": "5min", "15m": "15min", "1h": "1h", "4h": "4h"}.get(tf, "5min"))
+    sig_time = pd.Timestamp(latest["open_time"])
+    now_tw = pd.Timestamp.now(tz=TAIWAN_TZ).tz_localize(None)
+    if now_tw - sig_time > step * 2:
+        return  # 資料過舊（例如資料庫停更），不下單
+
+    user = st.session_state["user"]
+    try:
+        ensure_app_tables()
+        engine = get_db_engine()
+        with engine.begin() as conn:
+            ins = conn.execute(
+                text("""INSERT INTO user_order_log
+                        (username, symbol, timeframe, signal_time, direction, status, detail)
+                        VALUES (:u, :s, :tf, :t, :d, 'pending', '')
+                        ON CONFLICT (username, symbol, timeframe, signal_time) DO NOTHING
+                        RETURNING id"""),
+                {"u": user, "s": symbol, "tf": tf, "t": sig_time.to_pydatetime(), "d": direction},
+            ).fetchone()
+        if not ins:
+            return  # 這筆訊號已處理過
+        log_id = ins[0]
+
+        try:
+            ratio = float(st.session_state.get("order_ratio", 95)) / 100.0
+            msg = execute_okx_order(get_okx_client(), pair, direction, price, float(sl), float(tp), ratio)
+            status = "success" if msg.startswith("成功") else ("skipped" if msg.startswith("略過") else "failed")
+        except Exception as e:
+            msg, status = f"失敗：{e}", "failed"
+
+        with engine.begin() as conn:
+            conn.execute(
+                text("UPDATE user_order_log SET status=:s, detail=:d WHERE id=:i"),
+                {"s": status, "d": msg, "i": log_id},
+            )
+        st.session_state["last_order_msg"] = f"{sig_time:%m/%d %H:%M} {direction} → {msg}"
+        st.session_state.pop("okx_balance", None)
+    except Exception as e:
+        st.session_state["last_order_msg"] = f"下單流程錯誤：{e}"
+
+
+def load_order_log(limit=30):
+    try:
+        with get_db_engine().connect() as conn:
+            return pd.read_sql(
+                text("""SELECT signal_time AS 訊號時間, symbol AS 幣種, timeframe AS 週期,
+                               direction AS 方向, status AS 狀態, detail AS 說明
+                        FROM user_order_log WHERE username = :u
+                        ORDER BY id DESC LIMIT :n"""),
+                con=conn, params={"u": st.session_state.get("user"), "n": limit},
+            )
+    except Exception:
+        return pd.DataFrame()
+
+
+# ---------- 登入 / 註冊介面 ----------
+def render_auth_gate():
+    flush_cookie_op()
+
+    if st.session_state.get("user"):
+        return True
+
+    try:
+        ensure_app_tables()
+    except Exception as e:
+        st.error(f"資料庫初始化失敗：{e}")
+        return False
+
+    # 有「保持登入」cookie 就自動登入（剛按登出的那次不會自動登入）
+    if not st.session_state.get("logged_out"):
+        try:
+            tok = st.context.cookies.get("ai_token")
+        except Exception:
+            tok = None
+        if tok:
+            uname = username_from_token(tok)
+            if uname:
+                row = fetch_user(uname)
+                if row:
+                    start_user_session(row)
+                    st.rerun()
+
+    default_idx = 1 if users_exist() else 0
+    mode = st.radio("帳號", ["註冊", "登入"], index=default_idx, horizontal=True, key="auth_mode")
+
+    if mode == "註冊":
+        st.markdown("### 📝 註冊帳號並綁定 OKX")
+        st.caption("OKX API 金鑰會加密後儲存；請只開啟「讀取」與「交易」權限，不要開啟「提現」。")
+        with st.form("register_form"):
+            ru = st.text_input("帳號", placeholder="至少 3 個字元")
+            rp = st.text_input("密碼", type="password", placeholder="至少 8 個字元")
+            rp2 = st.text_input("確認密碼", type="password")
+            ak = st.text_input("OKX API Key")
+            asec = st.text_input("OKX Secret Key", type="password")
+            apass = st.text_input("OKX API Passphrase", type="password")
+            demo = st.checkbox("使用 OKX 模擬盤（建議先用模擬盤測試）", value=True)
+            keep = st.checkbox("保持登入", value=True)
+            ok = st.form_submit_button("註冊並登入", use_container_width=True)
+        if ok:
+            ru = ru.strip()
+            if len(ru) < 3 or len(rp) < 8:
+                st.error("帳號至少 3 個字元，密碼至少 8 個字元。")
+            elif rp != rp2:
+                st.error("兩次密碼不一致。")
+            elif not (ak.strip() and asec.strip() and apass.strip()):
+                st.error("請完整填寫 OKX API 資料。")
+            else:
+                try:
+                    bal = OKXClient(ak.strip(), asec.strip(), apass.strip(), demo).balance()
+                except Exception as e:
+                    st.error(f"OKX 驗證失敗，請檢查金鑰與模擬盤/實盤選項：{e}")
+                    return False
+                try:
+                    if fetch_user(ru):
+                        st.error("此帳號已被註冊。")
+                        return False
+                    create_user(ru, rp, ak.strip(), asec.strip(), apass.strip(), demo)
+                except Exception as e:
+                    st.error(f"註冊失敗：{e}")
+                    return False
+                start_user_session(fetch_user(ru))
+                if keep:
+                    issue_login_token(ru)
+                st.rerun()
+    else:
+        st.markdown("### 🔐 登入")
+        with st.form("login_form"):
+            lu = st.text_input("帳號")
+            lp = st.text_input("密碼", type="password")
+            keep = st.checkbox("保持登入（30 天）", value=False)
+            ok = st.form_submit_button("登入", use_container_width=True)
+        if ok:
+            row = fetch_user(lu.strip()) if lu.strip() else None
+            if row and verify_password(lp, row[1], row[2]):
+                start_user_session(row)
+                if keep:
+                    issue_login_token(row[0])
+                st.rerun()
+            else:
+                st.error("帳號或密碼錯誤。")
+    return False
+
+
+def render_user_bar():
+    user = st.session_state["user"]
+    okx = st.session_state.get("okx", {})
+    is_demo = okx.get("demo", True)
+
+    # 餘額每 30 秒更新一次
+    cache = st.session_state.get("okx_balance")
+    if not cache or time.time() - cache[1] > 30:
+        try:
+            bal = get_okx_client().balance()
+            cache = (bal, time.time(), None)
+        except Exception as e:
+            cache = (None, time.time(), str(e))
+        st.session_state["okx_balance"] = cache
+
+    c1, c2, c3, c4, c5 = st.columns([2.2, 2, 1.6, 2.2, 1])
+    with c1:
+        chip = '<span class="chip demo">模擬盤</span>' if is_demo else '<span class="chip real">⚠ 實盤</span>'
+        st.markdown(f'<div class="user-bar"><span class="name">👤 {user}</span>{chip}</div>',
+                    unsafe_allow_html=True)
+    with c2:
+        if cache[0] is not None:
+            st.metric("OKX 可用 USDT", f"{cache[0]:,.2f}")
+        else:
+            st.caption(f"餘額讀取失敗：{cache[2]}")
+    with c3:
+        st.number_input("使用資金比例 %", min_value=1, max_value=100, value=95, step=1,
+                        key="order_ratio")
+    with c4:
+        st.toggle("⚡ 訊號自動下單（槓桿拉滿）", key="auto_trade")
+        if st.session_state.get("auto_trade") and not is_demo:
+            st.caption("⚠️ 目前為實盤，訊號出現會直接用真錢下單。")
+    with c5:
+        st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
+        if st.button("登出", key="logout_btn"):
+            logout_user()
+            st.rerun()
+
+
+# ============================================================
+# 1. Session State 與標題搜尋列
+# ============================================================
+st.session_state.setdefault("is_searched", False)
+st.session_state.setdefault("search_query", "")
+st.session_state.setdefault("ai_models", {})
+
+st.title("加密貨幣 AI 策略系統")
+
+st.markdown("""
+<div class="hero-sub">
+    <span class="chip live">LIVE 即時監控</span>
+    <span class="chip">BTC / ETH 永續合約</span>
+    <span class="chip">123法則 · SMC · SNR</span>
+    <span class="chip">LightGBM + 動態 TP/SL</span>
+</div>
+""", unsafe_allow_html=True)
+
+# 🆕 第一關：註冊 / 登入（通過後才會看到搜尋介面與圖表）
+if not render_auth_gate():
+    st.stop()
+render_user_bar()
+
+with st.form("search_form"):
+    col1, col2 = st.columns([4, 1])
+    with col1:
+        input_val = st.text_input(
+            "🔍 請輸入加密貨幣名稱（例如 BTC 或 ETH）：",
+            value=st.session_state.search_query,
+            placeholder="BTC / ETH",
+        )
+    with col2:
+        st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+        submitted = st.form_submit_button("送出查詢", use_container_width=True)
+
+if submitted:
+    q = input_val.strip().upper()
+    st.session_state.search_query = q
+    st.session_state.is_searched = ("BTC" in q or "ETH" in q)
+
+st.markdown("---")
+
+
+# ============================================================
+# 2. Supabase K 棒資料載入與訊號寫入 (移除舊快取，確保每 5 秒抓取最新資料庫內容)
+#    （get_database_url / get_db_engine 已移到 0.8 節）
+# ============================================================
 def save_signal_to_outbox(symbol, tf, signal_time, direction, price, ai_prob,
                           stop_loss=None, take_profit=None):
-    """【強制核心規定】不管新增什麼功能，一有訊號絕對照常寫入 `strategy_signal_outbox` 資料表"""
+    """訊號已先顯示在網頁上，再把同一筆寫入資料庫。
+    同一根 K 線在資料庫已有訊號就不重複寫入。"""
     if stop_loss is None or take_profit is None:
         return
     try:
@@ -617,6 +1134,7 @@ def load_historical_data(table_name, symbol_name, tf=None):
         tf_where = "timeframe = :tf AND " if tf else ""
         base_params = {"tf": tf} if tf else {}
 
+        # 💡 每次 5 秒自動重新執行時，強制直接從資料庫抓取最新的 K 棒，確保最新價格與未收盤 K 線即時更新
         sql = text(f"""
             SELECT {cols} FROM {table_name}
             WHERE {tf_where} TRUE
@@ -768,6 +1286,10 @@ def calculate_dynamic_tp_sl(row, is_long):
 
 
 def judge_tp_sl(direction, sl, tp, high_arr, low_arr, start):
+    """以「碰到止盈 / 止損」判斷單筆訊號是否成功（AI 訓練標籤的唯一依據）。
+    從 start 起逐根 K 線檢查，先碰到 TP → 成功；先碰到 SL → 未達標；
+    都還沒碰到 → 觀察中（不納入訓練）。同一根同時碰到 TP 與 SL 時
+    無法得知先後，保守視為未達標。"""
     h = high_arr[start:]
     l = low_arr[start:]
     if len(h) == 0:
@@ -798,17 +1320,21 @@ def build_candidate_signals(df, tf):
     df["Prev_High"] = df["high_price"].shift(1)
     df["Prev_Low"] = df["low_price"].shift(1)
 
+    # 勝率優化：收緊進場過濾，只保留「順大趨勢 + 放量實體突破 + 未過度追價」的訊號
     macro_long_filter = df["macro_trend_bias"] > 0
     macro_short_filter = df["macro_trend_bias"] < 0
 
+    # 均線多空排列：多單要求 EMA21 > EMA50 且收盤在 EMA50 之上（空單反之）
     ema_long_ok = (df["EMA_21"] > df["EMA_50"]) & (df["close_price"] > df["EMA_50"])
     ema_short_ok = (df["EMA_21"] < df["EMA_50"]) & (df["close_price"] < df["EMA_50"])
 
+    # 收盤位置：多單收在 K 棒上 30%、空單收在下 30%，代表突破有實際力道
     candle_rng = (df["high_price"] - df["low_price"]).replace(0, np.nan)
     close_pos = (df["close_price"] - df["low_price"]) / candle_rng
     close_strong_long = close_pos >= 0.7
     close_strong_short = close_pos <= 0.3
 
+    # 避免追高殺低：突破幅度超過 1 ATR 通常已是尾段，回檔機率高
     not_chasing_long = (df["close_price"] - df["Trend_Resistance"]) <= df["ATR"] * 1.0
     not_chasing_short = (df["Trend_Support"] - df["close_price"]) <= df["ATR"] * 1.0
 
@@ -880,6 +1406,8 @@ def build_candidate_signals(df, tf):
         current_row = df.iloc[i]
         dyn_stop_mult, dyn_rr = calculate_dynamic_tp_sl(current_row, is_l)
 
+        # 止損放在近 10 根的波段高低點之外再加 0.2 ATR 緩衝（避免被雜訊掃到），
+        # 但風險距離限制在 1.0 ~ 3.0 ATR 之間；止盈依動態盈虧比由風險距離推算。
         sw_low = swing_low_arr[i]
         sw_high = swing_high_arr[i]
         if is_l:
@@ -909,6 +1437,9 @@ def build_candidate_signals(df, tf):
 
 
 def fill_missing_tp_sl(df):
+    """圖上有進場點位、但缺少止損 / 止盈（例如只存在於資料庫或本機記錄的訊號）時，
+    用與 build_candidate_signals 相同的邏輯補齊，並以碰到 TP / SL 結算，
+    讓圖上每一個進場點位都能成為 AI 訓練樣本。"""
     df = df.copy()
     need = (df["Long_Signal"] | df["Short_Signal"]) & (
         df["Stop_Loss"].isna() | df["Take_Profit"].isna()
@@ -957,6 +1488,7 @@ def train_or_get_ai_model(df, key):
         "RSI", "vol_ratio", "body_ratio", "atr_ratio", "ema_diff",
         "macro_trend_bias", "macro_sentiment"
     ]
+    # 訓練樣本 = K 線圖上標出的每一個進場點位
     candidates = df[df["Long_Signal"] | df["Short_Signal"]].copy()
     train_df = candidates[candidates["Trade_Result"].isin(["成功", "未達標"])].copy()
 
@@ -992,77 +1524,124 @@ def add_trade_signals(df, model):
 
 
 # ============================================================
-# 5. 策略表現與風險回測分析面板 (Analytics)
+# 4.5 🆕 策略表現與風險回測分析
 # ============================================================
-def render_strategy_analytics(view_df):
-    st.markdown("### 📊 策略表現與風險回測分析 (Analytics & Risk)")
-    
-    # 篩選出所有有結果的訊號
-    res_df = view_df[view_df["Trade_Result"].isin(["成功", "未達標"])].copy()
-    total_trades = len(res_df)
-    
-    if total_trades == 0:
-        st.info("目前歷史數據中尚無結算完成的交易訊號可供回測分析。")
+def compute_backtest(view_df, risk_pct, fee_pct, start_equity=10000.0):
+    """以 TP/SL 實際結算結果回測：成功 = +RR、未達標 = -1R，再扣除來回手續費（以 R 計）。
+    資金曲線採每筆固定風險 risk_pct% 複利。"""
+    d = view_df[
+        (view_df["Long_Signal"] | view_df["Short_Signal"])
+        & view_df["Trade_Result"].isin(["成功", "未達標"])
+        & view_df["Stop_Loss"].notna() & view_df["Take_Profit"].notna()
+    ].copy()
+    if d.empty:
+        return None
+
+    if "Sig_Price" in d.columns:
+        entry = d["Sig_Price"].fillna(d["close_price"]).astype(float)
+    else:
+        entry = d["close_price"].astype(float)
+
+    risk = (entry - d["Stop_Loss"]).abs().replace(0, np.nan)
+    reward = (d["Take_Profit"] - entry).abs()
+    win = (d["Trade_Result"] == "成功").values
+    gross_r = np.where(win, (reward / risk).values, -1.0)
+    cost_r = (entry * fee_pct / 100.0 * 2.0 / risk).values
+    d["R"] = gross_r - cost_r
+    d["win"] = win
+    d["dir"] = np.where(d["Long_Signal"], "LONG", "SHORT")
+    d = d.dropna(subset=["R"])
+    if d.empty:
+        return None
+
+    r = d["R"].values
+    growth = np.maximum(1 + risk_pct / 100.0 * r, 0.0)
+    eq = np.concatenate([[start_equity], start_equity * np.cumprod(growth)])
+    peak = np.maximum.accumulate(eq)
+    dd = eq / peak - 1.0
+
+    gp, gl = r[r > 0].sum(), -r[r < 0].sum()
+    streak = max_streak = 0
+    for w in d["win"].values:
+        streak = 0 if w else streak + 1
+        max_streak = max(max_streak, streak)
+
+    def _summ(sub):
+        if sub.empty:
+            return None
+        return {
+            "筆數": len(sub),
+            "勝率": f"{sub['win'].mean() * 100:.1f}%",
+            "期望值(R)": f"{sub['R'].mean():+.2f}",
+            "累計R": f"{sub['R'].sum():+.1f}",
+        }
+
+    by_dir = {k: _summ(d[d["dir"] == k]) for k in ("LONG", "SHORT")}
+
+    return {
+        "n": len(d), "win_rate": float(d["win"].mean()),
+        "expectancy": float(r.mean()),
+        "profit_factor": (gp / gl) if gl > 0 else float("inf"),
+        "avg_rr": float((reward / risk).mean()),
+        "max_dd": float(dd.min()), "max_loss_streak": int(max_streak),
+        "total_return": float(eq[-1] / start_equity - 1.0),
+        "equity": eq, "drawdown": dd, "times": d["open_time"].tolist(),
+        "by_dir": by_dir,
+        "pending": int((view_df["Trade_Result"] == "觀察中").sum()),
+    }
+
+
+def render_backtest(view_df, symbol, tf):
+    st.markdown("---")
+    st.markdown("### 📊 策略表現與風險回測分析")
+    c1, c2, _ = st.columns([1, 1, 2])
+    risk_pct = c1.number_input("每筆風險（占資金 %）", 0.1, 20.0, 1.0, 0.1,
+                               key=f"bt_risk_{symbol}_{tf}")
+    fee_pct = c2.number_input("單邊手續費+滑價 %", 0.0, 0.5, 0.05, 0.01,
+                              key=f"bt_fee_{symbol}_{tf}")
+
+    bt = compute_backtest(view_df, risk_pct, fee_pct)
+    if bt is None:
+        st.caption("目前沒有已結算（碰到 TP 或 SL）的訊號可回測。")
         return
 
-    wins = int((res_df["Trade_Result"] == "成功").sum())
-    losses = total_trades - wins
-    win_rate = (wins / total_trades) * 100 if total_trades > 0 else 0.0
+    m = st.columns(4)
+    m[0].metric("已結算筆數", f"{bt['n']}")
+    m[1].metric("真實勝率", f"{bt['win_rate'] * 100:.1f}%")
+    m[2].metric("期望值 (R/筆)", f"{bt['expectancy']:+.2f}")
+    pf = bt["profit_factor"]
+    m[3].metric("盈虧因子", "∞" if pf == float("inf") else f"{pf:.2f}")
+    m2 = st.columns(4)
+    m2[0].metric("平均盈虧比", f"{bt['avg_rr']:.2f}")
+    m2[1].metric("最大回撤", f"{bt['max_dd'] * 100:.1f}%")
+    m2[2].metric("最大連虧", f"{bt['max_loss_streak']} 筆")
+    m2[3].metric("總報酬", f"{bt['total_return'] * 100:+.1f}%")
 
-    # 模擬權益曲線計算 (假設每筆固定投入 1000 USDT，風險回報比平均 2.5)
-    equity = [10000.0]
-    for r in res_df["Trade_Result"]:
-        pnl = 250.0 if r == "成功" else -100.0
-        equity.append(equity[-1] + pnl)
-    
-    peak = equity[0]
-    max_dd = 0.0
-    for eq in equity:
-        if eq > peak:
-            peak = eq
-        dd = (peak - eq) / peak * 100
-        if dd > max_dd:
-            max_dd = dd
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.04,
+                        row_heights=[0.68, 0.32])
+    xs = [bt["times"][0]] + bt["times"]
+    fig.add_trace(go.Scatter(x=xs, y=bt["equity"], mode="lines", name="資金曲線",
+                             line=dict(color="#f0b90b", width=2)), row=1, col=1)
+    fig.add_trace(go.Scatter(x=xs, y=bt["drawdown"] * 100, mode="lines", name="回撤 %",
+                             fill="tozeroy", line=dict(color="#F6465D", width=1.2)), row=2, col=1)
+    fig.update_layout(template="plotly_dark", height=420, showlegend=False,
+                      paper_bgcolor="rgba(11,14,17,.6)", plot_bgcolor="rgba(11,14,17,.6)",
+                      margin=dict(l=10, r=10, t=20, b=20))
+    fig.update_yaxes(title_text="資金", row=1, col=1)
+    fig.update_yaxes(title_text="回撤 %", row=2, col=1)
+    st.plotly_chart(fig, use_container_width=True, key=f"bt_chart_{symbol}_{tf}")
 
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        st.metric("總回測交易次數", f"{total_trades} 筆")
-    with col2:
-        st.metric("歷史勝率 (Win Rate)", f"{win_rate:.1f}%")
-    with col3:
-        st.metric("最大回撤 (Max DD)", f"{max_dd:.2f}%")
-    with col4:
-        profit_factor = (wins * 2.5) / (losses * 1.0) if losses > 0 else float(wins * 2.5)
-        st.metric("總盈虧比 (Profit Factor)", f"{profit_factor:.2f}")
-
-    # 繪製資金權益曲線 (Equity Curve)
-    eq_df = pd.DataFrame({
-        "Trade_Index": range(len(equity)),
-        "Equity": equity
-    })
-    fig_eq = go.Figure()
-    fig_eq.add_trace(go.Scatter(
-        x=eq_df["Trade_Index"], y=eq_df["Equity"],
-        mode="lines+markers",
-        name="策略資金權益曲線",
-        line=dict(color="#f0b90b", width=2.5),
-        marker=dict(size=6, color="#0ECB81")
-    ))
-    fig_eq.update_layout(
-        template="plotly_dark",
-        paper_bgcolor="rgba(11,14,17,.6)",
-        plot_bgcolor="rgba(11,14,17,.6)",
-        height=280,
-        margin=dict(l=10, r=10, t=30, b=10),
-        title="資金權益增長曲線 (Equity Curve)",
-        xaxis_title="交易筆數",
-        yaxis_title="總資產 (USDT)"
+    rows = [{"方向": k, **v} for k, v in bt["by_dir"].items() if v]
+    if rows:
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+    st.caption(
+        f"另有 {bt['pending']} 筆訊號尚未碰到 TP/SL（觀察中），不納入統計。"
+        "回測為樣本內結果（訊號與 AI 標籤使用同一段資料），僅供參考，不保證未來績效。"
     )
-    st.plotly_chart(fig_eq, use_container_width=True)
 
 
 # ============================================================
-# 6. 首頁說明與搜尋列
+# 5. 首頁說明區
 # ============================================================
 def render_homepage():
     st.markdown("""
@@ -1070,7 +1649,7 @@ def render_homepage():
         <h2 style="color:#f0b90b;">🚀 關於加密貨幣 AI 策略系統</h2>
         <p>
         本系統是一套結合 123法則、SMC (聰明錢訂單塊)、SNR (關鍵支撐壓力位) 與宏觀基本面過濾的加密貨幣智慧分析工具，
-        透過 Supabase 歷史 K 線資料，結合機器學習與動態止盈止損學習機制，協助尋找高勝率的多單與空單機會，並支援 OKX 交易所一鍵滿倉下單！
+        透過 Supabase 歷史 K 線資料，結合機器學習與動態止盈止損學習機制，協助尋找高勝率的多單與空單機會。
         </p>
     </div>
     <div class="feature-grid">
@@ -1078,8 +1657,8 @@ def render_homepage():
             <p>趨勢線通道突破結合 K 線實體與量能確認，捕捉轉折與延續。</p></div>
         <div class="feature-tile"><div class="ico">🧱</div><h4>SMC / SNR</h4>
             <p>結合聰明錢訂單塊與關鍵支撐壓力位，過濾不佳的進場位置。</p></div>
-        <div class="feature-tile"><div class="ico">⚡</div><h4>OKX 一鍵下單</h4>
-            <p>即時串接交易所剩餘資金，槓桿直接拉滿自動化執行。</p></div>
+        <div class="feature-tile"><div class="ico">🌐</div><h4>宏觀基本面過濾</h4>
+            <p>以趨勢乖離與流動性情緒加權，降低逆勢交易的機率。</p></div>
         <div class="feature-tile"><div class="ico">🤖</div><h4>AI 動態止盈止損</h4>
             <p>依波動與量能動態調整 TP/SL，並以歷史訊號持續學習結算。</p></div>
     </div>
@@ -1087,7 +1666,7 @@ def render_homepage():
 
 
 # ============================================================
-# 7. K 線圖渲染與即時訊號自動寫入 (含 OKX 一鍵滿倉下單)
+# 6. K 線圖渲染與即時訊號自動寫入
 # ============================================================
 @st.cache_resource
 def _fired_signals():
@@ -1147,6 +1726,7 @@ def remember_and_apply_signals(view_df, symbol, tf):
 
 
 def is_mobile_client():
+    """依瀏覽器 User-Agent 判斷是否為手機（判斷不到時視為桌機）。"""
     try:
         ua = str(st.context.headers.get("User-Agent", "")).lower()
     except Exception:
@@ -1168,6 +1748,7 @@ def _build_chart_bundle(df_tf, symbol, pair, tf):
     view_df = remember_and_apply_signals(view_df, symbol, tf)
     view_df = fill_missing_tp_sl(view_df)
 
+    # 以「碰到 TP / SL」結算後的結果作為 AI 訓練標籤
     model, training_count, winning_count = train_or_get_ai_model(
         view_df, f"{symbol}_{tf}"
     )
@@ -1177,13 +1758,14 @@ def _build_chart_bundle(df_tf, symbol, pair, tf):
     ai_score = float(latest["AI_Prob"]) * 100 if pd.notna(latest["AI_Prob"]) else 0.0
     latest_time = latest["open_time"]
 
-    # 【強制核心要求】不管新增什麼功能，一有訊號絕對照常寫入資料表
+    # 訊號已先在畫面上標出，這裡把「每一次進場」（含 SL / TP）都寫入資料庫
     save_all_signals_to_outbox(symbol, tf, view_df)
 
     full_view_df = view_df
     if MAX_PLOT_BARS and len(view_df) > MAX_PLOT_BARS:
         view_df = view_df.tail(MAX_PLOT_BARS)
 
+    # 手機螢幕窄：同一畫面少放一些 K 棒，每根 K 棒就會比較粗
     mobile = is_mobile_client()
     display_len = 40 if mobile else 85
     if len(view_df) > display_len:
@@ -1201,6 +1783,8 @@ def _build_chart_bundle(df_tf, symbol, pair, tf):
     high = visible_df["high_price"].max()
 
     span = max(high - low, abs(high) * 0.001, 1e-8)
+    # 最新 K 棒垂直置中：以最新 K 棒的中點為圖面正中央，
+    # 上下半幅取「可見範圍內離中心最遠的價格」並加 12% 邊距，確保所有 K 線仍完整顯示
     center_y = (float(latest["high_price"]) + float(latest["low_price"])) / 2
     half = max(high - center_y, center_y - low, span * 0.05) * 1.12
     y_range = [center_y - half, center_y + half]
@@ -1515,6 +2099,9 @@ def render_live_kline_chart(table, symbol, pair, tf):
     training_count = bundle["training_count"]
     winning_count = bundle["winning_count"]
 
+    # 🆕 訊號已寫入資料表（見 _build_chart_bundle）之後，若開啟自動下單就送單到 OKX
+    try_auto_trade(symbol, tf, pair, latest, latest_close)
+
     fig.update_layout(
         xaxis=dict(range=list(bundle["x_range"]), autorange=False),
         yaxis=dict(range=list(bundle["y_range"])),
@@ -1553,35 +2140,33 @@ def render_live_kline_chart(table, symbol, pair, tf):
         </div>
         """, unsafe_allow_html=True)
 
-        # 讀取使用者註冊的交易所資金與槓桿
-        ex_info = st.session_state.get("exchange_data", {})
-        account_balance = ex_info.get("balance", 10000.0)
-        leverage = ex_info.get("leverage", 20)
-        max_margin_amount = account_balance * leverage
-
         if bool(latest["Long_Signal"]):
             st.success("🟢 LONG 多單進場訊號 (基本面+動態 TP/SL 確認)")
             st.metric("參考進場價格", f"{latest_close:,.2f}")
             st.metric("AI 分數", f"{ai_score:.1f}%")
-            
-            # 【新增 OKX 一鍵下單功能】以剩餘資金判斷、槓桿拉滿
-            st.markdown(f"**⚡ OKX 一鍵滿倉下單 (多單)**<br>可用餘額：`{account_balance:,.2f} USDT` | 槓桿：`{leverage}x`", unsafe_allow_html=True)
-            if st.button("🚀 OKX 市價多單一鍵全倉送出", key="okx_buy_btn"):
-                st.toast(f"✅ 已成功透過 OKX API 發送多單委託！投入保證金：{account_balance:,.2f} USDT (槓桿 {leverage}x，總值 {max_margin_amount:,.2f})", icon="🟢")
 
         elif bool(latest["Short_Signal"]):
             st.error("🔴 SHORT 空單進場訊號 (基本面+動態 TP/SL 確認)")
             st.metric("參考進場價格", f"{latest_close:,.2f}")
             st.metric("AI 分數", f"{ai_score:.1f}%")
 
-            # 【新增 OKX 一鍵下單功能】以剩餘資金判斷、槓桿拉滿
-            st.markdown(f"**⚡ OKX 一鍵滿倉下單 (空單)**<br>可用餘額：`{account_balance:,.2f} USDT` | 槓桿：`{leverage}x`", unsafe_allow_html=True)
-            if st.button("🚀 OKX 市價空單一鍵全倉送出", key="okx_sell_btn"):
-                st.toast(f"✅ 已成功透過 OKX API 發送空單委託！投入保證金：{account_balance:,.2f} USDT (槓桿 {leverage}x，總值 {max_margin_amount:,.2f})", icon="🔴")
-
         else:
             st.warning("⏳ WAIT 目前沒有進場訊號")
             st.caption("等待符合高勝率技術與基本面過濾條件。")
+
+        # 🆕 自動下單狀態與紀錄
+        if st.session_state.get("auto_trade"):
+            st.caption("⚡ 自動下單：已開啟")
+        else:
+            st.caption("自動下單：關閉（在上方列開啟）")
+        if st.session_state.get("last_order_msg"):
+            st.info(f"🧾 最近一次下單：{st.session_state['last_order_msg']}")
+        with st.expander("📜 我的下單紀錄"):
+            log_df = load_order_log()
+            if log_df.empty:
+                st.caption("尚無下單紀錄。")
+            else:
+                st.dataframe(log_df, use_container_width=True, hide_index=True)
 
         st.markdown("---")
         st.markdown("#### 📌 最近進場訊號")
@@ -1614,11 +2199,6 @@ def render_live_kline_chart(table, symbol, pair, tf):
         st.caption("進場價格為訊號 K 線收盤價參考值，不代表實際成交價。")
 
     st.markdown("---")
-    
-    # 新增策略表現與風險回測分析面板
-    render_strategy_analytics(view_df)
-
-    st.markdown("---")
     st.markdown("### 🧠 歷史訊號學習紀錄 (動態 TP/SL 結算)")
     history = view_df[
         view_df["Base_Long"] | view_df["Base_Short"]
@@ -1643,50 +2223,14 @@ def render_live_kline_chart(table, symbol, pair, tf):
             hide_index=True,
         )
 
+    # 🆕 策略表現與風險回測分析
+    render_backtest(view_df, symbol, tf)
+
 
 # ============================================================
-# 8. 主畫面流暢串接
+# 7. 主畫面
 # ============================================================
 if __name__ == "__main__":
-    # 頂部顯示目前登入狀態與登出按鈕
-    top_col1, top_col2 = st.columns([5, 1])
-    with top_col1:
-        st.title("加密貨幣 AI 策略系統")
-    with top_col2:
-        st.markdown(f"<div style='text-align: right; padding-top: 15px;'>👤 <b>{st.session_state.user_account}</b></div>", unsafe_allow_html=True)
-        if st.button("登出切換帳號", use_container_width=True):
-            st.session_state.is_logged_in = False
-            st.session_state.user_account = ""
-            st.rerun()
-
-    st.markdown("""
-    <div class="hero-sub">
-        <span class="chip live">LIVE 即時監控</span>
-        <span class="chip">BTC / ETH 永續合約</span>
-        <span class="chip">123法則 · SMC · SNR</span>
-        <span class="chip">LightGBM + 滿倉槓桿下單</span>
-    </div>
-    """, unsafe_allow_html=True)
-
-    with st.form("search_form"):
-        col1, col2 = st.columns([4, 1])
-        with col1:
-            input_val = st.text_input(
-                "🔍 請輸入加密貨幣名稱（例如 BTC 或 ETH）：",
-                value=st.session_state.search_query,
-                placeholder="BTC / ETH",
-            )
-        with col2:
-            st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
-            submitted = st.form_submit_button("送出查詢", use_container_width=True)
-
-    if submitted:
-        q = input_val.strip().upper()
-        st.session_state.search_query = q
-        st.session_state.is_searched = ("BTC" in q or "ETH" in q)
-
-    st.markdown("---")
-
     if st.session_state.is_searched:
         query = st.session_state.search_query.upper()
 
