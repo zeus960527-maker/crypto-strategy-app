@@ -461,6 +461,8 @@ def ensure_app_tables():
             created_at TIMESTAMPTZ DEFAULT NOW(),
             UNIQUE (username, symbol, timeframe, signal_time)
         )""",
+        # 🆕 記住每位使用者的下單資金比例
+        "ALTER TABLE app_users ADD COLUMN IF NOT EXISTS order_ratio INTEGER DEFAULT 95",
     ]
     engine = get_db_engine()
     for stmt in ddl:
@@ -537,6 +539,34 @@ def fetch_user(username):
         ).fetchone()
 
 
+def load_order_ratio(username):
+    try:
+        with get_db_engine().connect() as conn:
+            r = conn.execute(
+                text("SELECT order_ratio FROM app_users WHERE username = :u"),
+                {"u": username},
+            ).scalar()
+        return min(max(int(r), 1), 100) if r is not None else 95
+    except Exception:
+        return 95
+
+
+def save_order_ratio():
+    """number_input 的 on_change：每次修改就存進資料庫。"""
+    u = st.session_state.get("user")
+    if not u:
+        return
+    try:
+        v = min(max(int(st.session_state.get("order_ratio", 95)), 1), 100)
+        with get_db_engine().begin() as conn:
+            conn.execute(
+                text("UPDATE app_users SET order_ratio = :r WHERE username = :u"),
+                {"r": v, "u": u},
+            )
+    except Exception as e:
+        print(f"儲存下單比例失敗: {e}")
+
+
 def start_user_session(row):
     """把使用者資料與（解密後的）OKX 金鑰放進此次 session（只存在伺服器記憶體）。"""
     st.session_state["user"] = row[0]
@@ -544,6 +574,7 @@ def start_user_session(row):
         "key": dec(row[3]), "secret": dec(row[4]),
         "passphrase": dec(row[5]), "demo": bool(row[6]),
     }
+    st.session_state["order_ratio"] = load_order_ratio(row[0])  # 🆕 帶出上次設定
     st.session_state["logged_out"] = False
 
 
@@ -579,7 +610,7 @@ def logout_user():
                 conn.execute(text("DELETE FROM app_sessions WHERE token_hash = :t"), {"t": _sha(tok)})
     except Exception:
         pass
-    for k in ("user", "okx", "okx_balance", "auto_trade", "last_order_msg"):
+    for k in ("user", "okx", "okx_balance", "auto_trade", "last_order_msg", "order_ratio"):
         st.session_state.pop(k, None)
     st.session_state["logged_out"] = True
     st.session_state["is_searched"] = False
@@ -588,16 +619,44 @@ def logout_user():
 
 
 def flush_cookie_op():
-    """在瀏覽器寫入 / 清除登入 cookie（用一個高度 0 的 iframe 執行）。"""
+    """寫入 / 清除登入 token（cookie + localStorage 雙保險）。回傳是否有執行。"""
     op = st.session_state.pop("cookie_op", None)
     if not op:
-        return
+        return False
     kind, token = op
-    age = SESSION_DAYS * 86400 if kind == "set" else 0
-    val = token if kind == "set" else ""
+    if kind == "set":
+        js = (
+            f"var t='{token}';"
+            f"p.document.cookie='ai_token='+t+'; max-age={SESSION_DAYS * 86400}; path=/; SameSite=Lax';"
+            "try{p.localStorage.setItem('ai_token',t);p.sessionStorage.removeItem('ai_boot');}catch(e){}"
+        )
+    else:
+        js = (
+            "p.document.cookie='ai_token=; max-age=0; path=/; SameSite=Lax';"
+            "try{p.localStorage.removeItem('ai_token');p.sessionStorage.removeItem('ai_boot');}catch(e){}"
+        )
     components.html(
-        f"<script>window.parent.document.cookie="
-        f"'ai_token={val}; max-age={age}; path=/; SameSite=Lax';</script>",
+        f"<script>(function(){{var p=window.parent;try{{{js}}}catch(e){{}}}})();</script>",
+        height=0,
+    )
+    return True
+
+
+def inject_cookie_restore():
+    """cookie 不見但 localStorage 還有 token 時，補寫 cookie 並重新載入一次（只會執行一次，避免無限重整）。"""
+    components.html(
+        f"""<script>(function(){{
+        try{{
+          var p=window.parent;
+          var t=p.localStorage.getItem('ai_token');
+          var has=p.document.cookie.indexOf('ai_token=')>=0;
+          if(t && !has && !p.sessionStorage.getItem('ai_boot')){{
+            p.sessionStorage.setItem('ai_boot','1');
+            p.document.cookie='ai_token='+t+'; max-age={SESSION_DAYS * 86400}; path=/; SameSite=Lax';
+            p.location.reload();
+          }}
+        }}catch(e){{}}
+        }})();</script>""",
         height=0,
     )
 
@@ -806,7 +865,7 @@ def load_order_log(limit=30):
 
 # ---------- 登入 / 註冊介面 ----------
 def render_auth_gate():
-    flush_cookie_op()
+    did_cookie_op = flush_cookie_op()
 
     if st.session_state.get("user"):
         return True
@@ -830,6 +889,8 @@ def render_auth_gate():
                 if row:
                     start_user_session(row)
                     st.rerun()
+        elif not did_cookie_op:
+            inject_cookie_restore()  # 🆕 cookie 被擋時，從 localStorage 補回
 
     default_idx = 1 if users_exist() else 0
     mode = st.radio("帳號", ["註冊", "登入"], index=default_idx, horizontal=True, key="auth_mode")
@@ -845,7 +906,7 @@ def render_auth_gate():
             asec = st.text_input("OKX Secret Key", type="password")
             apass = st.text_input("OKX API Passphrase", type="password")
             demo = st.checkbox("使用 OKX 模擬盤（建議先用模擬盤測試）", value=True)
-            keep = st.checkbox("保持登入", value=True)
+            keep = st.checkbox("保持登入（30 天）", value=True)
             ok = st.form_submit_button("註冊並登入", use_container_width=True)
         if ok:
             ru = ru.strip()
@@ -857,7 +918,7 @@ def render_auth_gate():
                 st.error("請完整填寫 OKX API 資料。")
             else:
                 try:
-                    bal = OKXClient(ak.strip(), asec.strip(), apass.strip(), demo).balance()
+                    OKXClient(ak.strip(), asec.strip(), apass.strip(), demo).balance()
                 except Exception as e:
                     st.error(f"OKX 驗證失敗，請檢查金鑰與模擬盤/實盤選項：{e}")
                     return False
@@ -878,7 +939,7 @@ def render_auth_gate():
         with st.form("login_form"):
             lu = st.text_input("帳號")
             lp = st.text_input("密碼", type="password")
-            keep = st.checkbox("保持登入（30 天）", value=False)
+            keep = st.checkbox("保持登入（30 天）", value=True)  # 🆕 預設勾選
             ok = st.form_submit_button("登入", use_container_width=True)
         if ok:
             row = fetch_user(lu.strip()) if lu.strip() else None
@@ -918,8 +979,9 @@ def render_user_bar():
         else:
             st.caption(f"餘額讀取失敗：{cache[2]}")
     with c3:
-        st.number_input("使用資金比例 %", min_value=1, max_value=100, value=95, step=1,
-                        key="order_ratio")
+        st.session_state.setdefault("order_ratio", 95)
+        st.number_input("使用資金比例 %", min_value=1, max_value=100, step=1,
+                        key="order_ratio", on_change=save_order_ratio)
     with c4:
         st.toggle("⚡ 訊號自動下單（槓桿拉滿）", key="auto_trade")
         if st.session_state.get("auto_trade") and not is_demo:
