@@ -15,4 +15,5 @@ pillow
 plotly
 python-dotenv
 flask
+cryptography
 gunicorn
