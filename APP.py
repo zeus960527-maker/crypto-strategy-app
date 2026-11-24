@@ -399,7 +399,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ============================================================
-# 1.5 帳號系統與 OKX 直接下單（已改為註冊只需帳號密碼，設定於齒輪中修改）
+# 1.5 帳號系統與 OKX 直接下單
 # ============================================================
 st.session_state.setdefault("auth_user", None)
 st.session_state.setdefault("auth_settings", {})
@@ -423,6 +423,19 @@ st.markdown("""
 div[data-testid="stPopoverBody"] { min-width: min(450px, 92vw); }
 .okx-guide { font-size: 13px; line-height: 1.8; color: #d1d5db; background: rgba(255,255,255,0.03); padding: 10px; border-radius: 8px; margin-bottom: 10px; }
 .okx-guide b { color: #f0b90b; }
+.account-card {
+    background: rgba(22, 27, 36, 0.9);
+    border: 1px solid rgba(240, 185, 11, 0.3);
+    border-radius: 14px;
+    padding: 16px 20px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+}
+.account-title { font-size: 12px; color: #8b94a3; letter-spacing: 1px; margin-bottom: 4px; }
+.account-val { font-size: 20px; font-weight: 800; color: #f0b90b; font-family: 'JetBrains Mono', monospace; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -890,7 +903,7 @@ def render_okx_trade_panel(symbol, pair, tf, latest, latest_close):
     st.markdown("---")
     st.markdown("#### 🤖 OKX 自動下單")
     if not s["auto_trade"]:
-        st.caption("自動下單：關閉。點頁面上方的 ⚙️ 可開啟與設定 API。")
+        st.caption("自動下單：關閉。點設定可開啟與設定 API。")
         _render_order_log(user)
         return
 
@@ -941,7 +954,7 @@ def render_auth_gate():
         with st.form("register_form"):
             r_user = st.text_input("系統帳號", key="reg_user")
             r_pw = st.text_input("系統密碼", type="password", key="reg_pw")
-            st.caption("💡 註冊只需帳號與密碼！交易所 API 於登入後至右上角 ⚙️ 設定填寫。")
+            st.caption("💡 註冊只需帳號與密碼！交易所 API 於登入後至設定填寫。")
             if st.form_submit_button("註冊並登入", use_container_width=True):
                 u, err = register_user(r_user, r_pw)
                 if err:
@@ -966,7 +979,7 @@ def render_settings_popover(user):
     except Exception:
         has_key = False
 
-    with st.popover("⚙️", help="設定與交易所金鑰"):
+    with st.popover("⚙️ 帳號設定", help="設定與交易所金鑰"):
         st.markdown(f"**👤 帳號：{user}**")
         
         st.markdown("#### 🔑 OKX 交易所 API 設定")
@@ -1031,23 +1044,28 @@ def render_settings_popover(user):
             st.rerun()
 
 
-def render_top_bar(user):
-    c1, c2 = st.columns([6, 1])
-    with c1:
-        st.caption(f"👤 已登入：{user}")
-    with c2:
-        render_settings_popover(user)
-
-
 if not check_remembered_login():
     render_auth_gate()
     st.stop()
-render_top_bar(st.session_state["auth_user"])
 
 # ============================================================
-# 搜尋列與表單靠左對齊配置
+# 搜尋列與您指定的紅圈區域（顯示帳戶名稱與餘額）配置
 # ============================================================
+current_user = st.session_state["auth_user"]
+s_dict = dict(DEFAULT_TRADE_SETTINGS)
+s_dict.update(st.session_state.get("auth_settings") or {})
+
+# 嘗試取得即時餘額
+balance_str = "未設定 API"
+try:
+    creds_cache = _get_creds(current_user)
+    bal_val = okx_get_balance(creds_cache, s_dict.get("demo", False))
+    balance_str = f"{bal_val:,.2f} USDT"
+except Exception:
+    balance_str = "尚無 API 或金鑰有誤"
+
 c_left, c_right = st.columns([1.2, 2.8])
+
 with c_left:
     with st.form("search_form"):
         input_val = st.text_input(
@@ -1057,6 +1075,28 @@ with c_left:
         )
         st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
         submitted = st.form_submit_button("送出查詢", use_container_width=True)
+
+with c_right:
+    # 這裡對應您截圖中紅圈圈起來的區塊：顯示帳戶名稱與餘額卡片
+    col_acc1, col_acc2, col_acc3 = st.columns(3)
+    with col_acc1:
+        st.markdown(f"""
+        <div class="account-card">
+            <div class="account-title">👤 系統帳戶</div>
+            <div class="account-val" style="font-size:16px;">{current_user}</div>
+        </div>
+        """, unsafe_allow_html=True)
+    with col_acc2:
+        st.markdown(f"""
+        <div class="account-card">
+            <div class="account-title">💰 OKX 可用餘額</div>
+            <div class="account-val">{balance_str}</div>
+        </div>
+        """, unsafe_allow_html=True)
+    with col_acc3:
+        # 放置帳號設定按鈕 (⚙️)
+        st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
+        render_settings_popover(current_user)
 
 if submitted:
     q = input_val.strip().upper()
