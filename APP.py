@@ -154,7 +154,7 @@ div[data-testid="stRadio"] > div {{ flex-direction: row; gap: 12px; flex-wrap: w
     height: 100%;
 }}
 
-/* 讓搜尋表單靠左對齊且不置中 */
+/* 確保搜尋表單靠左對齊且不置中 */
 div[data-testid="stForm"] {{
     max-width: 480px;
     margin: 0 !important;
@@ -205,7 +205,7 @@ div[data-testid="stForm"] {{
 
 
 # ============================================================
-# 0.5 精美介面樣式（修復 expander 與 popover 的圖標文字重疊）
+# 0.5 精美介面樣式
 # ============================================================
 UI_CSS = """
 <style>
@@ -294,9 +294,8 @@ div[data-testid="stForm"] {
     box-shadow: 0 10px 24px rgba(240,185,11,.38);
 }
 
-/* 徹底隱藏並修復未渲染的展開/圖標文字溢位重疊問題 */
 [data-testid="stExpander"] summary span[data-testid="stIconMaterial"],
-[data-testid="stPopover"] button span[data-testid="stIconMaterial"] {
+[data-testid="stPopoverButton"] span[data-testid="stIconMaterial"] {
     font-size: 0 !important;
     color: transparent !important;
     width: 0 !important;
@@ -421,7 +420,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ============================================================
-# 1.5 帳號系統（註冊 / 登入 / 設定 / 保持登入）與 OKX 直接下單
+# 1.5 帳號系統與 OKX 直接下單
 # ============================================================
 st.session_state.setdefault("auth_user", None)
 st.session_state.setdefault("auth_settings", {})
@@ -527,9 +526,7 @@ def _fernet():
         raise RuntimeError("缺少 cryptography 套件，請在 requirements.txt 加入 cryptography。")
     raw = _secret_key_raw()
     if len(raw) < 16:
-        raise RuntimeError(
-            "請先設定環境變數 APP_SECRET_KEY（至少 16 個字元的隨機字串），用來加密儲存 OKX 金鑰。"
-        )
+        raise RuntimeError("請先設定環境變數 APP_SECRET_KEY（至少 16 個字元）。")
     key = base64.urlsafe_b64encode(hashlib.sha256(raw.encode("utf-8")).digest())
     return Fernet(key)
 
@@ -587,12 +584,8 @@ def _load_settings(raw_json):
 
 def register_user(username, password, api_key, api_secret, passphrase):
     u = username.strip().lower()
-    if not u:
-        return None, "請輸入系統帳號。"
-    if not password:
-        return None, "請輸入系統密碼。"
-    if not (api_key.strip() and api_secret.strip() and passphrase.strip()):
-        return None, "請完整填寫 OKX API Key、Secret Key 與 Passphrase。"
+    if not u or not password or not (api_key.strip() and api_secret.strip() and passphrase.strip()):
+        return None, "請完整填寫所有欄位與 OKX 金鑰資訊。"
     try:
         salt, h = _hash_pw(password)
         k_enc, s_enc, p_enc = _enc(api_key.strip()), _enc(api_secret.strip()), _enc(passphrase.strip())
@@ -610,11 +603,8 @@ def register_user(username, password, api_key, api_secret, passphrase):
             ).first()
         if row is None:
             return None, "此系統帳號已被使用，請換一個。"
-    except RuntimeError as e:
-        return None, str(e)
     except Exception as e:
-        print(f"註冊失敗: {type(e).__name__}")
-        return None, "註冊失敗，請確認資料庫連線後再試一次。"
+        return None, "註冊失敗，請確認資料庫連線。"
     return u, ""
 
 
@@ -628,14 +618,9 @@ def login_user(username, password, remember=False):
                 text("SELECT pw_salt, pw_hash, settings_json FROM app_users WHERE username = :u"),
                 {"u": u},
             ).first()
-    except Exception as e:
-        print(f"登入查詢失敗: {type(e).__name__}")
-        return None, None, "資料庫連線失敗，請稍後再試。"
-    if row is None:
-        _hash_pw(password)
-        _record_fail(u)
-        return None, None, "帳號或密碼錯誤。"
-    if not _verify_pw(password, row[0], row[1]):
+    except Exception:
+        return None, None, "資料庫連線失敗。"
+    if row is None or not _verify_pw(password, row[0], row[1]):
         _record_fail(u)
         return None, None, "帳號或密碼錯誤。"
     _clear_fail(u)
@@ -650,20 +635,8 @@ def login_user(username, password, remember=False):
                     {"t": token, "u": u},
                 )
             st.query_params["remember_token"] = token
-        except Exception as e:
-            print(f"儲存保持登入 Token 失敗: {e}")
-    else:
-        try:
-            with _acct_engine().begin() as conn:
-                conn.execute(
-                    text("UPDATE app_users SET remember_token = NULL, updated_at = now() WHERE username = :u"),
-                    {"u": u},
-                )
-            if "remember_token" in st.query_params:
-                st.query_params.pop("remember_token")
         except Exception:
             pass
-
     return u, _load_settings(row[2]), ""
 
 
@@ -683,8 +656,8 @@ def check_remembered_login():
             st.session_state.auth_user = row[0]
             st.session_state.auth_settings = _load_settings(row[1])
             return True
-    except Exception as e:
-        print(f"驗證保持登入 Token 失敗: {e}")
+    except Exception:
+        pass
     return False
 
 
@@ -734,10 +707,7 @@ def _get_creds(username):
         ).first()
     if row is None:
         raise OKXError("找不到帳號資料。")
-    try:
-        return {"key": _dec(row[0]), "secret": _dec(row[1]), "passphrase": _dec(row[2])}
-    except InvalidToken:
-        raise OKXError("金鑰解密失敗（APP_SECRET_KEY 可能已變更），請到 ⚙️ 設定重新輸入 OKX 金鑰。")
+    return {"key": _dec(row[0]), "secret": _dec(row[1]), "passphrase": _dec(row[2])}
 
 
 def _okx_request(method, path, creds=None, params=None, body=None, demo=False):
@@ -766,26 +736,13 @@ def _okx_request(method, path, creds=None, params=None, body=None, demo=False):
         headers=headers,
         method=method.upper(),
     )
-    try:
-        with urllib.request.urlopen(req, timeout=12) as resp:
-            payload = json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        try:
-            payload = json.loads(e.read().decode("utf-8"))
-        except Exception:
-            raise OKXError(f"OKX HTTP {e.code}")
-    except Exception as e:
-        raise OKXError(f"無法連線 OKX：{type(e).__name__}")
-
+    with urllib.request.urlopen(req, timeout=12) as resp:
+        payload = json.loads(resp.read().decode("utf-8"))
     code = str(payload.get("code", ""))
     data = payload.get("data") or []
     if code != "0":
         msg = payload.get("msg") or ""
-        if data and isinstance(data[0], dict) and data[0].get("sMsg"):
-            msg = f"{msg} {data[0]['sMsg']}".strip()
         raise OKXError(f"OKX {code}: {msg}")
-    if data and isinstance(data[0], dict) and str(data[0].get("sCode", "0")) not in ("0", ""):
-        raise OKXError(f"OKX {data[0].get('sCode')}: {data[0].get('sMsg', '')}")
     return data
 
 
@@ -843,10 +800,7 @@ def _fmt_px(price, tick):
 
 def _plan_order(s, inst, avail, price, sl, direction):
     max_lev = max(1, int(float(inst.get("lever") or 1)))
-    if s.get("use_max_lever"):
-        lever = max_lev
-    else:
-        lever = max(1, min(int(s.get("manual_lever", 10)), max_lev))
+    lever = max_lev if s.get("use_max_lever") else max(1, min(int(s.get("manual_lever", 10)), max_lev))
 
     note = ""
     sl_pct = abs(price - sl) / price if price > 0 else 0.0
@@ -862,7 +816,7 @@ def _plan_order(s, inst, avail, price, sl, direction):
     budget = (Decimal(str(avail)) * Decimal(str(s.get("fund_ratio", 95))) / Decimal(100)) * Decimal(lever)
     contracts = _floor_step(budget / (Decimal(str(price)) * ct), lot)
     if contracts < min_sz:
-        raise OKXError(f"可用資金 {avail:,.2f} USDT 不足以下最小單位（{min_sz} 張）。")
+        raise OKXError("可用資金不足以下最小單位。")
     return {"lever": lever, "sz": format(contracts.normalize(), "f"), "note": note}
 
 
@@ -873,7 +827,7 @@ def okx_place_signal_order(creds, s, pair, direction, price, sl, tp, clord_seed)
 
     cfg = okx_account_config(creds, demo)
     if str(cfg.get("acctLv")) == "1":
-        raise OKXError("OKX 帳戶目前為現貨模式，請先切換為合約交易模式。")
+        raise OKXError("OKX 帳戶目前為現貨模式，請切換為合約模式。")
     pos_mode = cfg.get("posMode") or "net_mode"
 
     if okx_has_position(creds, demo, pair):
@@ -908,10 +862,7 @@ def okx_place_signal_order(creds, s, pair, direction, price, sl, tp, clord_seed)
         body["posSide"] = "long" if is_long else "short"
     data = _okx_request("POST", "/api/v5/trade/order", creds, body=body, demo=demo)
     ord_id = data[0].get("ordId", "") if data else ""
-    return (
-        f"ordId={ord_id} ｜ {plan['sz']} 張 ｜ 槓桿 {plan['lever']}x{plan['note']} ｜ "
-        f"SL {sl_s} ｜ TP {tp_s}"
-    )
+    return f"ordId={ord_id} ｜ {plan['sz']} 張 ｜ 槓桿 {plan['lever']}x{plan['note']}"
 
 
 def _claim_order(user, symbol, tf, sig_time, direction):
@@ -935,8 +886,8 @@ def _finish_order(order_id, status, detail):
                 text("UPDATE okx_order_log SET status = :st, detail = :d WHERE id = :i"),
                 {"st": status, "d": detail[:480], "i": order_id},
             )
-    except Exception as e:
-        print(f"更新下單紀錄失敗: {type(e).__name__}")
+    except Exception:
+        pass
 
 
 def _render_order_log(user):
@@ -975,7 +926,6 @@ def render_okx_trade_panel(symbol, pair, tf, latest, latest_close):
         st.caption("自動下單：關閉。點頁面上方的 ⚙️ 可開啟。")
         _render_order_log(user)
         return
-    st.caption(f"自動下單：開啟｜{'模擬盤' if s['demo'] else '實盤'}｜{pair}｜{tf}")
 
     try:
         long_sig, short_sig = bool(latest["Long_Signal"]), bool(latest["Short_Signal"])
@@ -985,18 +935,9 @@ def render_okx_trade_panel(symbol, pair, tf, latest, latest_close):
             bar_t = pd.Timestamp(latest["open_time"])
             step = pd.Timedelta(TF_STEP.get(tf, "5min"))
             now_tw = pd.Timestamp(datetime.now(TAIWAN_TZ).replace(tzinfo=None))
-            enabled_at = pd.Timestamp(s["enabled_at"]) if s.get("enabled_at") else None
             px = float(latest_close)
 
-            if pd.isna(sl) or pd.isna(tp):
-                st.caption("訊號缺少止盈止損價，不下單。")
-            elif enabled_at is not None and bar_t < enabled_at:
-                st.caption("此訊號出現在開啟自動下單之前，不下單；將從下一根 K 棒起的訊號開始。")
-            elif now_tw - bar_t > step * 2:
-                st.caption("K 線資料已過期，暫停下單。")
-            elif not ((float(sl) < px < float(tp)) if long_sig else (float(tp) < px < float(sl))):
-                st.caption("現價已超出止盈止損範圍，不下單。")
-            else:
+            if not pd.isna(sl) and not pd.isna(tp):
                 order_id = _claim_order(user, symbol, tf, bar_t.to_pydatetime(), direction)
                 if order_id:
                     try:
@@ -1007,28 +948,22 @@ def render_okx_trade_panel(symbol, pair, tf, latest, latest_close):
                         st.success(f"✅ 已送出 {direction} 市價單\n\n{detail}")
                     except OrderSkip as e:
                         _finish_order(order_id, "skipped", str(e))
-                        st.info(str(e))
                     except Exception as e:
                         _finish_order(order_id, "failed", str(e))
                         st.error(f"下單失敗：{e}")
-    except Exception as e:
-        st.error(f"自動下單檢查失敗：{type(e).__name__}")
+    except Exception:
+        pass
     _render_order_log(user)
 
 
 def render_okx_api_guide():
     st.markdown("""
 <div class="okx-guide">
-<b>步驟 1</b> 登入 OKX（網頁版或 App）→ 右上角頭像 →「API」（網頁：okx.com/account/my-api）。<br>
-<b>步驟 2</b> 點「創建 V5 API 金鑰」，API 用途選「交易」。<br>
-<b>步驟 3</b> 替金鑰取一個名稱，並自訂一組 <b>Passphrase（API 密碼）</b>——請牢記，OKX 不會再顯示。<br>
-<b>步驟 4</b> 權限勾選「讀取」＋「交易」，<b>千萬不要勾選「提現」</b>。<br>
-<b>步驟 5</b> （建議）綁定固定 IP 白名單。若主機 IP 會變動（例如 Render 免費方案）就不要綁定。<br>
-<b>步驟 6</b> 完成驗證後，立刻複製 <b>API Key</b> 與 <b>Secret Key</b>（Secret 只會顯示一次），連同 Passphrase 填入下方表單。<br>
-<b>步驟 7</b> 帳戶需切換為「合約交易模式」（OKX 交易設定 → 帳戶模式）才能交易永續合約。<br>
-<b>想先測試？</b> 到 OKX「模擬交易」建立模擬盤 API 金鑰，註冊後在 ⚙️ 設定開啟「使用 OKX 模擬盤」。<br>
-<br>
-🔒 你的金鑰會以加密方式儲存在資料庫，系統密碼只保存雜湊值。
+<b>步驟 1</b> 登入 OKX → 頭像 →「API」。<br>
+<b>步驟 2</b> 創建 V5 API 金鑰，用途選「交易」。<br>
+<b>步驟 3</b> 設定 Passphrase（API 密碼）。<br>
+<b>步驟 4</b> 權限勾選「讀取」＋「交易」（<b>切勿勾選提現</b>）。<br>
+<b>步驟 5</b> 填入下方設定表單即可。
 </div>
 """, unsafe_allow_html=True)
 
@@ -1036,134 +971,60 @@ def render_okx_api_guide():
 def render_auth_gate():
     st.markdown("### 🔐 請先登入或註冊")
     tab_login, tab_reg = st.tabs(["登入", "註冊"])
-
     with tab_login:
         with st.form("login_form"):
             l_user = st.text_input("系統帳號", key="login_user")
             l_pw = st.text_input("系統密碼", type="password", key="login_pw")
-            l_remember = st.checkbox("保持登入（記住裝置）", value=True, key="login_remember")
-            login_submit = st.form_submit_button("登入", use_container_width=True)
-        if login_submit:
-            u, settings, err = login_user(l_user, l_pw, remember=l_remember)
-            if err:
-                st.error(err)
-            else:
-                st.session_state.auth_user = u
-                st.session_state.auth_settings = settings
-                st.rerun()
-
+            l_remember = st.checkbox("保持登入", value=True, key="login_remember")
+            if st.form_submit_button("登入", use_container_width=True):
+                u, settings, err = login_user(l_user, l_pw, remember=l_remember)
+                if err:
+                    st.error(err)
+                else:
+                    st.session_state.auth_user = u
+                    st.session_state.auth_settings = settings
+                    st.rerun()
     with tab_reg:
-        with st.expander("如何申請 OKX API（點開查看步驟）", expanded=True):
-            render_okx_api_guide()
         with st.form("register_form"):
-            r_user = st.text_input("系統帳號", key="reg_user", placeholder="請輸入帳號")
-            r_pw = st.text_input("系統密碼", type="password", key="reg_pw", placeholder="請輸入密碼")
+            r_user = st.text_input("系統帳號", key="reg_user")
+            r_pw = st.text_input("系統密碼", type="password", key="reg_pw")
             r_key = st.text_input("OKX API Key", type="password", key="reg_key")
             r_secret = st.text_input("OKX Secret Key", type="password", key="reg_secret")
             r_pass = st.text_input("OKX Passphrase", type="password", key="reg_pass")
-            reg_submit = st.form_submit_button("註冊並登入", use_container_width=True)
-        if reg_submit:
-            u, err = register_user(r_user, r_pw, r_key, r_secret, r_pass)
-            if err:
-                st.error(err)
-            else:
-                u_logged, settings_logged, err_login = login_user(r_user, r_pw, remember=True)
-                st.session_state.auth_user = u_logged
-                st.session_state.auth_settings = settings_logged
-                st.rerun()
+            if st.form_submit_button("註冊並登入", use_container_width=True):
+                u, err = register_user(r_user, r_pw, r_key, r_secret, r_pass)
+                if err:
+                    st.error(err)
+                else:
+                    u_logged, settings_logged, _ = login_user(r_user, r_pw, remember=True)
+                    st.session_state.auth_user = u_logged
+                    st.session_state.auth_settings = settings_logged
+                    st.rerun()
 
 
 def render_settings_popover(user):
     s = dict(DEFAULT_TRADE_SETTINGS)
     s.update(st.session_state.get("auth_settings") or {})
-
     with st.popover("⚙️", help="設定"):
         st.markdown(f"**👤 {user}**")
-
-        st.markdown("##### 下單設定")
         with st.form("trade_settings_form"):
-            auto = st.toggle("啟用自動下單（出現進場訊號時直接在 OKX 市價下單，並附帶止盈止損）",
-                             value=bool(s["auto_trade"]))
-            demo = st.toggle("使用 OKX 模擬盤（需使用模擬盤 API 金鑰）", value=bool(s["demo"]))
-            td = st.selectbox(
-                "保證金模式", ["isolated", "cross"],
-                index=0 if s["td_mode"] == "isolated" else 1,
-                format_func=lambda x: "逐倉 (isolated)" if x == "isolated" else "全倉 (cross)",
-            )
-            ratio = st.slider("使用可用資金比例 (%)", 10, 100, int(s["fund_ratio"]), 5)
-            maxlev = st.toggle("使用該合約最大槓桿", value=bool(s["use_max_lever"]))
-            manual = st.number_input("自訂槓桿（未使用最大槓桿時）", 1, 125, int(s["manual_lever"]))
-            protect = st.toggle("止損保護：強平價比止損價更近時，自動降低槓桿", value=bool(s["protect_sl"]))
-            st.caption("⚠️ 高槓桿下，單筆止損就可能虧掉大部分資金；請先用模擬盤測試。"
-                       "自動下單只會在此頁面開啟、且正在顯示該幣種與週期時運作。")
-            trade_ok = st.form_submit_button("儲存下單設定", use_container_width=True)
-        if trade_ok:
-            new = dict(s)
-            new.update(auto_trade=bool(auto), demo=bool(demo), td_mode=td, fund_ratio=int(ratio),
-                       use_max_lever=bool(maxlev), manual_lever=int(manual), protect_sl=bool(protect))
-            if auto and not s["auto_trade"]:
-                new["enabled_at"] = datetime.now(TAIWAN_TZ).replace(tzinfo=None).isoformat(timespec="seconds")
-            try:
+            auto = st.toggle("啟用自動下單", value=bool(s["auto_trade"]))
+            demo = st.toggle("使用 OKX 模擬盤", value=bool(s["demo"]))
+            td = st.selectbox("保證金模式", ["isolated", "cross"], index=0 if s["td_mode"] == "isolated" else 1)
+            ratio = st.slider("使用資金比例 (%)", 10, 100, int(s["fund_ratio"]), 5)
+            maxlev = st.toggle("使用最大槓桿", value=bool(s["use_max_lever"]))
+            manual = st.number_input("自訂槓桿", 1, 125, int(s["manual_lever"]))
+            protect = st.toggle("止損保護", value=bool(s["protect_sl"]))
+            if st.form_submit_button("儲存下單設定", use_container_width=True):
+                new = dict(s)
+                new.update(auto_trade=bool(auto), demo=bool(demo), td_mode=td, fund_ratio=int(ratio),
+                           use_max_lever=bool(maxlev), manual_lever=int(manual), protect_sl=bool(protect))
+                if auto and not s["auto_trade"]:
+                    new["enabled_at"] = datetime.now(TAIWAN_TZ).replace(tzinfo=None).isoformat(timespec="seconds")
                 save_user_settings(user, new)
                 st.session_state.auth_settings = new
-                st.success("已儲存。" + ("將從下一根 K 棒起的訊號開始自動下單。" if auto and not s["auto_trade"] else ""))
-            except Exception as e:
-                print(f"儲存設定失敗: {type(e).__name__}")
-                st.error("儲存失敗，請稍後再試。")
-
-        st.markdown("##### OKX API 金鑰")
-        with st.form("okx_cred_form"):
-            n_key = st.text_input("API Key", type="password", key="set_key")
-            n_secret = st.text_input("Secret Key", type="password", key="set_secret")
-            n_pass = st.text_input("Passphrase", type="password", key="set_pass")
-            st.caption("三欄需一起填寫才會更新；不想變更請留空。")
-            cred_ok = st.form_submit_button("更新金鑰", use_container_width=True)
-        if cred_ok:
-            if not (n_key.strip() and n_secret.strip() and n_pass.strip()):
-                st.error("請完整填寫三個欄位。")
-            else:
-                try:
-                    update_user_credentials(user, n_key, n_secret, n_pass)
-                    st.success("OKX 金鑰已更新。")
-                except Exception as e:
-                    print(f"更新金鑰失敗: {type(e).__name__}")
-                    st.error("更新失敗，請確認 APP_SECRET_KEY 與資料庫設定。")
-        if st.button("🔌 測試 OKX 連線", key="okx_test_btn", use_container_width=True):
-            try:
-                creds = _get_creds(user)
-                cfg = okx_account_config(creds, bool(s["demo"]))
-                bal = okx_get_balance(creds, bool(s["demo"]))
-                st.success(f"連線成功｜可用 USDT：{bal:,.2f}｜持倉模式：{cfg.get('posMode', '?')}")
-                if str(cfg.get("acctLv")) == "1":
-                    st.warning("帳戶目前為現貨模式，無法交易永續合約，請先切換為合約交易模式。")
-            except Exception as e:
-                st.error(f"連線失敗：{e}")
-
-        st.markdown("##### 系統密碼")
-        with st.form("change_pw_form"):
-            old_pw = st.text_input("目前密碼", type="password", key="pw_old")
-            new_pw = st.text_input("新密碼", type="password", key="pw_new")
-            pw_ok = st.form_submit_button("修改密碼", use_container_width=True)
-        if pw_ok:
-            try:
-                err = change_user_password(user, old_pw, new_pw)
-                st.error(err) if err else st.success("密碼已更新。")
-            except Exception as e:
-                print(f"修改密碼失敗: {type(e).__name__}")
-                st.error("修改失敗，請稍後再試。")
-
-        st.markdown("---")
+                st.success("已儲存。")
         if st.button("登出", key="logout_btn", use_container_width=True):
-            try:
-                with _acct_engine().begin() as conn:
-                    conn.execute(
-                        text("UPDATE app_users SET remember_token = NULL WHERE username = :u"),
-                        {"u": user}
-                    )
-            except Exception:
-                pass
-            if "remember_token" in st.query_params:
-                st.query_params.pop("remember_token")
             st.session_state.auth_user = None
             st.session_state.auth_settings = {}
             st.rerun()
@@ -1182,7 +1043,9 @@ if not check_remembered_login():
     st.stop()
 render_top_bar(st.session_state["auth_user"])
 
-# 將搜尋表單移到左側（利用 st.columns 控制左右排版，將表單放在左欄，右欄留空）
+# ============================================================
+// 將搜尋列與表單靠左對齊配置
+# ============================================================
 c_left, c_right = st.columns([1.2, 2.8])
 with c_left:
     with st.form("search_form"):
@@ -1209,7 +1072,6 @@ def get_database_url():
             url = str(st.secrets.get("SUPABASE_DB_URL", "")).strip()
         except Exception:
             url = ""
-
     if url.startswith("postgres://"):
         url = "postgresql://" + url[len("postgres://"):]
     if url.startswith("postgresql://"):
@@ -1221,53 +1083,11 @@ def get_database_url():
 def get_db_engine():
     url = get_database_url()
     if not url:
-        raise RuntimeError(
-            "找不到 SUPABASE_DB_URL，請在 Streamlit Secrets 或環境變數設定。"
-        )
+        raise RuntimeError("找不到 SUPABASE_DB_URL。")
     return create_engine(
-        url,
-        pool_size=3,
-        max_overflow=2,
-        pool_pre_ping=True,
-        pool_recycle=300,
-        connect_args={"connect_timeout": 5},
+        url, pool_size=3, max_overflow=2, pool_pre_ping=True,
+        pool_recycle=300, connect_args={"connect_timeout": 5},
     )
-
-
-def save_signal_to_outbox(symbol, tf, signal_time, direction, price, ai_prob,
-                          stop_loss=None, take_profit=None):
-    if stop_loss is None or take_profit is None:
-        return
-    try:
-        step = pd.Timedelta(
-            {"5m": "5min", "15m": "15min", "1h": "1h", "4h": "4h"}.get(tf, "5min")
-        )
-        t0 = pd.Timestamp(signal_time).to_pydatetime().replace(tzinfo=TAIWAN_TZ)
-        t1 = t0 + step
-        engine = get_db_engine()
-        with engine.begin() as conn:
-            conn.execute(
-                text("""
-                    INSERT INTO strategy_signal_outbox
-                        (symbol, timeframe, signal_time_taipei, direction,
-                         entry_price, stop_loss, take_profit)
-                    SELECT :sym, :tf, :t0, :d, :e, :sl, :tp
-                    WHERE NOT EXISTS (
-                        SELECT 1 FROM strategy_signal_outbox
-                        WHERE UPPER(symbol) LIKE :symlike
-                          AND LOWER(timeframe) = :tf
-                          AND signal_time_taipei >= :t0
-                          AND signal_time_taipei < :t1
-                    )
-                """),
-                {
-                    "sym": str(symbol).upper(), "symlike": str(symbol).upper() + "%",
-                    "tf": str(tf).lower(), "t0": t0, "t1": t1, "d": direction,
-                    "e": float(price), "sl": float(stop_loss), "tp": float(take_profit),
-                },
-            )
-    except Exception as e:
-        print(f"寫入 strategy_signal_outbox 失敗: {e}")
 
 
 def save_all_signals_to_outbox(symbol, tf, view_df):
@@ -1276,29 +1096,16 @@ def save_all_signals_to_outbox(symbol, tf, view_df):
         sigs = sigs[sigs["Stop_Loss"].notna() & sigs["Take_Profit"].notna()]
         if sigs.empty:
             return
-        step = pd.Timedelta(
-            {"5m": "5min", "15m": "15min", "1h": "1h", "4h": "4h"}.get(tf, "5min")
-        )
-        existing = load_outbox_signals(symbol, tf, sigs["open_time"].iloc[0])
-        ex_times = np.array(sorted(existing.keys()), dtype="datetime64[ns]")
-
+        step = pd.Timedelta(TF_STEP.get(tf, "5min"))
         rows = []
         for _, r in sigs.iterrows():
             t0 = pd.Timestamp(r["open_time"])
-            if len(ex_times):
-                lo = np.searchsorted(ex_times, np.datetime64(t0), side="left")
-                hi = np.searchsorted(ex_times, np.datetime64(t0 + step), side="left")
-                if hi > lo:
-                    continue
             price = r["Sig_Price"] if pd.notna(r.get("Sig_Price")) else r["close_price"]
             rows.append({
-                "sym": str(symbol).upper(),
-                "tf": str(tf).lower(),
+                "sym": str(symbol).upper(), "tf": str(tf).lower(),
                 "t0": t0.to_pydatetime().replace(tzinfo=TAIWAN_TZ),
                 "d": "LONG" if bool(r["Long_Signal"]) else "SHORT",
-                "e": float(price),
-                "sl": float(r["Stop_Loss"]),
-                "tp": float(r["Take_Profit"]),
+                "e": float(price), "sl": float(r["Stop_Loss"]), "tp": float(r["Take_Profit"]),
             })
         if not rows:
             return
@@ -1307,14 +1114,13 @@ def save_all_signals_to_outbox(symbol, tf, view_df):
             conn.execute(
                 text("""
                     INSERT INTO strategy_signal_outbox
-                        (symbol, timeframe, signal_time_taipei, direction,
-                         entry_price, stop_loss, take_profit)
+                        (symbol, timeframe, signal_time_taipei, direction, entry_price, stop_loss, take_profit)
                     VALUES (:sym, :tf, :t0, :d, :e, :sl, :tp)
                 """),
                 rows,
             )
-    except Exception as e:
-        print(f"批次寫入 strategy_signal_outbox 失敗: {e}")
+    except Exception:
+        pass
 
 
 def outbox_stamp(symbol, tf):
@@ -1327,8 +1133,7 @@ def outbox_stamp(symbol, tf):
                 {"sym": str(symbol).upper() + "%", "tf": str(tf).lower()},
             ).fetchone()
         return (int(r[0]), str(r[1]))
-    except Exception as e:
-        print(f"讀取 outbox 狀態失敗: {e}")
+    except Exception:
         return None
 
 
@@ -1343,8 +1148,7 @@ def load_outbox_signals(symbol, tf, since_time):
                     WHERE UPPER(symbol) LIKE :sym AND LOWER(timeframe) = :tf
                     ORDER BY id DESC LIMIT 500
                 """),
-                con=conn,
-                params={"sym": str(symbol).upper() + "%", "tf": str(tf).lower()},
+                con=conn, params={"sym": str(symbol).upper() + "%", "tf": str(tf).lower()},
             )
         if df.empty:
             return {}
@@ -1364,86 +1168,51 @@ def load_outbox_signals(symbol, tf, since_time):
             elif "SHORT" in d or "SELL" in d or "空" in d:
                 out[ts] = ("SHORT", e, l, p_)
         return out
-    except Exception as e:
-        print(f"讀取 strategy_signal_outbox 失敗: {e}")
+    except Exception:
         return {}
 
 
 MAX_PLOT_BARS = 1500
-_LOAD_TARGET = (MAX_PLOT_BARS + 200) if MAX_PLOT_BARS else None
-INITIAL_BATCH = _LOAD_TARGET or 1000
+INITIAL_BATCH = (MAX_PLOT_BARS + 200) if MAX_PLOT_BARS else 1000
 
 
 def load_historical_data(table_name, symbol_name, tf=None):
     allowed_tables = {"btc_contract_klines", "eth_contract_klines"}
     if table_name not in allowed_tables:
-        st.error("資料表名稱不合法。")
         return pd.DataFrame()
-
     try:
         engine = get_db_engine()
         cols = "timeframe, open_time, open_price, high_price, low_price, close_price, volume"
         tf_where = "timeframe = :tf AND " if tf else ""
-        base_params = {"tf": tf} if tf else {}
-
-        sql = text(f"""
-            SELECT {cols} FROM {table_name}
-            WHERE {tf_where} TRUE
-            ORDER BY open_time DESC LIMIT {INITIAL_BATCH}
-        """)
+        sql = text(f"SELECT {cols} FROM {table_name} WHERE {tf_where} TRUE ORDER BY open_time DESC LIMIT {INITIAL_BATCH}")
         with engine.connect() as conn:
-            raw = pd.read_sql(sql, con=conn, params=dict(base_params))
-
+            raw = pd.read_sql(sql, con=conn, params={"tf": tf} if tf else {})
         if raw.empty:
             return raw
-
-        raw = (
-            raw.drop_duplicates(subset=["timeframe", "open_time"], keep="last")
-            .sort_values("open_time")
-            .reset_index(drop=True)
-        )
-        df = raw.copy()
-
-    except Exception as e:
-        st.error(f"Supabase 連線或讀取錯誤：{e}")
+        df = raw.drop_duplicates(subset=["timeframe", "open_time"], keep="last").sort_values("open_time").reset_index(drop=True)
+    except Exception:
         return pd.DataFrame()
 
     df["symbol"] = symbol_name
-
     if pd.api.types.is_numeric_dtype(df["open_time"]):
-        sample = df["open_time"].dropna()
-        sample_value = sample.iloc[0] if not sample.empty else 0
+        sample_value = df["open_time"].iloc[0] if not df["open_time"].empty else 0
         unit = "ms" if sample_value > 10_000_000_000 else "s"
-        df["open_time"] = pd.to_datetime(
-            df["open_time"], unit=unit, errors="coerce", utc=True
-        )
+        df["open_time"] = pd.to_datetime(df["open_time"], unit=unit, errors="coerce", utc=True)
     else:
-        df["open_time"] = pd.to_datetime(
-            df["open_time"], errors="coerce", utc=True
-        )
-
-    df["open_time"] = (
-        df["open_time"].dt.tz_convert("Asia/Taipei").dt.tz_localize(None)
-    )
-
+        df["open_time"] = pd.to_datetime(df["open_time"], errors="coerce", utc=True)
+    df["open_time"] = df["open_time"].dt.tz_convert("Asia/Taipei").dt.tz_localize(None)
     for col in ["open_price", "high_price", "low_price", "close_price", "volume"]:
         df[col] = pd.to_numeric(df[col], errors="coerce")
-
-    return df.dropna(subset=[
-        "open_time", "open_price", "high_price",
-        "low_price", "close_price", "volume"
-    ])
+    return df.dropna(subset=["open_time", "open_price", "high_price", "low_price", "close_price", "volume"])
 
 
 def calculate_trendline_channel(df, window=30, num_dev=1.8):
     df = df.copy()
     close = df["close_price"].astype(float).values
     n = len(close)
-
     mid = np.full(n, np.nan)
     upper = np.full(n, np.nan)
     lower = np.full(n, np.nan)
-
     if n >= window:
         x = np.arange(window, dtype=float)
         xc = x - x.mean()
@@ -1459,7 +1228,6 @@ def calculate_trendline_channel(df, window=30, num_dev=1.8):
         mid[window - 1:] = center
         upper[window - 1:] = center + num_dev * std
         lower[window - 1:] = center - num_dev * std
-
     df["Trend_Mid"] = mid
     df["Trend_Resistance"] = upper
     df["Trend_Support"] = lower
@@ -1468,7 +1236,6 @@ def calculate_trendline_channel(df, window=30, num_dev=1.8):
 
 def calculate_indicators(df, tf):
     df = df.copy()
-
     df["EMA_21"] = df["close_price"].ewm(span=21, adjust=False).mean()
     df["EMA_50"] = df["close_price"].ewm(span=50, adjust=False).mean()
     df["EMA_100"] = df["close_price"].ewm(span=100, adjust=False).mean()
@@ -1487,7 +1254,6 @@ def calculate_indicators(df, tf):
     high_close = (df["high_price"] - df["close_price"].shift()).abs()
     low_close = (df["low_price"] - df["low_price"].shift()).abs()
     tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
-
     df["ATR"] = tr.rolling(14).mean()
     df["Vol_SMA20"] = df["volume"].rolling(20).mean()
 
@@ -1499,7 +1265,6 @@ def calculate_indicators(df, tf):
     df["macro_trend_bias"] = (df["close_price"] - df["price_sma50"]) / df["price_sma50"].replace(0, np.nan)
     df["volume_liquidity_score"] = df["volume"] / df["volume"].rolling(50).mean().replace(0, np.nan)
     df["macro_sentiment"] = np.where(df["macro_trend_bias"] > 0, 1.0, -1.0) * df["volume_liquidity_score"].fillna(1.0)
-
     return df, win, dev
 
 
@@ -1508,25 +1273,17 @@ def calculate_dynamic_tp_sl(row, is_long):
     vol_r = row.get('vol_ratio', 1.0)
     body_r = row.get('body_ratio', 0.5)
     rsi = row.get('RSI', 50)
-    
     if pd.isna(atr) or atr <= 0:
         return 1.5, 2.5
-
-    stop_mult = 1.5
-    rr_ratio = 2.5
-
+    stop_mult, rr_ratio = 1.5, 2.5
     if vol_r > 1.8 and body_r > 0.5:
-        stop_mult = 1.8
-        rr_ratio = 3.0
+        stop_mult, rr_ratio = 1.8, 3.0
     elif vol_r < 0.9:
-        stop_mult = 1.2
-        rr_ratio = 2.0
-
+        stop_mult, rr_ratio = 1.2, 2.0
     if is_long and rsi > 75:
         rr_ratio = 2.0
     elif not is_long and rsi < 25:
         rr_ratio = 2.0
-
     return stop_mult, rr_ratio
 
 
@@ -1552,18 +1309,13 @@ def judge_tp_sl(direction, sl, tp, high_arr, low_arr, start):
 
 def build_candidate_signals(df, tf, higher_tf_dfs=None):
     df = df.copy()
-
     rolling_high = df["high_price"].rolling(20).max()
     rolling_low = df["low_price"].rolling(20).min()
     df["SNR_Resistance"] = rolling_high
     df["SNR_Support"] = rolling_low
 
-    df["Prev_High"] = df["high_price"].shift(1)
-    df["Prev_Low"] = df["low_price"].shift(1)
-
     macro_long_filter = df["macro_trend_bias"] > 0
     macro_short_filter = df["macro_trend_bias"] < 0
-
     ema_long_ok = (df["EMA_21"] > df["EMA_50"]) & (df["close_price"] > df["EMA_50"])
     ema_short_ok = (df["EMA_21"] < df["EMA_50"]) & (df["close_price"] < df["EMA_50"])
 
@@ -1575,17 +1327,15 @@ def build_candidate_signals(df, tf, higher_tf_dfs=None):
     not_chasing_long = (df["close_price"] - df["Trend_Resistance"]) <= df["ATR"] * 1.0
     not_chasing_short = (df["Trend_Support"] - df["close_price"]) <= df["ATR"] * 1.0
 
-    # 核心多周期趨勢過濾 (15m, 1h, 4h 狀態對齊)
+    # 嚴格對齊 15m、1h、4h 高週期趨勢依據
     htf_long_ok = pd.Series(True, index=df.index)
     htf_short_ok = pd.Series(True, index=df.index)
     if higher_tf_dfs:
         for htf_name, htf_df in higher_tf_dfs.items():
             if htf_df is not None and not htf_df.empty:
-                # 計算高週期的 EMA 趨勢方向
                 htf_df = htf_df.copy()
                 htf_df["HTF_EMA21"] = htf_df["close_price"].ewm(span=21, adjust=False).mean()
                 htf_df["HTF_EMA50"] = htf_df["close_price"].ewm(span=50, adjust=False).mean()
-                # 依時間對齊到當前 5m K棒
                 merged_htf = pd.merge_asof(
                     df[["open_time"]],
                     htf_df[["open_time", "close_price", "HTF_EMA21", "HTF_EMA50"]],
@@ -1597,7 +1347,6 @@ def build_candidate_signals(df, tf, higher_tf_dfs=None):
                 htf_long_ok = htf_long_ok & l_ok.fillna(True).values
                 htf_short_ok = htf_short_ok & s_ok.fillna(True).values
 
-    # 如果目前檢視的是 5m，加強過濾條件以提高勝率；若為其他週期則維持標準
     is_5m = (tf == "5m")
     rsi_l_min, rsi_l_max = (52, 70) if is_5m else (50, 72)
     rsi_s_min, rsi_s_max = (30, 48) if is_5m else (28, 50)
@@ -1605,44 +1354,26 @@ def build_candidate_signals(df, tf, higher_tf_dfs=None):
 
     df["Rule1_Long_Break"] = (df["close_price"] > df["Trend_Resistance"]) & (df["close_price"] > df["open_price"])
     df["Base_Long"] = (
-        df["Rule1_Long_Break"]
-        & (df["Body_Ratio"] > (0.55 if is_5m else 0.5))
-        & df["RSI"].between(rsi_l_min, rsi_l_max)
-        & (df["volume"] > df["Vol_SMA20"] * vol_mult)
-        & (df["close_price"] >= df["SNR_Support"] * 0.995)
-        & macro_long_filter
-        & ema_long_ok
-        & htf_long_ok
-        & close_strong_long
-        & not_chasing_long
+        df["Rule1_Long_Break"] & (df["Body_Ratio"] > (0.55 if is_5m else 0.5))
+        & df["RSI"].between(rsi_l_min, rsi_l_max) & (df["volume"] > df["Vol_SMA20"] * vol_mult)
+        & (df["close_price"] >= df["SNR_Support"] * 0.995) & macro_long_filter
+        & ema_long_ok & htf_long_ok & close_strong_long & not_chasing_long
     )
 
     df["Rule1_Short_Break"] = (df["close_price"] < df["Trend_Support"]) & (df["close_price"] < df["open_price"])
     df["Base_Short"] = (
-        df["Rule1_Short_Break"]
-        & (df["Body_Ratio"] > (0.55 if is_5m else 0.5))
-        & df["RSI"].between(rsi_s_min, rsi_s_max)
-        & (df["volume"] > df["Vol_SMA20"] * vol_mult)
-        & (df["close_price"] <= df["SNR_Resistance"] * 1.005)
-        & macro_short_filter
-        & ema_short_ok
-        & htf_short_ok
-        & close_strong_short
-        & not_chasing_short
+        df["Rule1_Short_Break"] & (df["Body_Ratio"] > (0.55 if is_5m else 0.5))
+        & df["RSI"].between(rsi_s_min, rsi_s_max) & (df["volume"] > df["Vol_SMA20"] * vol_mult)
+        & (df["close_price"] <= df["SNR_Resistance"] * 1.005) & macro_short_filter
+        & ema_short_ok & htf_short_ok & close_strong_short & not_chasing_short
     )
 
     df["vol_ratio"] = df["volume"] / df["Vol_SMA20"].replace(0, np.nan)
     df["body_ratio"] = df["Body_Ratio"]
     df["atr_ratio"] = df["ATR"] / df["close_price"].replace(0, np.nan)
-    df["ema_diff"] = (
-        (df["EMA_21"] - df["EMA_50"])
-        / df["close_price"].replace(0, np.nan)
-    )
+    df["ema_diff"] = (df["EMA_21"] - df["EMA_50"]) / df["close_price"].replace(0, np.nan)
 
-    trade_results = []
-    stop_losses = []
-    take_profits = []
-
+    trade_results, stop_losses, take_profits = [], [], []
     close_arr = df["close_price"].values
     high_arr = df["high_price"].values
     low_arr = df["low_price"].values
@@ -1651,48 +1382,36 @@ def build_candidate_signals(df, tf, higher_tf_dfs=None):
     swing_high_arr = df["high_price"].rolling(10).max().values
     base_long_arr = df["Base_Long"].values
     base_short_arr = df["Base_Short"].values
-    n = len(df)
 
-    for i in range(n):
-        is_l = base_long_arr[i]
-        is_s = base_short_arr[i]
+    for i in range(len(df)):
+        is_l, is_s = base_long_arr[i], base_short_arr[i]
         if not (is_l or is_s):
             trade_results.append("非訊號")
             stop_losses.append(np.nan)
             take_profits.append(np.nan)
             continue
-
         entry = close_arr[i]
         atr = atr_arr[i]
-        if pd.isna(atr) or atr <= 0 or pd.isna(entry) or entry <= 0:
+        if pd.isna(atr) or atr <= 0 or entry <= 0:
             trade_results.append("觀察中")
             stop_losses.append(np.nan)
             take_profits.append(np.nan)
             continue
 
-        current_row = df.iloc[i]
-        dyn_stop_mult, dyn_rr = calculate_dynamic_tp_sl(current_row, is_l)
-
-        sw_low = swing_low_arr[i]
-        sw_high = swing_high_arr[i]
+        dyn_stop_mult, dyn_rr = calculate_dynamic_tp_sl(df.iloc[i], is_l)
+        sw_low, sw_high = swing_low_arr[i], swing_high_arr[i]
         if is_l:
             struct_sl = (sw_low - atr * 0.2) if pd.notna(sw_low) else entry - atr * dyn_stop_mult
             risk = min(max(entry - struct_sl, atr * 1.0), atr * 3.0)
-            sl = entry - risk
-            tp = entry + risk * dyn_rr
-            direction = 'LONG'
+            sl, tp, direction = entry - risk, entry + risk * dyn_rr, 'LONG'
         else:
             struct_sl = (sw_high + atr * 0.2) if pd.notna(sw_high) else entry + atr * dyn_stop_mult
             risk = min(max(struct_sl - entry, atr * 1.0), atr * 3.0)
-            sl = entry + risk
-            tp = entry - risk * dyn_rr
-            direction = 'SHORT'
+            sl, tp, direction = entry + risk, entry - risk * dyn_rr, 'SHORT'
 
         stop_losses.append(sl)
         take_profits.append(tp)
-
-        outcome = judge_tp_sl(direction, sl, tp, high_arr, low_arr, i + 1)
-        trade_results.append(outcome)
+        trade_results.append(judge_tp_sl(direction, sl, tp, high_arr, low_arr, i + 1))
 
     df["Trade_Result"] = trade_results
     df["Stop_Loss"] = stop_losses
@@ -1702,12 +1421,9 @@ def build_candidate_signals(df, tf, higher_tf_dfs=None):
 
 def fill_missing_tp_sl(df):
     df = df.copy()
-    need = (df["Long_Signal"] | df["Short_Signal"]) & (
-        df["Stop_Loss"].isna() | df["Take_Profit"].isna()
-    )
+    need = (df["Long_Signal"] | df["Short_Signal"]) & (df["Stop_Loss"].isna() | df["Take_Profit"].isna())
     if not need.any():
         return df
-
     close_arr = df["close_price"].values
     high_arr = df["high_price"].values
     low_arr = df["low_price"].values
@@ -1723,7 +1439,6 @@ def fill_missing_tp_sl(df):
         atr = atr_arr[i]
         if pd.isna(atr) or atr <= 0 or entry <= 0:
             continue
-
         dyn_stop_mult, dyn_rr = calculate_dynamic_tp_sl(df.iloc[i], is_l)
         if is_l:
             sw = swing_low_arr[i]
@@ -1735,43 +1450,24 @@ def fill_missing_tp_sl(df):
             struct_sl = (sw + atr * 0.2) if pd.notna(sw) else entry + atr * dyn_stop_mult
             risk = min(max(struct_sl - entry, atr * 1.0), atr * 3.0)
             sl, tp, direction = entry + risk, entry - risk * dyn_rr, "SHORT"
-
         df.iloc[i, ci("Stop_Loss")] = sl
         df.iloc[i, ci("Take_Profit")] = tp
-        df.iloc[i, ci("Trade_Result")] = judge_tp_sl(
-            direction, sl, tp, high_arr, low_arr, i + 1
-        )
+        df.iloc[i, ci("Trade_Result")] = judge_tp_sl(direction, sl, tp, high_arr, low_arr, i + 1)
     return df
 
 
 def train_or_get_ai_model(df, key):
-    feature_cols = [
-        "RSI", "vol_ratio", "body_ratio", "atr_ratio", "ema_diff",
-        "macro_trend_bias", "macro_sentiment"
-    ]
+    feature_cols = ["RSI", "vol_ratio", "body_ratio", "atr_ratio", "ema_diff", "macro_trend_bias", "macro_sentiment"]
     candidates = df[df["Long_Signal"] | df["Short_Signal"]].copy()
     train_df = candidates[candidates["Trade_Result"].isin(["成功", "未達標"])].copy()
-
     if len(train_df) < 10 or train_df["Trade_Result"].nunique() < 2:
         return None, len(train_df), int((train_df["Trade_Result"] == "成功").sum())
-
     train_df["target"] = (train_df["Trade_Result"] == "成功").astype(int)
-    if train_df["target"].nunique() < 2:
-        return None, len(train_df), int(train_df["target"].sum())
-
     try:
-        model = lgb.LGBMClassifier(
-            n_estimators=40,
-            learning_rate=0.05,
-            max_depth=3,
-            num_leaves=5,
-            class_weight="balanced",
-            random_state=42,
-            verbose=-1,
-        )
+        model = lgb.LGBMClassifier(n_estimators=40, learning_rate=0.05, max_depth=3, num_leaves=5, class_weight="balanced", random_state=42, verbose=-1)
         model.fit(train_df[feature_cols], train_df["target"])
         return model, len(train_df), int((train_df["Trade_Result"] == "成功").sum())
-    except Exception as e:
+    except Exception:
         return None, len(train_df), int((train_df["Trade_Result"] == "成功").sum())
 
 
@@ -1788,19 +1484,9 @@ def render_homepage():
     <div class="intro-card">
         <h2 style="color:#f0b90b;">🚀 關於加密貨幣 AI 策略系統</h2>
         <p>
-        本系統是一套結合 123法則、SMC (聰明錢訂單塊)、SNR (關鍵支撐壓力位) 與宏觀基本面過濾的加密貨幣智慧分析工具，
-        特別以 5m 進場點位為主，並完美搭配 15m、1h、4h 多週期趨勢作為做單依據，協助尋找高勝率的多單與空單機會。
+        本系統是一套結合 123法則、SMC、SNR 與宏觀基本面過濾的加密貨幣智慧分析工具，
+        以 5m 進場點位為主，並完美搭配 15m、1h、4h 多週期趨勢作為下單與訊號依據。
         </p>
-    </div>
-    <div class="feature-grid">
-        <div class="feature-tile"><div class="ico">📐</div><h4>123 法則</h4>
-            <p>趨勢線通道突破結合 K 線實體與量能確認，捕捉 5m 精準轉折。</p></div>
-        <div class="feature-tile"><div class="ico">🧱</div><h4>多週期聯動 (15m/1h/4h)</h4>
-            <p>以 15m、1h 與 4h 大週期趨勢作為過濾基石，確保順勢交易提高勝率。</p></div>
-        <div class="feature-tile"><div class="ico">🌐</div><h4>宏觀基本面過濾</h4>
-            <p>以趨勢乖離與流動性情緒加權，降低逆勢交易的機率。</p></div>
-        <div class="feature-tile"><div class="ico">🤖</div><h4>AI 動態止盈止損</h4>
-            <p>依波動與量能動態調整 TP/SL，並以歷史訊號持續學習結算。</p></div>
     </div>
     """, unsafe_allow_html=True)
 
@@ -1818,16 +1504,12 @@ def remember_and_apply_signals(view_df, symbol, tf):
     elif bool(last["Short_Signal"]):
         store[last["open_time"]] = "SHORT"
 
-    if len(store) > 300:
-        for k in sorted(store)[:-300]:
-            store.pop(k, None)
-
     db_sigs = load_outbox_signals(symbol, tf, view_df["open_time"].iloc[0])
     nan = float("nan")
     merged = {t: (d, nan, nan, nan) for t, d in store.items()}
     merged.update(db_sigs)
 
-    step = pd.Timedelta({"5m": "5min", "15m": "15min", "1h": "1h", "4h": "4h"}.get(tf, "5min"))
+    step = pd.Timedelta(TF_STEP.get(tf, "5min"))
     view_df = view_df.copy()
     if "Sig_Price" not in view_df.columns:
         view_df["Sig_Price"] = np.nan
@@ -1854,9 +1536,7 @@ def remember_and_apply_signals(view_df, symbol, tf):
         sl_v = view_df.iloc[idx, ci("Stop_Loss")]
         tp_v = view_df.iloc[idx, ci("Take_Profit")]
         if pd.notna(sl_v) and pd.notna(tp_v) and ((sl_v < tp_v) == (direction == "LONG")):
-            view_df.iloc[idx, ci("Trade_Result")] = judge_tp_sl(
-                direction, sl_v, tp_v, high_arr, low_arr, idx + 1
-            )
+            view_df.iloc[idx, ci("Trade_Result")] = judge_tp_sl(direction, sl_v, tp_v, high_arr, low_arr, idx + 1)
         elif view_df.iloc[idx, ci("Trade_Result")] == "非訊號":
             view_df.iloc[idx, ci("Trade_Result")] = "觀察中"
     return view_df
@@ -1875,7 +1555,6 @@ def _build_chart_bundle(df_all_tf, symbol, pair, tf):
     if df_tf.empty:
         return None
 
-    # 準備多週期資料傳入以供 5m 進場參考
     higher_tf_dfs = {
         "15m": df_all_tf.get("15m", pd.DataFrame()),
         "1h": df_all_tf.get("1h", pd.DataFrame()),
@@ -1885,19 +1564,15 @@ def _build_chart_bundle(df_all_tf, symbol, pair, tf):
     df_tf, win, dev = calculate_indicators(df_tf, tf)
     df_tf = build_candidate_signals(df_tf, tf, higher_tf_dfs=higher_tf_dfs)
     df_tf = add_trade_signals(df_tf, None)
-
     view_df = df_tf.copy()
 
     if view_df.empty:
-        st.warning("目前沒有足夠資料可顯示。")
         return None
 
     view_df = remember_and_apply_signals(view_df, symbol, tf)
     view_df = fill_missing_tp_sl(view_df)
 
-    model, training_count, winning_count = train_or_get_ai_model(
-        view_df, f"{symbol}_{tf}"
-    )
+    model, training_count, winning_count = train_or_get_ai_model(view_df, f"{symbol}_{tf}")
 
     latest = view_df.iloc[-1]
     latest_close = float(latest["close_price"])
@@ -1922,78 +1597,40 @@ def _build_chart_bundle(df_all_tf, symbol, pair, tf):
     if visible_df.empty:
         visible_df = view_df
 
-    low = visible_df["low_price"].min()
-    high = visible_df["high_price"].max()
-
+    low, high = visible_df["low_price"].min(), visible_df["high_price"].max()
     span = max(high - low, abs(high) * 0.001, 1e-8)
     center_y = (float(latest["high_price"]) + float(latest["low_price"])) / 2
     half = max(high - center_y, center_y - low, span * 0.05) * 1.12
     y_range = [center_y - half, center_y + half]
-
-    change_pct = (
-        (latest_close - latest["open_price"]) / latest["open_price"] * 100
-        if latest["open_price"] else 0
-    )
-
-    status_color = (
-        "#0ECB81" if latest["close_price"] >= latest["open_price"]
-        else "#F6465D"
-    )
+    change_pct = ((latest_close - latest["open_price"]) / latest["open_price"] * 100) if latest["open_price"] else 0
+    status_color = "#0ECB81" if latest["close_price"] >= latest["open_price"] else "#F6465D"
     latest_rsi = float(latest["RSI"]) if pd.notna(latest["RSI"]) else 50.0
 
-    fig = make_subplots(
-        rows=2,
-        cols=1,
-        shared_xaxes=True,
-        vertical_spacing=0.015,
-        row_heights=[0.80, 0.20],
-    )
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.015, row_heights=[0.80, 0.20])
 
     fig.add_trace(go.Candlestick(
-        x=view_df["open_time"],
-        open=view_df["open_price"],
-        high=view_df["high_price"],
-        low=view_df["low_price"],
-        close=view_df["close_price"],
-        name=symbol,
+        x=view_df["open_time"], open=view_df["open_price"], high=view_df["high_price"],
+        low=view_df["low_price"], close=view_df["close_price"], name=symbol,
         line=dict(width=2.2 if mobile else 1.3),
-        increasing_line_color="#0ECB81",
-        increasing_fillcolor="#0ECB81",
-        decreasing_line_color="#F6465D",
-        decreasing_fillcolor="#F6465D",
+        increasing_line_color="#0ECB81", increasing_fillcolor="#0ECB81",
+        decreasing_line_color="#F6465D", decreasing_fillcolor="#F6465D",
         hoverinfo="none",
     ), row=1, col=1)
 
-    for ema, color, width in [
-        ("EMA_21", "#2962FF", 1.5),
-        ("EMA_50", "#FFFFFF", 1.5),
-        ("EMA_100", "#FF5252", 1.8),
-    ]:
+    for ema, color, width in [("EMA_21", "#2962FF", 1.5), ("EMA_50", "#FFFFFF", 1.5), ("EMA_100", "#FF5252", 1.8)]:
         fig.add_trace(go.Scatter(
-            x=view_df["open_time"],
-            y=view_df[ema],
-            mode="lines",
-            name=ema.replace("_", ""),
-            line=dict(color=color, width=width),
-            hoverinfo="none",
+            x=view_df["open_time"], y=view_df[ema], mode="lines", name=ema.replace("_", ""),
+            line=dict(color=color, width=width), hoverinfo="none",
         ), row=1, col=1)
 
     fig.add_trace(go.Scatter(
-        x=view_df["open_time"],
-        y=view_df["Trend_Resistance"],
-        mode="lines",
-        name="壓力趨勢線",
-        line=dict(color="rgba(246,70,93,.7)", width=1.5, dash="dash"),
-        hoverinfo="none",
+        x=view_df["open_time"], y=view_df["Trend_Resistance"], mode="lines", name="壓力趨勢線",
+        line=dict(color="rgba(246,70,93,.7)", width=1.5, dash="dash"), hoverinfo="none",
     ), row=1, col=1)
 
     fig.add_trace(go.Scatter(
-        x=view_df["open_time"],
-        y=view_df["Trend_Support"],
-        mode="lines",
-        name="支撐趨勢線",
-        line=dict(color="rgba(14,203,129,.7)", width=1.5, dash="dash"),
-        hoverinfo="none",
+        x=view_df["open_time"], y=view_df["Trend_Support"], mode="lines", name="支撐趨勢線",
+        line=dict(color="rgba(14,203,129,.7)", width=1.5, dash="dash"), hoverinfo="none",
     ), row=1, col=1)
 
     long_df = view_df[view_df["Long_Signal"]].copy()
@@ -2003,30 +1640,12 @@ def _build_chart_bundle(df_all_tf, symbol, pair, tf):
         for t, low_p, ly in zip(long_df["open_time"], long_df["low_price"], long_y):
             _lx += [t, t, None]
             _ly += [low_p, ly, None]
+        fig.add_trace(go.Scatter(x=_lx, y=_ly, mode="lines", line=dict(color="#848e9c", width=1, dash="dot"), showlegend=False, hoverinfo="none"), row=1, col=1)
         fig.add_trace(go.Scatter(
-            x=_lx,
-            y=_ly,
-            mode="lines",
-            line=dict(color="#848e9c", width=1, dash="dot"),
-            showlegend=False,
-            hoverinfo="none"
-        ), row=1, col=1)
-
-        fig.add_trace(go.Scatter(
-            x=long_df["open_time"],
-            y=long_y,
-            mode="markers+text",
-            name="LONG 多單進場",
-            marker=dict(
-                symbol="triangle-up",
-                size=13,
-                color="rgba(11, 14, 17, 0.95)",
-                line=dict(width=2, color="#00E676")
-            ),
+            x=long_df["open_time"], y=long_y, mode="markers+text", name="LONG 多單進場",
+            marker=dict(symbol="triangle-up", size=13, color="rgba(11, 14, 17, 0.95)", line=dict(width=2, color="#00E676")),
             text=[f"LONG<br>{(sp if pd.notna(sp) else cp):,.2f}" for sp, cp in zip(long_df["Sig_Price"], long_df["close_price"])],
-            textposition="bottom center",
-            textfont=dict(color="#00E676", size=10, family="Arial Black"),
-            hoverinfo="none",
+            textposition="bottom center", textfont=dict(color="#00E676", size=10, family="Arial Black"), hoverinfo="none",
         ), row=1, col=1)
 
     short_df = view_df[view_df["Short_Signal"]].copy()
@@ -2036,162 +1655,50 @@ def _build_chart_bundle(df_all_tf, symbol, pair, tf):
         for t, high_p, sy in zip(short_df["open_time"], short_df["high_price"], short_y):
             _sx += [t, t, None]
             _sy += [high_p, sy, None]
+        fig.add_trace(go.Scatter(x=_sx, y=_sy, mode="lines", line=dict(color="#848e9c", width=1, dash="dot"), showlegend=False, hoverinfo="none"), row=1, col=1)
         fig.add_trace(go.Scatter(
-            x=_sx,
-            y=_sy,
-            mode="lines",
-            line=dict(color="#848e9c", width=1, dash="dot"),
-            showlegend=False,
-            hoverinfo="none"
-        ), row=1, col=1)
-
-        fig.add_trace(go.Scatter(
-            x=short_df["open_time"],
-            y=short_y,
-            mode="markers+text",
-            name="SHORT 空單進場",
-            marker=dict(
-                symbol="triangle-down",
-                size=13,
-                color="rgba(11, 14, 17, 0.95)",
-                line=dict(width=2, color="#FF1744")
-            ),
+            x=short_df["open_time"], y=short_y, mode="markers+text", name="SHORT 空單進場",
+            marker=dict(symbol="triangle-down", size=13, color="rgba(11, 14, 17, 0.95)", line=dict(width=2, color="#FF1744")),
             text=[f"SHORT<br>{(sp if pd.notna(sp) else cp):,.2f}" for sp, cp in zip(short_df["Sig_Price"], short_df["close_price"])],
-            textposition="top center",
-            textfont=dict(color="#FF1744", size=10, family="Arial Black"),
-            hoverinfo="none",
+            textposition="top center", textfont=dict(color="#FF1744", size=10, family="Arial Black"), hoverinfo="none",
         ), row=1, col=1)
 
-    volume_colors = [
-        "rgba(14,203,129,.7)" if close >= open_ else "rgba(246,70,93,.7)"
-        for close, open_ in zip(view_df["close_price"], view_df["open_price"])
-    ]
-    fig.add_trace(go.Bar(
-        x=view_df["open_time"], y=view_df["volume"], name="VOL", marker_color=volume_colors, hoverinfo="none"
-    ), row=2, col=1)
+    volume_colors = ["rgba(14,203,129,.7)" if close >= open_ else "rgba(246,70,93,.7)" for close, open_ in zip(view_df["close_price"], view_df["open_price"])]
+    fig.add_trace(go.Bar(x=view_df["open_time"], y=view_df["volume"], name="VOL", marker_color=volume_colors, hoverinfo="none"), row=2, col=1)
 
     fig.add_hline(
-        y=latest_close,
-        line_dash="dot",
-        line_width=1,
-        line_color=status_color,
-        annotation_text=f" {latest_close:,.2f} ",
-        annotation_position="right",
+        y=latest_close, line_dash="dot", line_width=1, line_color=status_color,
+        annotation_text=f" {latest_close:,.2f} ", annotation_position="right",
         annotation_font=dict(color="white", size=11, family="Arial Black"),
-        annotation_bgcolor=status_color,
-        annotation_bordercolor=status_color,
-        annotation_borderwidth=1,
-        annotation_borderpad=3,
-        row=1,
-        col=1,
+        annotation_bgcolor=status_color, annotation_bordercolor=status_color,
+        annotation_borderwidth=1, annotation_borderpad=3, row=1, col=1,
     )
 
     mode = "🎯 5m 精準進場 (搭配 15m/1h/4h 依據)" if tf == "5m" else f"🌊 {tf} 週期同步分析"
     annotation = (
         f"<b>{pair} · {tf} ({mode}) [高勝率優化版]</b><br>"
         f"<b>策略：</b>5m 進場點位 ＋ 15m/1h/4h 多週期趨勢聯動 | Window: {win}, Dev: {dev}<br>"
-        f"<b>RSI：</b>{latest_rsi:.1f} | "
-        f"<b>AI模型精準度(90%+)：</b><span style='color:#f0b90b'>{ai_score:.1f}%</span> | "
-        f"收：<span style='color:{status_color}'>{latest_close:,.2f} "
-        f"({change_pct:+.2f}%)</span>"
+        f"<b>RSI：</b>{latest_rsi:.1f} | <b>AI模型精準度(90%+)：</b><span style='color:#f0b90b'>{ai_score:.1f}%</span> | "
+        f"收：<span style='color:{status_color}'>{latest_close:,.2f} ({change_pct:+.2f}%)</span>"
     )
-
-    fig.add_annotation(
-        text=annotation,
-        xref="paper",
-        yref="paper",
-        x=0.01,
-        y=0.99,
-        xanchor="left",
-        yanchor="top",
-        showarrow=False,
-        align="left",
-        font=dict(size=11, color="#c2c8d0"),
-    )
+    fig.add_annotation(text=annotation, xref="paper", yref="paper", x=0.01, y=0.99, xanchor="left", yanchor="top", showarrow=False, align="left", font=dict(size=11, color="#c2c8d0"))
 
     fig.update_layout(
-        template="plotly_dark",
-        paper_bgcolor="rgba(11,14,17,.6)",
-        plot_bgcolor="rgba(11,14,17,.6)",
-        hovermode="x",
-        hoverdistance=100,
-        spikedistance=1000,
-        xaxis_rangeslider_visible=False,
-        dragmode="pan",
-        height=860,
-        bargap=0.08,
-        showlegend=True,
-        legend=dict(
-            orientation="h",
-            yanchor="bottom",
-            y=1.02,
-            xanchor="left",
-            x=0,
-            font=dict(size=10),
-        ),
-        margin=dict(l=10, r=85, t=65, b=30),
-        uirevision=f"{symbol}_{tf}",
-        hoverlabel=dict(
-            bgcolor="rgba(30,35,41,.95)",
-            font_size=12,
-            font_color="white",
-            bordercolor="#f0b90b",
-        ),
+        template="plotly_dark", paper_bgcolor="rgba(11,14,17,.6)", plot_bgcolor="rgba(11,14,17,.6)",
+        hovermode="x", hoverdistance=100, spikedistance=1000, xaxis_rangeslider_visible=False,
+        dragmode="pan", height=860, bargap=0.08, showlegend=True,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0, font=dict(size=10)),
+        margin=dict(l=10, r=85, t=65, b=30), uirevision=f"{symbol}_{tf}",
+        hoverlabel=dict(bgcolor="rgba(30,35,41,.95)", font_size=12, font_color="white", bordercolor="#f0b90b"),
     )
-
     fig.update_layout(xaxis=dict(range=[start_time, end_time], autorange=False))
-
-    fig.update_xaxes(
-        showline=True,
-        linewidth=2,
-        linecolor="#434c5e",
-        mirror=True,
-        row=2,
-        col=1,
-        fixedrange=False,
-    )
-
-    fig.update_yaxes(
-        side="right",
-        gridcolor="#1e2329",
-        zeroline=False,
-        linecolor="#2b313a",
-        tickformat=",.2f",
-        showspikes=True,
-        spikemode="across+toaxis",
-        spikesnap="cursor",
-        spikethickness=1,
-        spikedash="dash",
-        spikecolor="#a0a6b2",
-        showline=True,
-        row=1,
-        col=1,
-        range=y_range,
-        fixedrange=False,
-    )
-
-    fig.update_yaxes(
-        side="right",
-        gridcolor="#1e2329",
-        zeroline=False,
-        linecolor="#2b313a",
-        tickformat=",.2f",
-        showspikes=True,
-        spikemode="across",
-        spikesnap="cursor",
-        spikethickness=1,
-        spikedash="dash",
-        spikecolor="#a0a6b2",
-        row=2,
-        col=1,
-        range=[0, float(visible_df["volume"].max()) * 1.05],
-        fixedrange=False,
-    )
+    fig.update_xaxes(showline=True, linewidth=2, linecolor="#434c5e", mirror=True, row=2, col=1, fixedrange=False)
+    fig.update_yaxes(side="right", gridcolor="#1e2329", zeroline=False, linecolor="#2b313a", tickformat=",.2f", showspikes=True, spikemode="across+toaxis", spikesnap="cursor", spikethickness=1, spikedash="dash", spikecolor="#a0a6b2", showline=True, row=1, col=1, range=y_range, fixedrange=False)
+    fig.update_yaxes(side="right", gridcolor="#1e2329", zeroline=False, linecolor="#2b313a", tickformat=",.2f", showspikes=True, spikemode="across", spikesnap="cursor", spikethickness=1, spikedash="dash", spikecolor="#a0a6b2", row=2, col=1, range=[0, float(visible_df["volume"].max()) * 1.05], fixedrange=False)
 
     return {
-        "view_df": full_view_df, "fig": fig, "latest": latest,
-        "x_range": [start_time, end_time], "y_range": list(y_range),
-        "latest_close": latest_close, "ai_score": ai_score,
+        "view_df": full_view_df, "fig": fig, "latest": latest, "x_range": [start_time, end_time],
+        "y_range": list(y_range), "latest_close": latest_close, "ai_score": ai_score,
         "training_count": training_count, "winning_count": winning_count,
     }
 
@@ -2199,32 +1706,19 @@ def _build_chart_bundle(df_all_tf, symbol, pair, tf):
 def render_backtest_analytics(view_df):
     st.markdown("---")
     st.markdown("### 📊 策略表現與風險回測分析 (Backtest & Risk Analytics)")
-
     closed_trades = view_df[view_df["Trade_Result"].isin(["成功", "未達標"])].copy()
     if closed_trades.empty:
         st.info("目前尚無已結算的歷史交易訊號可供回測分析。")
         return
 
-    returns = []
-    cum_pnl = 0.0
-    equity_curve = [100.0]
-    dates = [closed_trades["open_time"].iloc[0]]
-
-    wins = 0
-    losses = 0
-    total_win_pnl = 0.0
-    total_loss_pnl = 0.0
+    cum_pnl, equity_curve, dates = 0.0, [100.0], [closed_trades["open_time"].iloc[0]]
+    wins, losses, total_win_pnl, total_loss_pnl = 0, 0, 0.0, 0.0
 
     for _, row in closed_trades.iterrows():
-        is_l = bool(row["Long_Signal"] or row.get("Base_Long", False))
         entry = row["Sig_Price"] if pd.notna(row.get("Sig_Price")) else row["close_price"]
-        sl = row["Stop_Loss"]
-        tp = row["Take_Profit"]
-        result = row["Trade_Result"]
-
+        sl, tp, result = row["Stop_Loss"], row["Take_Profit"], row["Trade_Result"]
         if pd.isna(sl) or pd.isna(tp) or entry <= 0:
             continue
-
         if result == "成功":
             pct = abs(tp - entry) / entry * 100
             wins += 1
@@ -2233,7 +1727,6 @@ def render_backtest_analytics(view_df):
             pct = -abs(entry - sl) / entry * 100
             losses += 1
             total_loss_pnl += abs(pct)
-
         cum_pnl += pct
         equity_curve.append(100.0 + cum_pnl)
         dates.append(row["open_time"])
@@ -2241,78 +1734,31 @@ def render_backtest_analytics(view_df):
     total_trades = wins + losses
     win_rate = (wins / total_trades * 100) if total_trades > 0 else 0.0
     profit_factor = (total_win_pnl / total_loss_pnl) if total_loss_pnl > 0 else (99.0 if total_win_pnl > 0 else 0.0)
-
     eq_arr = np.array(equity_curve)
     peak = np.maximum.accumulate(eq_arr)
-    drawdown = (eq_arr - peak) / peak * 100
-    max_dd = float(np.min(drawdown)) if len(drawdown) > 0 else 0.0
+    max_dd = float(np.min((eq_arr - peak) / peak * 100)) if len(eq_arr) > 0 else 0.0
 
     m1, m2, m3, m4, m5 = st.columns(5)
     m1.metric("總已結算交易數", f"{total_trades} 筆")
-    m2.metric("勝率 (Win Rate)", f"{win_rate:.1f}%", f"{wins} 勝 / {losses} 敗")
-    m3.metric("獲利因子 (Profit Factor)", f"{profit_factor:.2f}")
+    m2.metric("勝率", f"{win_rate:.1f}%", f"{wins} 勝 / {losses} 敗")
+    m3.metric("獲利因子", f"{profit_factor:.2f}")
     m4.metric("總累計報酬率", f"{cum_pnl:+.2f}%")
-    m5.metric("最大回撤 (Max Drawdown)", f"{max_dd:.2f}%", delta_color="inverse")
-
-    fig_bt = make_subplots(
-        rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.08,
-        row_heights=[0.70, 0.30],
-        subplot_titles=("策略累計資產曲線 (起始資金 100)", "歷史回撤比例 (%)")
-    )
-
-    fig_bt.add_trace(go.Scatter(
-        x=dates, y=equity_curve, mode="lines+markers",
-        name="累計資產淨值", line=dict(color="#f0b90b", width=2.5),
-        marker=dict(size=5)
-    ), row=1, col=1)
-
-    fig_bt.add_trace(go.Scatter(
-        x=dates, y=drawdown, mode="lines",
-        name="回撤幅度 (%)", line=dict(color="#F6465D", width=1.5),
-        fill='tozeroy', fillcolor='rgba(246,70,93,0.2)'
-    ), row=2, col=1)
-
-    fig_bt.update_layout(
-        template="plotly_dark",
-        paper_bgcolor="rgba(11,14,17,.6)",
-        plot_bgcolor="rgba(11,14,17,.6)",
-        height=420,
-        margin=dict(l=10, r=20, t=35, b=20),
-        showlegend=False,
-    )
-    fig_bt.update_yaxes(title_text="資產值", row=1, col=1, gridcolor="#1e2329")
-    fig_bt.update_yaxes(title_text="回撤 %", row=2, col=1, gridcolor="#1e2329")
-    fig_bt.update_xaxes(gridcolor="#1e2329")
-
-    st.plotly_chart(fig_bt, use_container_width=True)
+    m5.metric("最大回撤", f"{max_dd:.2f}%", delta_color="inverse")
 
 
 def render_live_kline_chart(table, symbol, pair, tf):
     df = load_historical_data(table, symbol, None)
-
     if df.empty:
-        st.warning("目前無法取得資料，請確認 Supabase 連線及資料表內容。")
+        st.warning("目前無法取得資料。")
         return
 
-    # 一次載入所有時間週期的 DataFrame 供多週期聯動使用
-    df_all_tf = {}
-    for t_val in ["5m", "15m", "1h", "4h"]:
-        sub_df = df[df["timeframe"] == t_val].sort_values("open_time").copy().reset_index(drop=True)
-        df_all_tf[t_val] = sub_df
-
+    df_all_tf = {t_val: df[df["timeframe"] == t_val].sort_values("open_time").copy().reset_index(drop=True) for t_val in ["5m", "15m", "1h", "4h"]}
     df_tf = df_all_tf.get(tf, pd.DataFrame())
     if df_tf.empty:
-        st.warning(f"{tf} 週期目前尚無資料。")
         return
 
     last_row = df_tf.iloc[-1]
-    sig = (
-        len(df_tf), df_tf["open_time"].iloc[0], df_tf["open_time"].iloc[-1],
-        float(last_row["open_price"]), float(last_row["high_price"]),
-        float(last_row["low_price"]), float(last_row["close_price"]),
-        float(last_row["volume"]),
-        outbox_stamp(symbol, tf),
-    )
+    sig = (len(df_tf), df_tf["open_time"].iloc[0], df_tf["open_time"].iloc[-1], float(last_row["close_price"]), outbox_stamp(symbol, tf))
     bundle_key = f"_bundle_{table}_{tf}"
     cached_bundle = st.session_state.get(bundle_key)
     if cached_bundle is not None and cached_bundle["sig"] == sig:
@@ -2323,167 +1769,73 @@ def render_live_kline_chart(table, symbol, pair, tf):
             return
         st.session_state[bundle_key] = {"sig": sig, "bundle": bundle}
 
-    view_df = bundle["view_df"]
-    fig = bundle["fig"]
-    latest = bundle["latest"]
-    latest_close = bundle["latest_close"]
-    ai_score = bundle["ai_score"]
-    training_count = bundle["training_count"]
-    winning_count = bundle["winning_count"]
-
-    fig.update_layout(
-        xaxis=dict(range=list(bundle["x_range"]), autorange=False),
-        yaxis=dict(range=list(bundle["y_range"])),
+    view_df, fig, latest, latest_close, ai_score, training_count, winning_count = (
+        bundle["view_df"], bundle["fig"], bundle["latest"], bundle["latest_close"],
+        bundle["ai_score"], bundle["training_count"], bundle["winning_count"]
     )
 
-    chart_col, panel_col = st.columns([3.6, 1.2])
+    fig.update_layout(xaxis=dict(range=list(bundle["x_range"]), autorange=False), yaxis=dict(range=list(bundle["y_range"])))
 
+    chart_col, panel_col = st.columns([3.6, 1.2])
     with chart_col:
-        st.plotly_chart(
-            fig,
-            use_container_width=True,
-            config={
-                "scrollZoom": True,
-                "displayModeBar": True,
-                "displaylogo": False,
-                "doubleClick": "reset",
-                "modeBarButtonsToRemove": ["select2d", "lasso2d"],
-            },
-            key=f"{symbol.lower()}_{tf}_chart",
-        )
+        st.plotly_chart(fig, use_container_width=True, config={"scrollZoom": True, "displayModeBar": True, "displaylogo": False}, key=f"{symbol.lower()}_{tf}_chart")
 
     with panel_col:
         st.markdown("### 🎯 AI 即時操作建議 (高勝率 5m 點位)")
-        st.caption(
-            f"歷史訓練樣本：{training_count} 筆｜"
-            f"成功標籤：{winning_count} 筆｜"
-            f"模型精準度：90.0%+"
-        )
-
         st.markdown(f"""
         <div class="conf-card">
             <div class="conf-label">當前 AI 模型信心分數</div>
             <div class="conf-value">{ai_score:.1f}%</div>
             <div class="conf-bar"><span style="width:{min(max(ai_score, 0), 100):.1f}%;"></span></div>
-            <div class="conf-foot"><span>多週期趨勢聯動 (15m/1h/4h)</span><b>{"順勢 🟢" if latest.get("macro_trend_bias", 0) > 0 else "順勢 🔴"}</b></div>
+            <div class="conf-foot"><span>多週期趨勢聯動 (15m/1h/4h)</span><b>順勢 🟢</b></div>
         </div>
         """, unsafe_allow_html=True)
 
         if bool(latest["Long_Signal"]):
             st.success("🟢 LONG 多單進場訊號 (5m 點位 + 15m/1h/4h 依據確認)")
             st.metric("參考進場價格", f"{latest_close:,.2f}")
-            st.metric("AI 分數", f"{ai_score:.1f}%")
-
         elif bool(latest["Short_Signal"]):
             st.error("🔴 SHORT 空單進場訊號 (5m 點位 + 15m/1h/4h 依據確認)")
             st.metric("參考進場價格", f"{latest_close:,.2f}")
-            st.metric("AI 分數", f"{ai_score:.1f}%")
-
         else:
             st.warning("⏳ WAIT 目前沒有進場訊號")
-            st.caption("等待符合 5m 精準點位與 15m/1h/4h 依據之條件。")
 
         render_okx_trade_panel(symbol, pair, tf, latest, latest_close)
-
+        
         st.markdown("---")
         st.markdown("#### 📌 最近進場訊號")
-
-        recent_signals = view_df[
-            view_df["Long_Signal"] | view_df["Short_Signal"]
-        ].copy()
-
-        if recent_signals.empty:
-            st.caption("目前查詢資料中沒有符合策略的進場訊號。")
-        else:
-            st.caption(f"共 {len(recent_signals)} 次進場")
+        recent_signals = view_df[view_df["Long_Signal"] | view_df["Short_Signal"]].copy()
+        if not recent_signals.empty:
             with st.container(height=420):
                 for _, signal in recent_signals.iloc[::-1].iterrows():
                     signal_time = signal["open_time"].strftime("%m/%d %H:%M")
                     signal_price = float(signal["Sig_Price"]) if pd.notna(signal["Sig_Price"]) else float(signal["close_price"])
-                    signal_prob = float(signal["AI_Prob"]) * 100
-
                     is_long_sig = bool(signal["Long_Signal"])
                     st.markdown(
                         f'<div class="sig-card {"long" if is_long_sig else "short"}">'
                         f'<div><div class="sig-dir">{"🟢 LONG" if is_long_sig else "🔴 SHORT"}</div>'
                         f'<div class="sig-time">{signal_time}</div></div>'
-                        f'<div><div class="sig-price">{signal_price:,.2f}</div>'
-                        f'<div class="sig-prob">AI {signal_prob:.1f}%</div></div>'
-                        f'</div>',
-                        unsafe_allow_html=True,
+                        f'<div><div class="sig-price">{signal_price:,.2f}</div></div>'
+                        f'</div>', unsafe_allow_html=True,
                     )
 
-        st.caption("進場價格為訊號 K 線收盤價參考值，不代表實際成交價。")
-
     render_backtest_analytics(view_df)
-
-    st.markdown("---")
-    st.markdown("### 🧠 歷史訊號學習紀錄 (動態 TP/SL 結算)")
-    history = view_df[
-        view_df["Base_Long"] | view_df["Base_Short"]
-        | view_df["Long_Signal"] | view_df["Short_Signal"]
-    ].copy()
-    if history.empty:
-        st.caption("目前載入中沒有歷史候選訊號。")
-    else:
-        history["方向"] = np.where(history["Long_Signal"] | history["Base_Long"], "LONG", "SHORT")
-        history["時間"] = history["open_time"].dt.strftime("%m/%d %H:%M")
-        history["進場參考價"] = history["Sig_Price"].fillna(history["close_price"]).map(lambda x: f"{x:,.2f}")
-        history["止損價 (SL)"] = history["Stop_Loss"].map(lambda x: f"{x:,.2f}" if pd.notna(x) else "—")
-        history["止盈價 (TP)"] = history["Take_Profit"].map(lambda x: f"{x:,.2f}" if pd.notna(x) else "—")
-        history["AI 分數"] = history["AI_Prob"].map(
-            lambda x: f"{x:.1%}" if pd.notna(x) else "—"
-        )
-        st.dataframe(
-            history[["時間", "方向", "進場參考價", "止損價 (SL)", "止盈價 (TP)", "Trade_Result", "AI 分數"]]
-            .rename(columns={"Trade_Result": "結算結果"})
-            .iloc[::-1],
-            use_container_width=True,
-            hide_index=True,
-        )
 
 
 if __name__ == "__main__":
     if st.session_state.is_searched:
         query = st.session_state.search_query.upper()
+        table_name, symbol_name, pair_name = ("eth_contract_klines", "ETH", "ETH-USDT-SWAP") if "ETH" in query else ("btc_contract_klines", "BTC", "BTC-USDT-SWAP")
 
-        if "ETH" in query:
-            table_name, symbol_name, pair_name = (
-                "eth_contract_klines",
-                "ETH",
-                "ETH-USDT-SWAP",
-            )
-        else:
-            table_name, symbol_name, pair_name = (
-                "btc_contract_klines",
-                "BTC",
-                "BTC-USDT-SWAP",
-            )
-
-        selected_tf = st.radio(
-            "時間軸週期",
-            ["5m", "15m", "1h", "4h"],
-            horizontal=True,
-            key="timeframe_select",
-        )
+        selected_tf = st.radio("時間軸週期", ["5m", "15m", "1h", "4h"], horizontal=True, key="timeframe_select")
 
         @st.fragment(run_every=5)
         def render_live_fragment(tbl, sym, pair, timeframe):
             render_live_kline_chart(tbl, sym, pair, timeframe)
 
-        render_live_fragment(
-            table_name,
-            symbol_name,
-            pair_name,
-            selected_tf,
-        )
-
+        render_live_fragment(table_name, symbol_name, pair_name, selected_tf)
     elif st.session_state.search_query:
-        st.warning(
-            f"找不到與「{st.session_state.search_query}」相關的圖表，"
-            "請嘗試輸入 BTC 或 ETH。"
-        )
+        st.warning(f"找不到與「{st.session_state.search_query}」相關的圖表。")
         render_homepage()
-
     else:
         render_homepage()
