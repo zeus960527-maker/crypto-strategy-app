@@ -14,6 +14,21 @@ from zoneinfo import ZoneInfo
 import threading
 import time
 import urllib.request
+import urllib.error
+import urllib.parse
+import re
+import json
+import hmac
+import hashlib
+import secrets
+from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP
+from datetime import datetime, timezone
+
+try:
+    from cryptography.fernet import Fernet, InvalidToken
+except Exception:  # 未安裝 cryptography 時，註冊會提示安裝
+    Fernet = None
+    InvalidToken = Exception
 
 TAIWAN_TZ = ZoneInfo('Asia/Taipei')
 
@@ -380,6 +395,721 @@ st.markdown("""
     <span class="chip">LightGBM + 動態 TP/SL</span>
 </div>
 """, unsafe_allow_html=True)
+
+# ============================================================
+# 1.5 帳號系統（註冊 / 登入 / 設定）與 OKX 直接下單
+# ============================================================
+st.session_state.setdefault("auth_user", None)
+st.session_state.setdefault("auth_settings", {})
+
+OKX_BASE = "https://www.okx.com"
+USERNAME_RE = re.compile(r"[A-Za-z0-9_.\-@\u4e00-\u9fff]{3,32}")
+TF_STEP = {"5m": "5min", "15m": "15min", "1h": "1h", "4h": "4h"}
+
+DEFAULT_TRADE_SETTINGS = {
+    "auto_trade": False,      # 是否啟用自動下單
+    "demo": False,            # 是否使用 OKX 模擬盤
+    "td_mode": "isolated",    # 保證金模式：isolated 逐倉 / cross 全倉
+    "fund_ratio": 95,         # 使用可用資金比例 (%)
+    "use_max_lever": True,    # 使用該合約最大槓桿
+    "manual_lever": 10,       # 不使用最大槓桿時的自訂槓桿
+    "protect_sl": True,       # 止損保護：強平價不可比止損價更近
+    "enabled_at": "",         # 開啟自動下單的時間（台北時間）
+}
+
+st.markdown("""
+<style>
+div[data-testid="stPopoverBody"] { min-width: min(430px, 92vw); }
+.okx-guide { font-size: 14px; line-height: 1.9; color: #d1d5db; }
+.okx-guide b { color: #f0b90b; }
+</style>
+""", unsafe_allow_html=True)
+
+
+class OKXError(Exception):
+    pass
+
+
+class OrderSkip(Exception):
+    pass
+
+
+# ---------- 資料庫（帳號與下單紀錄） ----------
+def _acct_db_url():
+    url = os.getenv("SUPABASE_DB_URL", "").strip()
+    if not url:
+        try:
+            url = str(st.secrets.get("SUPABASE_DB_URL", "")).strip()
+        except Exception:
+            url = ""
+    if url.startswith("postgres://"):
+        url = "postgresql://" + url[len("postgres://"):]
+    if url.startswith("postgresql://"):
+        url = "postgresql+psycopg2://" + url[len("postgresql://"):]
+    return url or None
+
+
+@st.cache_resource
+def _acct_engine():
+    url = _acct_db_url()
+    if not url:
+        raise RuntimeError("找不到 SUPABASE_DB_URL，請在 Streamlit Secrets 或環境變數設定。")
+    engine = create_engine(
+        url, pool_size=2, max_overflow=2, pool_pre_ping=True,
+        pool_recycle=300, connect_args={"connect_timeout": 5},
+    )
+    with engine.begin() as conn:
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS app_users (
+                username TEXT PRIMARY KEY,
+                pw_salt TEXT NOT NULL,
+                pw_hash TEXT NOT NULL,
+                okx_key_enc TEXT NOT NULL,
+                okx_secret_enc TEXT NOT NULL,
+                okx_pass_enc TEXT NOT NULL,
+                settings_json TEXT NOT NULL DEFAULT '{}',
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+        """))
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS okx_order_log (
+                id BIGSERIAL PRIMARY KEY,
+                username TEXT NOT NULL,
+                symbol TEXT NOT NULL,
+                timeframe TEXT NOT NULL,
+                signal_time TIMESTAMP NOT NULL,
+                direction TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                detail TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                UNIQUE (username, symbol, timeframe, signal_time)
+            )
+        """))
+    return engine
+
+
+# ---------- 加密與密碼 ----------
+def _secret_key_raw():
+    v = os.getenv("APP_SECRET_KEY", "").strip()
+    if not v:
+        try:
+            v = str(st.secrets.get("APP_SECRET_KEY", "")).strip()
+        except Exception:
+            v = ""
+    return v
+
+
+def _fernet():
+    if Fernet is None:
+        raise RuntimeError("缺少 cryptography 套件，請在 requirements.txt 加入 cryptography。")
+    raw = _secret_key_raw()
+    if len(raw) < 16:
+        raise RuntimeError(
+            "請先設定環境變數 APP_SECRET_KEY（至少 16 個字元的隨機字串），用來加密儲存 OKX 金鑰。"
+        )
+    key = base64.urlsafe_b64encode(hashlib.sha256(raw.encode("utf-8")).digest())
+    return Fernet(key)
+
+
+def _enc(plain):
+    return _fernet().encrypt(plain.encode("utf-8")).decode("utf-8")
+
+
+def _dec(token):
+    return _fernet().decrypt(token.encode("utf-8")).decode("utf-8")
+
+
+def _hash_pw(password, salt=None):
+    salt = salt or secrets.token_bytes(16)
+    h = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, 200_000)
+    return salt.hex(), h.hex()
+
+
+def _verify_pw(password, salt_hex, hash_hex):
+    _, h = _hash_pw(password, bytes.fromhex(salt_hex))
+    return hmac.compare_digest(h, hash_hex)
+
+
+# ---------- 登入失敗鎖定（伺服器端） ----------
+@st.cache_resource
+def _login_fail_store():
+    return {}
+
+
+def _is_locked(u):
+    rec = _login_fail_store().get(u)
+    return bool(rec and rec[1] > time.time())
+
+
+def _record_fail(u):
+    store = _login_fail_store()
+    if len(store) > 5000:
+        store.clear()
+    cnt, _ = store.get(u, (0, 0.0))
+    cnt += 1
+    store[u] = (0, time.time() + 300) if cnt >= 5 else (cnt, 0.0)
+
+
+def _clear_fail(u):
+    _login_fail_store().pop(u, None)
+
+
+# ---------- 使用者資料存取 ----------
+def _load_settings(raw_json):
+    s = dict(DEFAULT_TRADE_SETTINGS)
+    try:
+        s.update(json.loads(raw_json or "{}"))
+    except Exception:
+        pass
+    return s
+
+
+def register_user(username, password, api_key, api_secret, passphrase):
+    u = username.strip().lower()
+    if not USERNAME_RE.fullmatch(u):
+        return None, "系統帳號需為 3–32 字元（中英文、數字或 _ . - @）。"
+    if len(password) < 8:
+        return None, "系統密碼至少需要 8 個字元。"
+    if not (api_key.strip() and api_secret.strip() and passphrase.strip()):
+        return None, "請完整填寫 OKX API Key、Secret Key 與 Passphrase。"
+    try:
+        salt, h = _hash_pw(password)
+        k_enc, s_enc, p_enc = _enc(api_key.strip()), _enc(api_secret.strip()), _enc(passphrase.strip())
+        with _acct_engine().begin() as conn:
+            row = conn.execute(
+                text("""
+                    INSERT INTO app_users
+                        (username, pw_salt, pw_hash, okx_key_enc, okx_secret_enc, okx_pass_enc, settings_json)
+                    VALUES (:u, :salt, :h, :k, :s, :p, :j)
+                    ON CONFLICT (username) DO NOTHING
+                    RETURNING username
+                """),
+                {"u": u, "salt": salt, "h": h, "k": k_enc, "s": s_enc, "p": p_enc,
+                 "j": json.dumps(DEFAULT_TRADE_SETTINGS)},
+            ).first()
+        if row is None:
+            return None, "此系統帳號已被使用，請換一個。"
+    except RuntimeError as e:
+        return None, str(e)
+    except Exception as e:
+        print(f"註冊失敗: {type(e).__name__}")
+        return None, "註冊失敗，請確認資料庫連線後再試一次。"
+    return u, ""
+
+
+def login_user(username, password):
+    u = username.strip().lower()
+    if _is_locked(u):
+        return None, None, "登入嘗試次數過多，請 5 分鐘後再試。"
+    try:
+        with _acct_engine().connect() as conn:
+            row = conn.execute(
+                text("SELECT pw_salt, pw_hash, settings_json FROM app_users WHERE username = :u"),
+                {"u": u},
+            ).first()
+    except Exception as e:
+        print(f"登入查詢失敗: {type(e).__name__}")
+        return None, None, "資料庫連線失敗，請稍後再試。"
+    if row is None:
+        _hash_pw(password)  # 避免以回應時間判斷帳號是否存在
+        _record_fail(u)
+        return None, None, "帳號或密碼錯誤。"
+    if not _verify_pw(password, row[0], row[1]):
+        _record_fail(u)
+        return None, None, "帳號或密碼錯誤。"
+    _clear_fail(u)
+    return u, _load_settings(row[2]), ""
+
+
+def save_user_settings(username, settings):
+    with _acct_engine().begin() as conn:
+        conn.execute(
+            text("UPDATE app_users SET settings_json = :j, updated_at = now() WHERE username = :u"),
+            {"j": json.dumps(settings), "u": username},
+        )
+
+
+def update_user_credentials(username, api_key, api_secret, passphrase):
+    with _acct_engine().begin() as conn:
+        conn.execute(
+            text("""
+                UPDATE app_users
+                SET okx_key_enc = :k, okx_secret_enc = :s, okx_pass_enc = :p, updated_at = now()
+                WHERE username = :u
+            """),
+            {"k": _enc(api_key.strip()), "s": _enc(api_secret.strip()),
+             "p": _enc(passphrase.strip()), "u": username},
+        )
+
+
+def change_user_password(username, old_pw, new_pw):
+    if len(new_pw) < 8:
+        return "新密碼至少需要 8 個字元。"
+    with _acct_engine().begin() as conn:
+        row = conn.execute(
+            text("SELECT pw_salt, pw_hash FROM app_users WHERE username = :u"), {"u": username}
+        ).first()
+        if row is None or not _verify_pw(old_pw, row[0], row[1]):
+            return "目前的系統密碼不正確。"
+        salt, h = _hash_pw(new_pw)
+        conn.execute(
+            text("UPDATE app_users SET pw_salt = :s, pw_hash = :h, updated_at = now() WHERE username = :u"),
+            {"s": salt, "h": h, "u": username},
+        )
+    return ""
+
+
+def _get_creds(username):
+    with _acct_engine().connect() as conn:
+        row = conn.execute(
+            text("SELECT okx_key_enc, okx_secret_enc, okx_pass_enc FROM app_users WHERE username = :u"),
+            {"u": username},
+        ).first()
+    if row is None:
+        raise OKXError("找不到帳號資料。")
+    try:
+        return {"key": _dec(row[0]), "secret": _dec(row[1]), "passphrase": _dec(row[2])}
+    except InvalidToken:
+        raise OKXError("金鑰解密失敗（APP_SECRET_KEY 可能已變更），請到 ⚙️ 設定重新輸入 OKX 金鑰。")
+
+
+# ---------- OKX REST API ----------
+def _okx_request(method, path, creds=None, params=None, body=None, demo=False):
+    query = ("?" + urllib.parse.urlencode(params)) if params else ""
+    req_path = path + query
+    body_str = json.dumps(body, separators=(",", ":")) if body is not None else ""
+    headers = {"Content-Type": "application/json", "User-Agent": "Mozilla/5.0"}
+    if creds:
+        now = datetime.now(timezone.utc)
+        ts = now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{now.microsecond // 1000:03d}Z"
+        prehash = ts + method.upper() + req_path + body_str
+        sign = base64.b64encode(
+            hmac.new(creds["secret"].encode("utf-8"), prehash.encode("utf-8"), hashlib.sha256).digest()
+        ).decode("utf-8")
+        headers.update({
+            "OK-ACCESS-KEY": creds["key"],
+            "OK-ACCESS-SIGN": sign,
+            "OK-ACCESS-TIMESTAMP": ts,
+            "OK-ACCESS-PASSPHRASE": creds["passphrase"],
+        })
+        if demo:
+            headers["x-simulated-trading"] = "1"
+    req = urllib.request.Request(
+        OKX_BASE + req_path,
+        data=body_str.encode("utf-8") if body_str else None,
+        headers=headers,
+        method=method.upper(),
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=12) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        try:
+            payload = json.loads(e.read().decode("utf-8"))
+        except Exception:
+            raise OKXError(f"OKX HTTP {e.code}")
+    except Exception as e:
+        raise OKXError(f"無法連線 OKX：{type(e).__name__}")
+
+    code = str(payload.get("code", ""))
+    data = payload.get("data") or []
+    if code != "0":
+        msg = payload.get("msg") or ""
+        if data and isinstance(data[0], dict) and data[0].get("sMsg"):
+            msg = f"{msg} {data[0]['sMsg']}".strip()
+        raise OKXError(f"OKX {code}: {msg}")
+    if data and isinstance(data[0], dict) and str(data[0].get("sCode", "0")) not in ("0", ""):
+        raise OKXError(f"OKX {data[0].get('sCode')}: {data[0].get('sMsg', '')}")
+    return data
+
+
+def okx_account_config(creds, demo):
+    data = _okx_request("GET", "/api/v5/account/config", creds, demo=demo)
+    return data[0] if data else {}
+
+
+def okx_get_balance(creds, demo):
+    data = _okx_request("GET", "/api/v5/account/balance", creds, params={"ccy": "USDT"}, demo=demo)
+    details = (data[0].get("details") or []) if data else []
+    for d in details:
+        if d.get("ccy") == "USDT":
+            vals = []
+            for k in ("availBal", "availEq"):
+                try:
+                    vals.append(float(d.get(k)))
+                except (TypeError, ValueError):
+                    pass
+            return max(min(vals), 0.0) if vals else 0.0
+    return 0.0
+
+
+def okx_has_position(creds, demo, inst_id):
+    data = _okx_request(
+        "GET", "/api/v5/account/positions", creds,
+        params={"instType": "SWAP", "instId": inst_id}, demo=demo,
+    )
+    for p in data:
+        try:
+            if abs(float(p.get("pos") or 0)) > 0:
+                return True
+        except ValueError:
+            pass
+    return False
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def okx_get_instrument(inst_id):
+    data = _okx_request("GET", "/api/v5/public/instruments", params={"instType": "SWAP", "instId": inst_id})
+    if not data:
+        raise OKXError(f"找不到合約規格：{inst_id}")
+    return dict(data[0])
+
+
+def _floor_step(x, step):
+    return (x / step).to_integral_value(rounding=ROUND_DOWN) * step
+
+
+def _fmt_px(price, tick):
+    t = Decimal(str(tick))
+    p = (Decimal(str(price)) / t).quantize(Decimal(1), rounding=ROUND_HALF_UP) * t
+    return format(p.normalize(), "f")
+
+
+def _plan_order(s, inst, avail, price, sl, direction):
+    """依可用資金與槓桿計算張數（槓桿預設為該合約最大槓桿）。"""
+    max_lev = max(1, int(float(inst.get("lever") or 1)))
+    if s.get("use_max_lever"):
+        lever = max_lev
+    else:
+        lever = max(1, min(int(s.get("manual_lever", 10)), max_lev))
+
+    note = ""
+    sl_pct = abs(price - sl) / price if price > 0 else 0.0
+    if s.get("protect_sl") and sl_pct > 0:
+        safe = max(1, int(0.8 / sl_pct))  # 強平距離約 1/槓桿，須比止損距離更遠
+        if safe < lever:
+            note = f"（止損保護：槓桿 {lever}x → {safe}x）"
+            lever = safe
+
+    ct = Decimal(str(inst["ctVal"])) * Decimal(str(inst.get("ctMult") or "1"))
+    lot = Decimal(str(inst["lotSz"]))
+    min_sz = Decimal(str(inst["minSz"]))
+    budget = (Decimal(str(avail)) * Decimal(str(s.get("fund_ratio", 95))) / Decimal(100)) * Decimal(lever)
+    contracts = _floor_step(budget / (Decimal(str(price)) * ct), lot)
+    if contracts < min_sz:
+        raise OKXError(f"可用資金 {avail:,.2f} USDT 不足以下最小單位（{min_sz} 張）。")
+    return {"lever": lever, "sz": format(contracts.normalize(), "f"), "note": note}
+
+
+def okx_place_signal_order(creds, s, pair, direction, price, sl, tp, clord_seed):
+    demo = bool(s.get("demo"))
+    td_mode = s.get("td_mode", "isolated")
+    is_long = direction == "LONG"
+
+    cfg = okx_account_config(creds, demo)
+    if str(cfg.get("acctLv")) == "1":
+        raise OKXError("OKX 帳戶目前為現貨模式，請先切換為合約交易模式。")
+    pos_mode = cfg.get("posMode") or "net_mode"
+
+    if okx_has_position(creds, demo, pair):
+        raise OrderSkip("該合約已有持倉，略過此訊號。")
+
+    inst = okx_get_instrument(pair)
+    avail = okx_get_balance(creds, demo)
+    if avail <= 0:
+        raise OKXError("可用 USDT 餘額為 0。")
+    plan = _plan_order(s, inst, avail, price, sl, direction)
+
+    lev_body = {"instId": pair, "lever": str(plan["lever"]), "mgnMode": td_mode}
+    if td_mode == "isolated" and pos_mode == "long_short_mode":
+        lev_body["posSide"] = "long" if is_long else "short"
+    _okx_request("POST", "/api/v5/account/set-leverage", creds, body=lev_body, demo=demo)
+
+    tick = inst.get("tickSz") or "0.1"
+    sl_s, tp_s = _fmt_px(sl, tick), _fmt_px(tp, tick)
+    body = {
+        "instId": pair,
+        "tdMode": td_mode,
+        "side": "buy" if is_long else "sell",
+        "ordType": "market",
+        "sz": plan["sz"],
+        "clOrdId": "ai" + hashlib.sha1(clord_seed.encode("utf-8")).hexdigest()[:24],
+        "attachAlgoOrds": [{
+            "tpTriggerPx": tp_s, "tpOrdPx": "-1", "tpTriggerPxType": "last",
+            "slTriggerPx": sl_s, "slOrdPx": "-1", "slTriggerPxType": "last",
+        }],
+    }
+    if pos_mode == "long_short_mode":
+        body["posSide"] = "long" if is_long else "short"
+    data = _okx_request("POST", "/api/v5/trade/order", creds, body=body, demo=demo)
+    ord_id = data[0].get("ordId", "") if data else ""
+    return (
+        f"ordId={ord_id} ｜ {plan['sz']} 張 ｜ 槓桿 {plan['lever']}x{plan['note']} ｜ "
+        f"SL {sl_s} ｜ TP {tp_s}"
+    )
+
+
+# ---------- 下單紀錄（以資料庫唯一鍵防止重複下單） ----------
+def _claim_order(user, symbol, tf, sig_time, direction):
+    with _acct_engine().begin() as conn:
+        row = conn.execute(
+            text("""
+                INSERT INTO okx_order_log (username, symbol, timeframe, signal_time, direction, status)
+                VALUES (:u, :s, :t, :st, :d, 'pending')
+                ON CONFLICT (username, symbol, timeframe, signal_time) DO NOTHING
+                RETURNING id
+            """),
+            {"u": user, "s": symbol, "t": tf, "st": sig_time, "d": direction},
+        ).first()
+    return row[0] if row else None
+
+
+def _finish_order(order_id, status, detail):
+    try:
+        with _acct_engine().begin() as conn:
+            conn.execute(
+                text("UPDATE okx_order_log SET status = :st, detail = :d WHERE id = :i"),
+                {"st": status, "d": detail[:480], "i": order_id},
+            )
+    except Exception as e:
+        print(f"更新下單紀錄失敗: {type(e).__name__}")
+
+
+def _render_order_log(user):
+    try:
+        with _acct_engine().connect() as conn:
+            df = pd.read_sql(
+                text("""
+                    SELECT signal_time, symbol, timeframe, direction, status, detail
+                    FROM okx_order_log WHERE username = :u ORDER BY id DESC LIMIT 10
+                """),
+                con=conn, params={"u": user},
+            )
+    except Exception:
+        return
+    if df.empty:
+        return
+    df["signal_time"] = pd.to_datetime(df["signal_time"]).dt.strftime("%m/%d %H:%M")
+    df = df.rename(columns={
+        "signal_time": "訊號時間", "symbol": "幣種", "timeframe": "週期",
+        "direction": "方向", "status": "狀態", "detail": "說明",
+    })
+    with st.expander("📜 最近自動下單紀錄"):
+        st.dataframe(df, use_container_width=True, hide_index=True)
+
+
+def render_okx_trade_panel(symbol, pair, tf, latest, latest_close):
+    """放在右側訊號面板：偵測到最新 K 棒的進場訊號時，直接在 OKX 市價下單。"""
+    user = st.session_state.get("auth_user")
+    if not user:
+        return
+    s = dict(DEFAULT_TRADE_SETTINGS)
+    s.update(st.session_state.get("auth_settings") or {})
+
+    st.markdown("---")
+    st.markdown("#### 🤖 OKX 自動下單")
+    if not s["auto_trade"]:
+        st.caption("自動下單：關閉。點頁面上方的 ⚙️ 可開啟。")
+        _render_order_log(user)
+        return
+    st.caption(f"自動下單：開啟｜{'模擬盤' if s['demo'] else '實盤'}｜{pair}｜{tf}")
+
+    try:
+        long_sig, short_sig = bool(latest["Long_Signal"]), bool(latest["Short_Signal"])
+        if long_sig != short_sig:
+            direction = "LONG" if long_sig else "SHORT"
+            sl, tp = latest.get("Stop_Loss"), latest.get("Take_Profit")
+            bar_t = pd.Timestamp(latest["open_time"])
+            step = pd.Timedelta(TF_STEP.get(tf, "5min"))
+            now_tw = pd.Timestamp(datetime.now(TAIWAN_TZ).replace(tzinfo=None))
+            enabled_at = pd.Timestamp(s["enabled_at"]) if s.get("enabled_at") else None
+            px = float(latest_close)
+
+            if pd.isna(sl) or pd.isna(tp):
+                st.caption("訊號缺少止盈止損價，不下單。")
+            elif enabled_at is not None and bar_t < enabled_at:
+                st.caption("此訊號出現在開啟自動下單之前，不下單；將從下一根 K 棒起的訊號開始。")
+            elif now_tw - bar_t > step * 2:
+                st.caption("K 線資料已過期，暫停下單。")
+            elif not ((float(sl) < px < float(tp)) if long_sig else (float(tp) < px < float(sl))):
+                st.caption("現價已超出止盈止損範圍，不下單。")
+            else:
+                order_id = _claim_order(user, symbol, tf, bar_t.to_pydatetime(), direction)
+                if order_id:
+                    try:
+                        creds = _get_creds(user)
+                        seed = f"{user}|{symbol}|{tf}|{bar_t.isoformat()}"
+                        detail = okx_place_signal_order(creds, s, pair, direction, px, float(sl), float(tp), seed)
+                        _finish_order(order_id, "success", detail)
+                        st.success(f"✅ 已送出 {direction} 市價單\n\n{detail}")
+                    except OrderSkip as e:
+                        _finish_order(order_id, "skipped", str(e))
+                        st.info(str(e))
+                    except Exception as e:
+                        _finish_order(order_id, "failed", str(e))
+                        st.error(f"下單失敗：{e}")
+    except Exception as e:
+        st.error(f"自動下單檢查失敗：{type(e).__name__}")
+    _render_order_log(user)
+
+
+# ---------- 註冊 / 登入畫面 ----------
+def render_okx_api_guide():
+    st.markdown("""
+<div class="okx-guide">
+<b>步驟 1</b>　登入 OKX（網頁版或 App）→ 右上角頭像 →「API」（網頁：okx.com/account/my-api）。<br>
+<b>步驟 2</b>　點「創建 V5 API 金鑰」，API 用途選「交易」。<br>
+<b>步驟 3</b>　替金鑰取一個名稱，並自訂一組 <b>Passphrase（API 密碼）</b>——請牢記，OKX 不會再顯示。<br>
+<b>步驟 4</b>　權限勾選「讀取」＋「交易」，<b>千萬不要勾選「提現」</b>。<br>
+<b>步驟 5</b>　（建議）綁定固定 IP 白名單。若主機 IP 會變動（例如 Render 免費方案）就不要綁定。<br>
+<b>步驟 6</b>　完成驗證後，立刻複製 <b>API Key</b> 與 <b>Secret Key</b>（Secret 只會顯示一次），連同 Passphrase 填入下方表單。<br>
+<b>步驟 7</b>　帳戶需切換為「合約交易模式」（OKX 交易設定 → 帳戶模式）才能交易永續合約。<br>
+<b>想先測試？</b>　到 OKX「模擬交易」建立模擬盤 API 金鑰，註冊後在 ⚙️ 設定開啟「使用 OKX 模擬盤」。<br>
+<br>
+🔒 你的金鑰會以加密方式儲存在資料庫，系統密碼只保存雜湊值。
+</div>
+""", unsafe_allow_html=True)
+
+
+def render_auth_gate():
+    st.markdown("### 🔐 請先註冊或登入")
+    tab_reg, tab_login = st.tabs(["📝 註冊", "🔑 登入"])
+
+    with tab_reg:
+        with st.expander("📖 如何申請 OKX API（點開查看步驟）", expanded=True):
+            render_okx_api_guide()
+        with st.form("register_form"):
+            r_user = st.text_input("系統帳號", key="reg_user", placeholder="3–32 字元")
+            r_pw = st.text_input("系統密碼", type="password", key="reg_pw", placeholder="至少 8 個字元")
+            r_key = st.text_input("OKX API Key", type="password", key="reg_key")
+            r_secret = st.text_input("OKX Secret Key", type="password", key="reg_secret")
+            r_pass = st.text_input("OKX Passphrase", type="password", key="reg_pass")
+            reg_submit = st.form_submit_button("註冊並登入", use_container_width=True)
+        if reg_submit:
+            u, err = register_user(r_user, r_pw, r_key, r_secret, r_pass)
+            if err:
+                st.error(err)
+            else:
+                st.session_state.auth_user = u
+                st.session_state.auth_settings = dict(DEFAULT_TRADE_SETTINGS)
+                st.rerun()
+
+    with tab_login:
+        with st.form("login_form"):
+            l_user = st.text_input("系統帳號", key="login_user")
+            l_pw = st.text_input("系統密碼", type="password", key="login_pw")
+            login_submit = st.form_submit_button("登入", use_container_width=True)
+        if login_submit:
+            u, settings, err = login_user(l_user, l_pw)
+            if err:
+                st.error(err)
+            else:
+                st.session_state.auth_user = u
+                st.session_state.auth_settings = settings
+                st.rerun()
+
+
+# ---------- 設定（齒輪圖示） ----------
+def render_settings_popover(user):
+    s = dict(DEFAULT_TRADE_SETTINGS)
+    s.update(st.session_state.get("auth_settings") or {})
+
+    with st.popover("⚙️", help="設定"):
+        st.markdown(f"**👤 {user}**")
+
+        st.markdown("##### 下單設定")
+        with st.form("trade_settings_form"):
+            auto = st.toggle("啟用自動下單（出現進場訊號時直接在 OKX 市價下單，並附帶止盈止損）",
+                             value=bool(s["auto_trade"]))
+            demo = st.toggle("使用 OKX 模擬盤（需使用模擬盤 API 金鑰）", value=bool(s["demo"]))
+            td = st.selectbox(
+                "保證金模式", ["isolated", "cross"],
+                index=0 if s["td_mode"] == "isolated" else 1,
+                format_func=lambda x: "逐倉 (isolated)" if x == "isolated" else "全倉 (cross)",
+            )
+            ratio = st.slider("使用可用資金比例 (%)", 10, 100, int(s["fund_ratio"]), 5)
+            maxlev = st.toggle("使用該合約最大槓桿", value=bool(s["use_max_lever"]))
+            manual = st.number_input("自訂槓桿（未使用最大槓桿時）", 1, 125, int(s["manual_lever"]))
+            protect = st.toggle("止損保護：強平價比止損價更近時，自動降低槓桿", value=bool(s["protect_sl"]))
+            st.caption("⚠️ 高槓桿下，單筆止損就可能虧掉大部分資金；請先用模擬盤測試。"
+                       "自動下單只會在此頁面開啟、且正在顯示該幣種與週期時運作。")
+            trade_ok = st.form_submit_button("儲存下單設定", use_container_width=True)
+        if trade_ok:
+            new = dict(s)
+            new.update(auto_trade=bool(auto), demo=bool(demo), td_mode=td, fund_ratio=int(ratio),
+                       use_max_lever=bool(maxlev), manual_lever=int(manual), protect_sl=bool(protect))
+            if auto and not s["auto_trade"]:
+                new["enabled_at"] = datetime.now(TAIWAN_TZ).replace(tzinfo=None).isoformat(timespec="seconds")
+            try:
+                save_user_settings(user, new)
+                st.session_state.auth_settings = new
+                st.success("已儲存。" + ("將從下一根 K 棒起的訊號開始自動下單。" if auto and not s["auto_trade"] else ""))
+            except Exception as e:
+                print(f"儲存設定失敗: {type(e).__name__}")
+                st.error("儲存失敗，請稍後再試。")
+
+        st.markdown("##### OKX API 金鑰")
+        with st.form("okx_cred_form"):
+            n_key = st.text_input("API Key", type="password", key="set_key")
+            n_secret = st.text_input("Secret Key", type="password", key="set_secret")
+            n_pass = st.text_input("Passphrase", type="password", key="set_pass")
+            st.caption("三欄需一起填寫才會更新；不想變更請留空。")
+            cred_ok = st.form_submit_button("更新金鑰", use_container_width=True)
+        if cred_ok:
+            if not (n_key.strip() and n_secret.strip() and n_pass.strip()):
+                st.error("請完整填寫三個欄位。")
+            else:
+                try:
+                    update_user_credentials(user, n_key, n_secret, n_pass)
+                    st.success("OKX 金鑰已更新。")
+                except Exception as e:
+                    print(f"更新金鑰失敗: {type(e).__name__}")
+                    st.error("更新失敗，請確認 APP_SECRET_KEY 與資料庫設定。")
+        if st.button("🔌 測試 OKX 連線", key="okx_test_btn", use_container_width=True):
+            try:
+                creds = _get_creds(user)
+                cfg = okx_account_config(creds, bool(s["demo"]))
+                bal = okx_get_balance(creds, bool(s["demo"]))
+                st.success(f"連線成功｜可用 USDT：{bal:,.2f}｜持倉模式：{cfg.get('posMode', '?')}")
+                if str(cfg.get("acctLv")) == "1":
+                    st.warning("帳戶目前為現貨模式，無法交易永續合約，請先切換為合約交易模式。")
+            except Exception as e:
+                st.error(f"連線失敗：{e}")
+
+        st.markdown("##### 系統密碼")
+        with st.form("change_pw_form"):
+            old_pw = st.text_input("目前密碼", type="password", key="pw_old")
+            new_pw = st.text_input("新密碼（至少 8 個字元）", type="password", key="pw_new")
+            pw_ok = st.form_submit_button("修改密碼", use_container_width=True)
+        if pw_ok:
+            try:
+                err = change_user_password(user, old_pw, new_pw)
+                st.error(err) if err else st.success("密碼已更新。")
+            except Exception as e:
+                print(f"修改密碼失敗: {type(e).__name__}")
+                st.error("修改失敗，請稍後再試。")
+
+        st.markdown("---")
+        if st.button("登出", key="logout_btn", use_container_width=True):
+            st.session_state.auth_user = None
+            st.session_state.auth_settings = {}
+            st.rerun()
+
+
+def render_top_bar(user):
+    c1, c2 = st.columns([8, 1])
+    with c1:
+        st.caption(f"👤 已登入：{user}")
+    with c2:
+        render_settings_popover(user)
+
+
+# 未登入 → 只顯示註冊 / 登入；登入後 → 設定圖示 → 搜尋介面 → 圖
+if not st.session_state.get("auth_user"):
+    render_auth_gate()
+    st.stop()
+render_top_bar(st.session_state["auth_user"])
 
 with st.form("search_form"):
     col1, col2 = st.columns([4, 1])
@@ -1561,6 +2291,8 @@ def render_live_kline_chart(table, symbol, pair, tf):
         else:
             st.warning("⏳ WAIT 目前沒有進場訊號")
             st.caption("等待符合高勝率技術與基本面過濾條件。")
+
+        render_okx_trade_panel(symbol, pair, tf, latest, latest_close)
 
         st.markdown("---")
         st.markdown("#### 📌 最近進場訊號")
