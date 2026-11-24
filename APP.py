@@ -79,7 +79,7 @@ icon_img = load_image_safe("hacker_icon.png")
 bg_base64 = get_base64_image("background.png")
 
 st.set_page_config(
-    page_title="加密貨幣 AI 策略系統 (專業增強版)",
+    page_title="加密貨幣 AI 策略系統",
     page_icon=icon_img if icon_img else "💻",
     layout="wide",
 )
