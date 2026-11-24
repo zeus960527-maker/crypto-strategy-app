@@ -158,8 +158,13 @@ div[data-testid="stRadio"] > div {{ flex-direction: row; gap: 12px; flex-wrap: w
 }}
 
 /* ============================================================ */
-/* 手機版 RWD 精美高質感適配優化                                  */
+/* 手機版與電腦版登入註冊框與 RWD 優化                          */
 /* ============================================================ */
+div[data-testid="stForm"] {{
+    max-width: 420px;
+    margin: 0 auto;
+}}
+
 @media(max-width: 768px) {{
     .block-container {{
         padding-left: 0.6rem !important;
@@ -173,6 +178,7 @@ div[data-testid="stRadio"] > div {{ flex-direction: row; gap: 12px; flex-wrap: w
         letter-spacing: 1px;
     }}
     div[data-testid="stForm"] {{
+        max-width: 100% !important;
         background: rgba(20, 25, 35, 0.75) !important;
         border: 1px solid #2b313a !important;
         border-radius: 12px !important;
@@ -403,7 +409,7 @@ st.session_state.setdefault("auth_user", None)
 st.session_state.setdefault("auth_settings", {})
 
 OKX_BASE = "https://www.okx.com"
-USERNAME_RE = re.compile(r"[A-Za-z0-9_.\-@\u4e00-\u9fff]{3,32}")
+# 已移除帳號格式限制，改為僅檢查是否有填寫內容
 TF_STEP = {"5m": "5min", "15m": "15min", "1h": "1h", "4h": "4h"}
 
 DEFAULT_TRADE_SETTINGS = {
@@ -567,10 +573,10 @@ def _load_settings(raw_json):
 
 def register_user(username, password, api_key, api_secret, passphrase):
     u = username.strip().lower()
-    if not USERNAME_RE.fullmatch(u):
-        return None, "系統帳號需為 3–32 字元（中英文、數字或 _ . - @）。"
-    if len(password) < 8:
-        return None, "系統密碼至少需要 8 個字元。"
+    if not u:
+        return None, "請輸入系統帳號。"
+    if not password:
+        return None, "請輸入系統密碼。"
     if not (api_key.strip() and api_secret.strip() and passphrase.strip()):
         return None, "請完整填寫 OKX API Key、Secret Key 與 Passphrase。"
     try:
@@ -644,8 +650,8 @@ def update_user_credentials(username, api_key, api_secret, passphrase):
 
 
 def change_user_password(username, old_pw, new_pw):
-    if len(new_pw) < 8:
-        return "新密碼至少需要 8 個字元。"
+    if not new_pw:
+        return "請輸入新密碼。"
     with _acct_engine().begin() as conn:
         row = conn.execute(
             text("SELECT pw_salt, pw_hash FROM app_users WHERE username = :u"), {"u": username}
@@ -958,14 +964,14 @@ def render_okx_trade_panel(symbol, pair, tf, latest, latest_close):
 def render_okx_api_guide():
     st.markdown("""
 <div class="okx-guide">
-<b>步驟 1</b>　登入 OKX（網頁版或 App）→ 右上角頭像 →「API」（網頁：okx.com/account/my-api）。<br>
-<b>步驟 2</b>　點「創建 V5 API 金鑰」，API 用途選「交易」。<br>
-<b>步驟 3</b>　替金鑰取一個名稱，並自訂一組 <b>Passphrase（API 密碼）</b>——請牢記，OKX 不會再顯示。<br>
-<b>步驟 4</b>　權限勾選「讀取」＋「交易」，<b>千萬不要勾選「提現」</b>。<br>
-<b>步驟 5</b>　（建議）綁定固定 IP 白名單。若主機 IP 會變動（例如 Render 免費方案）就不要綁定。<br>
-<b>步驟 6</b>　完成驗證後，立刻複製 <b>API Key</b> 與 <b>Secret Key</b>（Secret 只會顯示一次），連同 Passphrase 填入下方表單。<br>
-<b>步驟 7</b>　帳戶需切換為「合約交易模式」（OKX 交易設定 → 帳戶模式）才能交易永續合約。<br>
-<b>想先測試？</b>　到 OKX「模擬交易」建立模擬盤 API 金鑰，註冊後在 ⚙️ 設定開啟「使用 OKX 模擬盤」。<br>
+<b>步驟 1</b> 登入 OKX（網頁版或 App）→ 右上角頭像 →「API」（網頁：okx.com/account/my-api）。<br>
+<b>步驟 2</b> 點「創建 V5 API 金鑰」，API 用途選「交易」。<br>
+<b>步驟 3</b> 替金鑰取一個名稱，並自訂一組 <b>Passphrase（API 密碼）</b>——請牢記，OKX 不會再顯示。<br>
+<b>步驟 4</b> 權限勾選「讀取」＋「交易」，<b>千萬不要勾選「提現」</b>。<br>
+<b>步驟 5</b> （建議）綁定固定 IP 白名單。若主機 IP 會變動（例如 Render 免費方案）就不要綁定。<br>
+<b>步驟 6</b> 完成驗證後，立刻複製 <b>API Key</b> 與 <b>Secret Key</b>（Secret 只會顯示一次），連同 Passphrase 填入下方表單。<br>
+<b>步驟 7</b> 帳戶需切換為「合約交易模式」（OKX 交易設定 → 帳戶模式）才能交易永續合約。<br>
+<b>想先測試？</b> 到 OKX「模擬交易」建立模擬盤 API 金鑰，註冊後在 ⚙️ 設定開啟「使用 OKX 模擬盤」。<br>
 <br>
 🔒 你的金鑰會以加密方式儲存在資料庫，系統密碼只保存雜湊值。
 </div>
@@ -980,8 +986,8 @@ def render_auth_gate():
         with st.expander("📖 如何申請 OKX API（點開查看步驟）", expanded=True):
             render_okx_api_guide()
         with st.form("register_form"):
-            r_user = st.text_input("系統帳號", key="reg_user", placeholder="3–32 字元")
-            r_pw = st.text_input("系統密碼", type="password", key="reg_pw", placeholder="至少 8 個字元")
+            r_user = st.text_input("系統帳號", key="reg_user", placeholder="請輸入帳號")
+            r_pw = st.text_input("系統密碼", type="password", key="reg_pw", placeholder="請輸入密碼")
             r_key = st.text_input("OKX API Key", type="password", key="reg_key")
             r_secret = st.text_input("OKX Secret Key", type="password", key="reg_secret")
             r_pass = st.text_input("OKX Passphrase", type="password", key="reg_pass")
@@ -1080,7 +1086,7 @@ def render_settings_popover(user):
         st.markdown("##### 系統密碼")
         with st.form("change_pw_form"):
             old_pw = st.text_input("目前密碼", type="password", key="pw_old")
-            new_pw = st.text_input("新密碼（至少 8 個字元）", type="password", key="pw_new")
+            new_pw = st.text_input("新密碼", type="password", key="pw_new")
             pw_ok = st.form_submit_button("修改密碼", use_container_width=True)
         if pw_ok:
             try:
@@ -2109,7 +2115,6 @@ def render_backtest_analytics(view_df):
         st.info("目前尚無已結算的歷史交易訊號可供回測分析。")
         return
 
-    # 計算每筆交易報酬率 (依 TP/SL 距離與方向)
     returns = []
     cum_pnl = 0.0
     equity_curve = [100.0]
@@ -2131,12 +2136,10 @@ def render_backtest_analytics(view_df):
             continue
 
         if result == "成功":
-            # 獲利以 TP 距離計算
             pct = abs(tp - entry) / entry * 100
             wins += 1
             total_win_pnl += pct
         else:
-            # 虧損以 SL 距離計算
             pct = -abs(entry - sl) / entry * 100
             losses += 1
             total_loss_pnl += abs(pct)
@@ -2149,7 +2152,6 @@ def render_backtest_analytics(view_df):
     win_rate = (wins / total_trades * 100) if total_trades > 0 else 0.0
     profit_factor = (total_win_pnl / total_loss_pnl) if total_loss_pnl > 0 else (99.0 if total_win_pnl > 0 else 0.0)
 
-    # 計算最大回撤 (Max Drawdown)
     eq_arr = np.array(equity_curve)
     peak = np.maximum.accumulate(eq_arr)
     drawdown = (eq_arr - peak) / peak * 100
@@ -2162,7 +2164,6 @@ def render_backtest_analytics(view_df):
     m4.metric("總累計報酬率", f"{cum_pnl:+.2f}%")
     m5.metric("最大回撤 (Max Drawdown)", f"{max_dd:.2f}%", delta_color="inverse")
 
-    # 繪製回測績效與回撤圖表
     fig_bt = make_subplots(
         rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.08,
         row_heights=[0.70, 0.30],
@@ -2324,7 +2325,6 @@ def render_live_kline_chart(table, symbol, pair, tf):
 
         st.caption("進場價格為訊號 K 線收盤價參考值，不代表實際成交價。")
 
-    # 新增：策略表現與回測分析區塊
     render_backtest_analytics(view_df)
 
     st.markdown("---")
