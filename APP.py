@@ -915,6 +915,9 @@ def _render_order_log(user):
         st.dataframe(df, use_container_width=True, hide_index=True)
 
 
+# ============================================================
+# 修改重點：支援「多幣種同時掃描與聯合下單」的處理邏輯
+# ============================================================
 def render_okx_trade_panel(symbol, pair, tf, latest, latest_close):
     user = st.session_state.get("auth_user")
     if not user:
@@ -930,27 +933,81 @@ def render_okx_trade_panel(symbol, pair, tf, latest, latest_close):
         return
 
     try:
-        long_sig, short_sig = bool(latest["Long_Signal"]), bool(latest["Short_Signal"])
-        if long_sig != short_sig:
-            direction = "LONG" if long_sig else "SHORT"
-            sl, tp = latest.get("Stop_Loss"), latest.get("Take_Profit")
-            bar_t = pd.Timestamp(latest["open_time"])
-            px = float(latest_close)
+        # 同時掃描市場上所有關注的幣種（例如 BTC 與 ETH），若同時出現訊號則一起下單
+        symbols_config = [
+            ("BTC", "BTC-USDT-SWAP", "btc_contract_klines"),
+            ("ETH", "ETH-USDT-SWAP", "eth_contract_klines")
+        ]
+        
+        triggered_signals = []
+        user_thresh = s.get("ai_confidence_thresh", 45)
+        trade_style = s.get("trade_style", "平衡")
 
-            if not pd.isna(sl) and not pd.isna(tp):
-                order_id = _claim_order(user, symbol, tf, bar_t.to_pydatetime(), direction)
+        for sym, pr, tbl in symbols_config:
+            df_all = load_historical_data(tbl, sym, None)
+            if df_all.empty:
+                # 若無全面歷史，退而使用當前傳入的 latest 判定目前檢視的幣種
+                if sym == symbol:
+                    long_sig, short_sig = bool(latest["Long_Signal"]), bool(latest["Short_Signal"])
+                    if long_sig != short_sig:
+                        triggered_signals.append({
+                            "symbol": symbol, "pair": pair, "tf": tf,
+                            "direction": "LONG" if long_sig else "SHORT",
+                            "price": float(latest_close),
+                            "sl": float(latest.get("Stop_Loss", 0)),
+                            "tp": float(latest.get("Take_Profit", 0)),
+                            "bar_t": pd.Timestamp(latest["open_time"]).to_pydatetime()
+                        })
+                continue
+
+            df_tf = df_all[df_all["timeframe"] == tf].sort_values("open_time").reset_index(drop=True)
+            if df_tf.empty:
+                continue
+
+            # 計算指標與訊號
+            higher_tf_dfs = {
+                "15m": df_all[df_all["timeframe"] == "15m"],
+                "1h": df_all[df_all["timeframe"] == "1h"],
+                "4h": df_all[df_all["timeframe"] == "4h"]
+            }
+            df_tf, _, _ = calculate_indicators(df_tf, tf)
+            df_tf = build_candidate_signals(df_tf, tf, higher_tf_dfs=higher_tf_dfs)
+            model, _, _ = train_or_get_ai_model(df_tf, f"{sym}_{tf}")
+            df_tf = add_trade_signals(df_tf, model, user_thresh=user_thresh, trade_style=trade_style)
+
+            last_row = df_tf.iloc[-1]
+            long_sig, short_sig = bool(last_row["Long_Signal"]), bool(last_row["Short_Signal"])
+            if long_sig != short_sig:
+                direction = "LONG" if long_sig else "SHORT"
+                sl, tp = last_row.get("Stop_Loss"), last_row.get("Take_Profit")
+                if not pd.isna(sl) and not pd.isna(tp):
+                    triggered_signals.append({
+                        "symbol": sym, "pair": pr, "tf": tf,
+                        "direction": direction,
+                        "price": float(last_row["close_price"]),
+                        "sl": float(sl), "tp": float(tp),
+                        "bar_t": pd.Timestamp(last_row["open_time"]).to_pydatetime()
+                    })
+
+        # 若同時有多個幣種觸發訊號，進行聯合批次送出
+        if triggered_signals:
+            creds = _get_creds(user)
+            for sig in triggered_signals:
+                order_id = _claim_order(user, sig["symbol"], sig["tf"], sig["bar_t"], sig["direction"])
                 if order_id:
                     try:
-                        creds = _get_creds(user)
-                        seed = f"{user}|{symbol}|{tf}|{bar_t.isoformat()}"
-                        detail = okx_place_signal_order(creds, s, pair, direction, px, float(sl), float(tp), seed)
+                        seed = f"{user}|{sig['symbol']}|{sig['tf']}|{sig['bar_t'].isoformat()}"
+                        detail = okx_place_signal_order(
+                            creds, s, sig["pair"], sig["direction"],
+                            sig["price"], sig["sl"], sig["tp"], seed
+                        )
                         _finish_order(order_id, "success", detail)
-                        st.success(f"✅ 已送出 {direction} 市價單\n\n{detail}")
+                        st.success(f"✅ [{sig['symbol']}] 同步自動下單成功 ({sig['direction']})\n\n{detail}")
                     except OrderSkip as e:
                         _finish_order(order_id, "skipped", str(e))
                     except Exception as e:
                         _finish_order(order_id, "failed", str(e))
-                        st.error(f"下單失敗：{e}")
+                        st.error(f"❌ [{sig['symbol']}] 下單失敗：{e}")
     except Exception as e:
         pass
     _render_order_log(user)
@@ -1112,7 +1169,6 @@ with c_left:
         submitted = st.form_submit_button("送出查詢", use_container_width=True)
 
 with c_right:
-    # 建立獨立的自動刷新 fragment，每 5 秒向 OKX API 抓取一次最新可用餘額
     @st.fragment(run_every=5)
     def render_live_account_header():
         balance_str = "未設定 API"
@@ -1258,9 +1314,6 @@ def load_outbox_signals(symbol, tf, since_time):
         return {}
 
 
-# ============================================================
-# 修改重點：執行時完整載入資料庫內所有 K 線資料（移除 LIMIT）
-# ============================================================
 def load_historical_data(table_name, symbol_name, tf=None):
     allowed_tables = {"btc_contract_klines", "eth_contract_klines"}
     if table_name not in allowed_tables:
@@ -1269,7 +1322,6 @@ def load_historical_data(table_name, symbol_name, tf=None):
         engine = get_db_engine()
         cols = "timeframe, open_time, open_price, high_price, low_price, close_price, volume"
         tf_where = "timeframe = :tf AND " if tf else ""
-        # 移除 LIMIT 限制，改為完整依序載入全部歷史 K 棒
         sql = text(f"SELECT {cols} FROM {table_name} WHERE {tf_where} TRUE ORDER BY open_time ASC")
         with engine.connect() as conn:
             raw = pd.read_sql(sql, con=conn, params={"tf": tf} if tf else {})
@@ -1704,7 +1756,6 @@ def _build_chart_bundle(df_all_tf, symbol, pair, tf, user_thresh=45, trade_style
 
     save_all_signals_to_outbox(symbol, tf, view_df)
 
-    # 完整保留所有載入的 K 棒資料，不進行過度截斷
     full_view_df = view_df
 
     mobile = is_mobile_client()
