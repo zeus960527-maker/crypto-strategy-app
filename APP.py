@@ -154,9 +154,10 @@ div[data-testid="stRadio"] > div {{ flex-direction: row; gap: 12px; flex-wrap: w
     height: 100%;
 }}
 
+/* 讓搜尋表單靠左對齊且不置中 */
 div[data-testid="stForm"] {{
-    max-width: 420px;
-    margin: 0 auto;
+    max-width: 480px;
+    margin: 0 !important;
 }}
 
 @media(max-width: 768px) {{
@@ -168,7 +169,7 @@ div[data-testid="stForm"] {{
     }}
     h1 {{
         font-size: 1.7rem !important;
-        text-align: center;
+        text-align: left;
         letter-spacing: 1px;
     }}
     div[data-testid="stForm"] {{
@@ -177,6 +178,7 @@ div[data-testid="stForm"] {{
         border: 1px solid #2b313a !important;
         border-radius: 12px !important;
         padding: 10px !important;
+        margin: 0 !important;
     }}
     .js-plotly-plot, .plot-container, .plotly {{
         width: 100% !important;
@@ -261,8 +263,8 @@ h1 {
 }
 
 div[data-testid="stForm"] {
-    max-width: 420px;
-    margin: 0 auto;
+    max-width: 480px;
+    margin: 0 !important;
     background: var(--panel) !important;
     border: 1px solid var(--line) !important;
     border-radius: 16px !important;
@@ -1180,16 +1182,16 @@ if not check_remembered_login():
     st.stop()
 render_top_bar(st.session_state["auth_user"])
 
-with st.form("search_form"):
-    col1, col2 = st.columns([3, 1.3])
-    with col1:
+# 將搜尋表單移到左側（利用 st.columns 控制左右排版，將表單放在左欄，右欄留空）
+c_left, c_right = st.columns([1.2, 2.8])
+with c_left:
+    with st.form("search_form"):
         input_val = st.text_input(
             "🔍 請輸入加密貨幣名稱（例如 BTC 或 ETH）：",
             value=st.session_state.search_query,
             placeholder="BTC / ETH",
         )
-    with col2:
-        st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+        st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
         submitted = st.form_submit_button("送出查詢", use_container_width=True)
 
 if submitted:
@@ -1483,7 +1485,7 @@ def calculate_indicators(df, tf):
 
     high_low = df["high_price"] - df["low_price"]
     high_close = (df["high_price"] - df["close_price"].shift()).abs()
-    low_close = (df["low_price"] - df["close_price"].shift()).abs()
+    low_close = (df["low_price"] - df["low_price"].shift()).abs()
     tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
 
     df["ATR"] = tr.rolling(14).mean()
