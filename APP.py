@@ -203,7 +203,7 @@ div[data-testid="stForm"] {{
 
 
 # ============================================================
-# 0.5 精美介面樣式（修復 expander 與 popover 的圖標文字重疊）
+# 0.5 精美介面樣式（優化 fragment 更新時的閃爍與變暗感）
 # ============================================================
 UI_CSS = """
 <style>
@@ -227,6 +227,12 @@ code, .mono, [data-testid="stMetricValue"] {
 }
 header[data-testid="stHeader"] { background: transparent !important; }
 footer { visibility: hidden; }
+
+/* 抑制 Streamlit Fragment 重新載入時的整體透明度抖動變暗 */
+[data-testid="stFragment"] {
+    animation: none !important;
+    transition: none !important;
+}
 
 .stApp::before {
     content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 0;
@@ -292,7 +298,6 @@ div[data-testid="stForm"] {
     box-shadow: 0 10px 24px rgba(240,185,11,.38);
 }
 
-/* 徹底隱藏並修復未渲染的展開/圖標文字溢位重疊問題 */
 [data-testid="stExpander"] summary span[data-testid="stIconMaterial"],
 [data-testid="stPopover"] button span[data-testid="stIconMaterial"] {
     font-size: 0 !important;
@@ -1313,6 +1318,7 @@ _LOAD_TARGET = (MAX_PLOT_BARS + 200) if MAX_PLOT_BARS else None
 INITIAL_BATCH = _LOAD_TARGET or 1000
 
 
+@st.cache_data(ttl=15, show_spinner=False)
 def load_historical_data(table_name, symbol_name, tf=None):
     allowed_tables = {"btc_contract_klines", "eth_contract_klines"}
     if table_name not in allowed_tables:
@@ -1514,17 +1520,14 @@ def build_candidate_signals(df, tf, higher_tf_dfs=None):
     not_chasing_long = (df["close_price"] - df["Trend_Resistance"]) <= df["ATR"] * 1.0
     not_chasing_short = (df["Trend_Support"] - df["close_price"]) <= df["ATR"] * 1.0
 
-    # 核心多周期趨勢過濾 (15m, 1h, 4h 狀態對齊)
     htf_long_ok = pd.Series(True, index=df.index)
     htf_short_ok = pd.Series(True, index=df.index)
     if higher_tf_dfs:
         for htf_name, htf_df in higher_tf_dfs.items():
             if htf_df is not None and not htf_df.empty:
-                # 計算高週期的 EMA 趨勢方向
                 htf_df = htf_df.copy()
                 htf_df["HTF_EMA21"] = htf_df["close_price"].ewm(span=21, adjust=False).mean()
                 htf_df["HTF_EMA50"] = htf_df["close_price"].ewm(span=50, adjust=False).mean()
-                # 依時間對齊到當前 5m K棒
                 merged_htf = pd.merge_asof(
                     df[["open_time"]],
                     htf_df[["open_time", "close_price", "HTF_EMA21", "HTF_EMA50"]],
@@ -1536,7 +1539,6 @@ def build_candidate_signals(df, tf, higher_tf_dfs=None):
                 htf_long_ok = htf_long_ok & l_ok.fillna(True).values
                 htf_short_ok = htf_short_ok & s_ok.fillna(True).values
 
-    # 如果目前檢視的是 5m，加強過濾條件以提高勝率；若為其他週期則維持標準
     is_5m = (tf == "5m")
     rsi_l_min, rsi_l_max = (52, 70) if is_5m else (50, 72)
     rsi_s_min, rsi_s_max = (30, 48) if is_5m else (28, 50)
@@ -1814,7 +1816,6 @@ def _build_chart_bundle(df_all_tf, symbol, pair, tf):
     if df_tf.empty:
         return None
 
-    # 準備多週期資料傳入以供 5m 進場參考
     higher_tf_dfs = {
         "15m": df_all_tf.get("15m", pd.DataFrame()),
         "1h": df_all_tf.get("1h", pd.DataFrame()),
@@ -2233,7 +2234,6 @@ def render_live_kline_chart(table, symbol, pair, tf):
         st.warning("目前無法取得資料，請確認 Supabase 連線及資料表內容。")
         return
 
-    # 一次載入所有時間週期的 DataFrame 供多週期聯動使用
     df_all_tf = {}
     for t_val in ["5m", "15m", "1h", "4h"]:
         sub_df = df[df["timeframe"] == t_val].sort_values("open_time").copy().reset_index(drop=True)
