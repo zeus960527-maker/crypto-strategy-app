@@ -957,7 +957,6 @@ def render_settings_popover(user):
     s = dict(DEFAULT_TRADE_SETTINGS)
     s.update(st.session_state.get("auth_settings") or {})
     
-    # 抓取現有的 API 金鑰供顯示遮罩或編輯
     try:
         with _acct_engine().connect() as conn:
             row = conn.execute(
@@ -985,7 +984,6 @@ def render_settings_popover(user):
             if st.form_submit_button("更新 API 金鑰", use_container_width=True):
                 if k_input.strip() or s_input.strip() or p_input.strip():
                     try:
-                        # 如果只填部分或全填，更新資料庫
                         with _acct_engine().connect() as conn:
                             curr = conn.execute(
                                 text("SELECT okx_key_enc, okx_secret_enc, okx_pass_enc FROM app_users WHERE username = :u"),
@@ -1716,7 +1714,7 @@ def _build_chart_bundle(df_all_tf, symbol, pair, tf):
         margin=dict(l=10, r=85, t=65, b=30), uirevision=f"{symbol}_{tf}",
         hoverlabel=dict(bgcolor="rgba(30,35,41,.95)", font_size=12, font_color="white", bordercolor="#f0b90b"),
     )
-    fig.update_layout(xaxis=dict(range=list(bundle["x_range"]), autorange=False))
+    fig.update_layout(xaxis=dict(range=[start_time, end_time], autorange=False))
     fig.update_xaxes(showline=True, linewidth=2, linecolor="#434c5e", mirror=True, row=2, col=1, fixedrange=False)
     fig.update_yaxes(side="right", gridcolor="#1e2329", zeroline=False, linecolor="#2b313a", tickformat=",.2f", showspikes=True, spikemode="across+toaxis", spikesnap="cursor", spikethickness=1, spikedash="dash", spikecolor="#a0a6b2", showline=True, row=1, col=1, range=y_range, fixedrange=False)
     fig.update_yaxes(side="right", gridcolor="#1e2329", zeroline=False, linecolor="#2b313a", tickformat=",.2f", showspikes=True, spikemode="across", spikesnap="cursor", spikethickness=1, spikedash="dash", spikecolor="#a0a6b2", row=2, col=1, range=[0, float(visible_df["volume"].max()) * 1.05], fixedrange=False)
