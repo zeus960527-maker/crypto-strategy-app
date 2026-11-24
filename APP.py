@@ -414,7 +414,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ============================================================
-# 1.5 帳號系統與 OKX 直接下單（支援 localStorage 保持登入與正確資金讀取）
+# 1.5 帳號系統與 OKX 直接下單（含自動即時刷新可用餘額）
 # ============================================================
 st.session_state.setdefault("auth_user", None)
 st.session_state.setdefault("auth_settings", {})
@@ -638,7 +638,6 @@ def login_user(username, password, remember=False):
                     {"t": token, "u": u},
                 )
             st.query_params["remember_token"] = token
-            # 同時寫入瀏覽器 localStorage 確保重新開啟網頁時能完美保持登入
             components.html(f"""
             <script>
                 localStorage.setItem('okx_remember_token', '{token}');
@@ -653,7 +652,6 @@ def check_remembered_login():
     if st.session_state.get("auth_user"):
         return True
     
-    # 支援透過 localStorage 自動補齊 query_params 重新開啟網頁時保持登入
     components.html("""
     <script>
         const token = localStorage.getItem('okx_remember_token');
@@ -761,7 +759,6 @@ def okx_get_balance(creds, demo):
     details = (data[0].get("details") or []) if data else []
     for d in details:
         if d.get("ccy") == "USDT":
-            # 修正資金不正確問題：正確抓取可用餘額 (availBal) 或可用權益，不再使用 min()
             try:
                 avail = float(d.get("availBal") or d.get("availEq") or d.get("eq") or 0.0)
                 return max(avail, 0.0)
@@ -1096,19 +1093,11 @@ if not check_remembered_login():
     st.stop()
 
 # ============================================================
-# 搜尋列與您指定的紅圈區域（顯示帳戶名稱與餘額）配置
+# 搜尋列與紅圈區域配置（使用 @st.fragment 讓 OKX 資金自動每 5 秒即時更新）
 # ============================================================
 current_user = st.session_state["auth_user"]
 s_dict = dict(DEFAULT_TRADE_SETTINGS)
 s_dict.update(st.session_state.get("auth_settings") or {})
-
-balance_str = "未設定 API"
-try:
-    creds_cache = _get_creds(current_user)
-    bal_val = okx_get_balance(creds_cache, s_dict.get("demo", False))
-    balance_str = f"{bal_val:,.2f} USDT"
-except Exception:
-    balance_str = "尚無 API 或金鑰有誤"
 
 c_left, c_right = st.columns([1.2, 2.8])
 
@@ -1123,24 +1112,37 @@ with c_left:
         submitted = st.form_submit_button("送出查詢", use_container_width=True)
 
 with c_right:
-    col_acc1, col_acc2, col_acc3 = st.columns(3)
-    with col_acc1:
-        st.markdown(f"""
-        <div class="account-card">
-            <div class="account-title">👤 系統帳戶</div>
-            <div class="account-val" style="font-size:16px;">{current_user}</div>
-        </div>
-        """, unsafe_allow_html=True)
-    with col_acc2:
-        st.markdown(f"""
-        <div class="account-card">
-            <div class="account-title">💰 OKX 可用餘額</div>
-            <div class="account-val">{balance_str}</div>
-        </div>
-        """, unsafe_allow_html=True)
-    with col_acc3:
-        st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
-        render_settings_popover(current_user)
+    # 建立獨立的自動刷新 fragment，每 5 秒向 OKX API 抓取一次最新可用餘額
+    @st.fragment(run_every=5)
+    def render_live_account_header():
+        balance_str = "未設定 API"
+        try:
+            creds_cache = _get_creds(current_user)
+            bal_val = okx_get_balance(creds_cache, s_dict.get("demo", False))
+            balance_str = f"{bal_val:,.2f} USDT"
+        except Exception:
+            balance_str = "尚無 API 或金鑰有誤"
+
+        col_acc1, col_acc2, col_acc3 = st.columns(3)
+        with col_acc1:
+            st.markdown(f"""
+            <div class="account-card">
+                <div class="account-title">👤 系統帳戶</div>
+                <div class="account-val" style="font-size:16px;">{current_user}</div>
+            </div>
+            """, unsafe_allow_html=True)
+        with col_acc2:
+            st.markdown(f"""
+            <div class="account-card">
+                <div class="account-title">💰 OKX 即時可用餘額</div>
+                <div class="account-val">{balance_str}</div>
+            </div>
+            """, unsafe_allow_html=True)
+        with col_acc3:
+            st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
+            render_settings_popover(current_user)
+
+    render_live_account_header()
 
 if submitted:
     q = input_val.strip().upper()
