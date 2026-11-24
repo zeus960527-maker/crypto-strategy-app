@@ -1258,7 +1258,9 @@ def load_outbox_signals(symbol, tf, since_time):
         return {}
 
 
-# 載入所有歷史 K 棒（移除原本的 LIMIT 限制）
+# ============================================================
+# 修改重點：執行時完整載入資料庫內所有 K 線資料（移除 LIMIT）
+# ============================================================
 def load_historical_data(table_name, symbol_name, tf=None):
     allowed_tables = {"btc_contract_klines", "eth_contract_klines"}
     if table_name not in allowed_tables:
@@ -1267,7 +1269,7 @@ def load_historical_data(table_name, symbol_name, tf=None):
         engine = get_db_engine()
         cols = "timeframe, open_time, open_price, high_price, low_price, close_price, volume"
         tf_where = "timeframe = :tf AND " if tf else ""
-        # 移除 LIMIT 限制，按時間正序載入所有歷史資料
+        # 移除 LIMIT 限制，改為完整依序載入全部歷史 K 棒
         sql = text(f"SELECT {cols} FROM {table_name} WHERE {tf_where} TRUE ORDER BY open_time ASC")
         with engine.connect() as conn:
             raw = pd.read_sql(sql, con=conn, params={"tf": tf} if tf else {})
@@ -1702,7 +1704,7 @@ def _build_chart_bundle(df_all_tf, symbol, pair, tf, user_thresh=45, trade_style
 
     save_all_signals_to_outbox(symbol, tf, view_df)
 
-    # 完整保留所有載入的歷史 K 棒（移除原本的 MAX_PLOT_BARS 截斷限制）
+    # 完整保留所有載入的 K 棒資料，不進行過度截斷
     full_view_df = view_df
 
     mobile = is_mobile_client()
@@ -1945,7 +1947,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
             st.error("🔴 SHORT 空單進場訊號")
             st.metric("參考進場價格", f"{latest_close:,.2f}")
         else:
-            st.warning("⏳ WAIT 目前沒有進場訊號")
+            st.warning("⏳ WAIT 目前沒有進場訊号")
 
         render_okx_trade_panel(symbol, pair, tf, latest, latest_close)
         
