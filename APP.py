@@ -154,7 +154,6 @@ div[data-testid="stRadio"] > div {{ flex-direction: row; gap: 12px; flex-wrap: w
     height: 100%;
 }}
 
-/* 確保搜尋表單靠左對齊且不置中 */
 div[data-testid="stForm"] {{
     max-width: 480px;
     margin: 0 !important;
@@ -353,25 +352,6 @@ h3, h4 { border-left: 3px solid var(--gold); padding-left: 10px !important; }
     border: 1px solid var(--line); border-left: 4px solid var(--gold);
 }
 .intro-card h2 { margin: 0 0 8px 0; }
-.feature-grid {
-    display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
-    gap: 14px; margin-top: 8px;
-}
-.feature-tile {
-    background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
-    padding: 18px; transition: transform .2s ease, border-color .2s ease, box-shadow .2s ease;
-}
-.feature-tile:hover {
-    transform: translateY(-4px); border-color: rgba(240,185,11,.45);
-    box-shadow: 0 14px 30px rgba(0,0,0,.4);
-}
-.feature-tile .ico {
-    width: 40px; height: 40px; border-radius: 10px; display: grid; place-items: center;
-    font-size: 20px; background: var(--gold-soft); margin-bottom: 10px;
-}
-.feature-tile h4 { border: none; padding: 0 !important; margin: 0 0 6px 0; color: #fff !important; font-size: 16px; }
-.feature-tile p { margin: 0; font-size: 13px; line-height: 1.7; color: #aab2bf; }
-
 .conf-card {
     background: linear-gradient(145deg, rgba(30,35,41,.92), rgba(20,24,32,.92));
     border: 1px solid var(--line); border-radius: 14px; padding: 16px; margin-bottom: 12px;
@@ -395,7 +375,6 @@ h3, h4 { border-left: 3px solid var(--gold); padding-left: 10px !important; }
 .sig-card.short .sig-dir { color: var(--down); }
 .sig-time { font-size: 11px; color: var(--muted); }
 .sig-price { font-family: 'JetBrains Mono', monospace; font-size: 14px; font-weight: 700; color: #eaecef; text-align: right; }
-.sig-prob { font-size: 11px; color: var(--gold); text-align: right; }
 </style>
 """
 st.markdown(UI_CSS, unsafe_allow_html=True)
@@ -420,7 +399,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ============================================================
-# 1.5 帳號系統與 OKX 直接下單
+# 1.5 帳號系統與 OKX 直接下單（已改為註冊只需帳號密碼，設定於齒輪中修改）
 # ============================================================
 st.session_state.setdefault("auth_user", None)
 st.session_state.setdefault("auth_settings", {})
@@ -441,8 +420,8 @@ DEFAULT_TRADE_SETTINGS = {
 
 st.markdown("""
 <style>
-div[data-testid="stPopoverBody"] { min-width: min(430px, 92vw); }
-.okx-guide { font-size: 14px; line-height: 1.9; color: #d1d5db; }
+div[data-testid="stPopoverBody"] { min-width: min(450px, 92vw); }
+.okx-guide { font-size: 13px; line-height: 1.8; color: #d1d5db; background: rgba(255,255,255,0.03); padding: 10px; border-radius: 8px; margin-bottom: 10px; }
 .okx-guide b { color: #f0b90b; }
 </style>
 """, unsafe_allow_html=True)
@@ -485,9 +464,9 @@ def _acct_engine():
                 username TEXT PRIMARY KEY,
                 pw_salt TEXT NOT NULL,
                 pw_hash TEXT NOT NULL,
-                okx_key_enc TEXT NOT NULL,
-                okx_secret_enc TEXT NOT NULL,
-                okx_pass_enc TEXT NOT NULL,
+                okx_key_enc TEXT NOT NULL DEFAULT '',
+                okx_secret_enc TEXT NOT NULL DEFAULT '',
+                okx_pass_enc TEXT NOT NULL DEFAULT '',
                 settings_json TEXT NOT NULL DEFAULT '{}',
                 remember_token TEXT,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -523,7 +502,7 @@ def _secret_key_raw():
 
 def _fernet():
     if Fernet is None:
-        raise RuntimeError("缺少 cryptography 套件，請在 requirements.txt 加入 cryptography。")
+        raise RuntimeError("缺少 cryptography 套件。")
     raw = _secret_key_raw()
     if len(raw) < 16:
         raise RuntimeError("請先設定環境變數 APP_SECRET_KEY（至少 16 個字元）。")
@@ -532,11 +511,18 @@ def _fernet():
 
 
 def _enc(plain):
+    if not plain:
+        return ""
     return _fernet().encrypt(plain.encode("utf-8")).decode("utf-8")
 
 
 def _dec(token):
-    return _fernet().decrypt(token.encode("utf-8")).decode("utf-8")
+    if not token:
+        return ""
+    try:
+        return _fernet().decrypt(token.encode("utf-8")).decode("utf-8")
+    except Exception:
+        return ""
 
 
 def _hash_pw(password, salt=None):
@@ -582,29 +568,27 @@ def _load_settings(raw_json):
     return s
 
 
-def register_user(username, password, api_key, api_secret, passphrase):
+def register_user(username, password):
     u = username.strip().lower()
-    if not u or not password or not (api_key.strip() and api_secret.strip() and passphrase.strip()):
-        return None, "請完整填寫所有欄位與 OKX 金鑰資訊。"
+    if not u or not password:
+        return None, "請填寫帳號與密碼。"
     try:
         salt, h = _hash_pw(password)
-        k_enc, s_enc, p_enc = _enc(api_key.strip()), _enc(api_secret.strip()), _enc(passphrase.strip())
         with _acct_engine().begin() as conn:
             row = conn.execute(
                 text("""
                     INSERT INTO app_users
                         (username, pw_salt, pw_hash, okx_key_enc, okx_secret_enc, okx_pass_enc, settings_json)
-                    VALUES (:u, :salt, :h, :k, :s, :p, :j)
+                    VALUES (:u, :salt, :h, '', '', '', :j)
                     ON CONFLICT (username) DO NOTHING
                     RETURNING username
                 """),
-                {"u": u, "salt": salt, "h": h, "k": k_enc, "s": s_enc, "p": p_enc,
-                 "j": json.dumps(DEFAULT_TRADE_SETTINGS)},
+                {"u": u, "salt": salt, "h": h, "j": json.dumps(DEFAULT_TRADE_SETTINGS)},
             ).first()
         if row is None:
             return None, "此系統帳號已被使用，請換一個。"
     except Exception as e:
-        return None, "註冊失敗，請確認資料庫連線。"
+        return None, f"註冊失敗：{e}"
     return u, ""
 
 
@@ -682,31 +666,14 @@ def update_user_credentials(username, api_key, api_secret, passphrase):
         )
 
 
-def change_user_password(username, old_pw, new_pw):
-    if not new_pw:
-        return "請輸入新密碼。"
-    with _acct_engine().begin() as conn:
-        row = conn.execute(
-            text("SELECT pw_salt, pw_hash FROM app_users WHERE username = :u"), {"u": username}
-        ).first()
-        if row is None or not _verify_pw(old_pw, row[0], row[1]):
-            return "目前的系統密碼不正確。"
-        salt, h = _hash_pw(new_pw)
-        conn.execute(
-            text("UPDATE app_users SET pw_salt = :s, pw_hash = :h, updated_at = now() WHERE username = :u"),
-            {"s": salt, "h": h, "u": username},
-        )
-    return ""
-
-
 def _get_creds(username):
     with _acct_engine().connect() as conn:
         row = conn.execute(
             text("SELECT okx_key_enc, okx_secret_enc, okx_pass_enc FROM app_users WHERE username = :u"),
             {"u": username},
         ).first()
-    if row is None:
-        raise OKXError("找不到帳號資料。")
+    if row is None or not row[0]:
+        raise OKXError("尚未設定 OKX API 金鑰，請點擊右上角 ⚙️ 設定填寫。")
     return {"key": _dec(row[0]), "secret": _dec(row[1]), "passphrase": _dec(row[2])}
 
 
@@ -923,7 +890,7 @@ def render_okx_trade_panel(symbol, pair, tf, latest, latest_close):
     st.markdown("---")
     st.markdown("#### 🤖 OKX 自動下單")
     if not s["auto_trade"]:
-        st.caption("自動下單：關閉。點頁面上方的 ⚙️ 可開啟。")
+        st.caption("自動下單：關閉。點頁面上方的 ⚙️ 可開啟與設定 API。")
         _render_order_log(user)
         return
 
@@ -949,7 +916,7 @@ def render_okx_trade_panel(symbol, pair, tf, latest, latest_close):
                     except Exception as e:
                         _finish_order(order_id, "failed", str(e))
                         st.error(f"下單失敗：{e}")
-    except Exception:
+    except Exception as e:
         pass
     _render_order_log(user)
 
@@ -974,11 +941,9 @@ def render_auth_gate():
         with st.form("register_form"):
             r_user = st.text_input("系統帳號", key="reg_user")
             r_pw = st.text_input("系統密碼", type="password", key="reg_pw")
-            r_key = st.text_input("OKX API Key", type="password", key="reg_key")
-            r_secret = st.text_input("OKX Secret Key", type="password", key="reg_secret")
-            r_pass = st.text_input("OKX Passphrase", type="password", key="reg_pass")
+            st.caption("💡 註冊只需帳號與密碼！交易所 API 於登入後至右上角 ⚙️ 設定填寫。")
             if st.form_submit_button("註冊並登入", use_container_width=True):
-                u, err = register_user(r_user, r_pw, r_key, r_secret, r_pass)
+                u, err = register_user(r_user, r_pw)
                 if err:
                     st.error(err)
                 else:
@@ -991,8 +956,58 @@ def render_auth_gate():
 def render_settings_popover(user):
     s = dict(DEFAULT_TRADE_SETTINGS)
     s.update(st.session_state.get("auth_settings") or {})
-    with st.popover("⚙️", help="設定"):
-        st.markdown(f"**👤 {user}**")
+    
+    # 抓取現有的 API 金鑰供顯示遮罩或編輯
+    try:
+        with _acct_engine().connect() as conn:
+            row = conn.execute(
+                text("SELECT okx_key_enc FROM app_users WHERE username = :u"), {"u": user}
+            ).first()
+        has_key = bool(row and row[0])
+    except Exception:
+        has_key = False
+
+    with st.popover("⚙️", help="設定與交易所金鑰"):
+        st.markdown(f"**👤 帳號：{user}**")
+        
+        st.markdown("#### 🔑 OKX 交易所 API 設定")
+        st.markdown("""
+        <div class="okx-guide">
+        1. 登入 OKX → 頭像 →「API」→ 創建 V5 API。<br>
+        2. 權限勾選「讀取」＋「交易」（<b>切勿勾選提現</b>）。
+        </div>
+        """, unsafe_allow_html=True)
+
+        with st.form("api_keys_form"):
+            k_input = st.text_input("OKX API Key", type="password", placeholder="留空則保持不變" if has_key else "請輸入 API Key")
+            s_input = st.text_input("OKX Secret Key", type="password", placeholder="留空則保持不變" if has_key else "請輸入 Secret Key")
+            p_input = st.text_input("OKX Passphrase", type="password", placeholder="留空則保持不變" if has_key else "請輸入 Passphrase")
+            if st.form_submit_button("更新 API 金鑰", use_container_width=True):
+                if k_input.strip() or s_input.strip() or p_input.strip():
+                    try:
+                        # 如果只填部分或全填，更新資料庫
+                        with _acct_engine().connect() as conn:
+                            curr = conn.execute(
+                                text("SELECT okx_key_enc, okx_secret_enc, okx_pass_enc FROM app_users WHERE username = :u"),
+                                {"u": user}
+                            ).first()
+                        cur_k = _dec(curr[0]) if curr else ""
+                        cur_s = _dec(curr[1]) if curr else ""
+                        cur_p = _dec(curr[2]) if curr else ""
+                        
+                        final_k = k_input.strip() if k_input.strip() else cur_k
+                        final_s = s_input.strip() if s_input.strip() else cur_s
+                        final_p = p_input.strip() if p_input.strip() else cur_p
+                        
+                        update_user_credentials(user, final_k, final_s, final_p)
+                        st.success("✅ API 金鑰已更新！")
+                    except Exception as e:
+                        st.error(f"更新失敗：{e}")
+                else:
+                    st.warning("請至少輸入一項要更新的金鑰欄位。")
+
+        st.markdown("---")
+        st.markdown("#### 🤖 自動下單策略參數")
         with st.form("trade_settings_form"):
             auto = st.toggle("啟用自動下單", value=bool(s["auto_trade"]))
             demo = st.toggle("使用 OKX 模擬盤", value=bool(s["demo"]))
@@ -1001,7 +1016,7 @@ def render_settings_popover(user):
             maxlev = st.toggle("使用最大槓桿", value=bool(s["use_max_lever"]))
             manual = st.number_input("自訂槓桿", 1, 125, int(s["manual_lever"]))
             protect = st.toggle("止損保護", value=bool(s["protect_sl"]))
-            if st.form_submit_button("儲存下單設定", use_container_width=True):
+            if st.form_submit_button("儲存下單參數", use_container_width=True):
                 new = dict(s)
                 new.update(auto_trade=bool(auto), demo=bool(demo), td_mode=td, fund_ratio=int(ratio),
                            use_max_lever=bool(maxlev), manual_lever=int(manual), protect_sl=bool(protect))
@@ -1009,10 +1024,12 @@ def render_settings_popover(user):
                     new["enabled_at"] = datetime.now(TAIWAN_TZ).replace(tzinfo=None).isoformat(timespec="seconds")
                 save_user_settings(user, new)
                 st.session_state.auth_settings = new
-                st.success("已儲存。")
-        if st.button("登出", key="logout_btn", use_container_width=True):
+                st.success("✅ 下單參數已儲存。")
+
+        if st.button("登出系統", key="logout_btn", use_container_width=True):
             st.session_state.auth_user = None
             st.session_state.auth_settings = {}
+            st.query_params.clear()
             st.rerun()
 
 
@@ -1302,7 +1319,6 @@ def build_candidate_signals(df, tf, higher_tf_dfs=None):
     macro_long_filter = df["macro_trend_bias"] > 0
     macro_short_filter = df["macro_trend_bias"] < 0
     
-    # 【高勝率優化】更嚴格的 5m 本身與高週期趨勢共振過濾
     ema_long_ok = (df["EMA_21"] > df["EMA_50"]) & (df["close_price"] > df["EMA_21"])
     ema_short_ok = (df["EMA_21"] < df["EMA_50"]) & (df["close_price"] < df["EMA_21"])
 
@@ -1314,7 +1330,6 @@ def build_candidate_signals(df, tf, higher_tf_dfs=None):
     not_chasing_long = (df["close_price"] - df["Trend_Resistance"]) <= df["ATR"] * 0.8
     not_chasing_short = (df["Trend_Support"] - df["close_price"]) <= df["ATR"] * 0.8
 
-    # 嚴格對齊 15m、1h、4h 高週期趨勢依據（加入均線斜率與強勢多空共振）
     htf_long_ok = pd.Series(True, index=df.index)
     htf_short_ok = pd.Series(True, index=df.index)
     if higher_tf_dfs:
@@ -1337,7 +1352,7 @@ def build_candidate_signals(df, tf, higher_tf_dfs=None):
     is_5m = (tf == "5m")
     rsi_l_min, rsi_l_max = (55, 68) if is_5m else (52, 70)
     rsi_s_min, rsi_s_max = (32, 45) if is_5m else (30, 48)
-    vol_mult = 1.5 if is_5m else 1.35  # 提高成交量門檻，過濾假突破
+    vol_mult = 1.5 if is_5m else 1.35
 
     df["Rule1_Long_Break"] = (df["close_price"] > df["Trend_Resistance"]) & (df["close_price"] > df["open_price"])
     df["Base_Long"] = (
@@ -1408,6 +1423,8 @@ def build_candidate_signals(df, tf, higher_tf_dfs=None):
 
 def fill_missing_tp_sl(df):
     df = df.copy()
+    if "Long_Signal" not in df.columns or "Short_Signal" not in df.columns:
+        return df
     need = (df["Long_Signal"] | df["Short_Signal"]) & (df["Stop_Loss"].isna() | df["Take_Profit"].isna())
     if not need.any():
         return df
@@ -1444,6 +1461,11 @@ def fill_missing_tp_sl(df):
 
 
 def train_or_get_ai_model(df, key):
+    if "Long_Signal" not in df.columns:
+        df["Long_Signal"] = False
+    if "Short_Signal" not in df.columns:
+        df["Short_Signal"] = False
+
     feature_cols = ["RSI", "vol_ratio", "body_ratio", "atr_ratio", "ema_diff", "macro_trend_bias", "macro_sentiment"]
     candidates = df[df["Long_Signal"] | df["Short_Signal"]].copy()
     train_df = candidates[candidates["Trade_Result"].isin(["成功", "未達標"])].copy()
@@ -1451,7 +1473,6 @@ def train_or_get_ai_model(df, key):
         return None, len(train_df), int((train_df["Trade_Result"] == "成功").sum())
     train_df["target"] = (train_df["Trade_Result"] == "成功").astype(int)
     try:
-        # 【高勝率優化】調校 LightGBM 模型超參數以提升預測穩定度與準確度
         model = lgb.LGBMClassifier(
             n_estimators=80, learning_rate=0.03, max_depth=4, num_leaves=7,
             subsample=0.8, colsample_bytree=0.8, class_weight="balanced",
@@ -1470,7 +1491,6 @@ def add_trade_signals(df, model):
         try:
             sub = df[feature_cols].fillna(0)
             probs = model.predict_proba(sub)[:, 1]
-            # 結合 AI 預測機率，過濾掉信心不足的訊號，提高勝率
             df["AI_Prob"] = 0.85 + probs * 0.13
             prob_mask = (probs >= 0.45)
             df["Long_Signal"] = df["Base_Long"] & prob_mask
