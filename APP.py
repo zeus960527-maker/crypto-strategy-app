@@ -1258,10 +1258,7 @@ def load_outbox_signals(symbol, tf, since_time):
         return {}
 
 
-MAX_PLOT_BARS = 1500
-INITIAL_BATCH = (MAX_PLOT_BARS + 200) if MAX_PLOT_BARS else 1000
-
-
+# 載入所有歷史 K 棒（移除原本的 LIMIT 限制）
 def load_historical_data(table_name, symbol_name, tf=None):
     allowed_tables = {"btc_contract_klines", "eth_contract_klines"}
     if table_name not in allowed_tables:
@@ -1270,7 +1267,8 @@ def load_historical_data(table_name, symbol_name, tf=None):
         engine = get_db_engine()
         cols = "timeframe, open_time, open_price, high_price, low_price, close_price, volume"
         tf_where = "timeframe = :tf AND " if tf else ""
-        sql = text(f"SELECT {cols} FROM {table_name} WHERE {tf_where} TRUE ORDER BY open_time DESC LIMIT {INITIAL_BATCH}")
+        # 移除 LIMIT 限制，按時間正序載入所有歷史資料
+        sql = text(f"SELECT {cols} FROM {table_name} WHERE {tf_where} TRUE ORDER BY open_time ASC")
         with engine.connect() as conn:
             raw = pd.read_sql(sql, con=conn, params={"tf": tf} if tf else {})
         if raw.empty:
@@ -1704,9 +1702,8 @@ def _build_chart_bundle(df_all_tf, symbol, pair, tf, user_thresh=45, trade_style
 
     save_all_signals_to_outbox(symbol, tf, view_df)
 
+    # 完整保留所有載入的歷史 K 棒（移除原本的 MAX_PLOT_BARS 截斷限制）
     full_view_df = view_df
-    if MAX_PLOT_BARS and len(view_df) > MAX_PLOT_BARS:
-        view_df = view_df.tail(MAX_PLOT_BARS)
 
     mobile = is_mobile_client()
     display_len = 40 if mobile else 85
