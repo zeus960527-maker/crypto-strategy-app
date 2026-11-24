@@ -267,6 +267,8 @@ h1 {
 }
 
 div[data-testid="stForm"] {
+    max-width: 420px;
+    margin: 0 auto;
     background: var(--panel) !important;
     border: 1px solid var(--line) !important;
     border-radius: 16px !important;
@@ -277,8 +279,15 @@ div[data-testid="stForm"] {
 .stTextInput input { height: 46px; padding-left: 14px !important; transition: all .2s ease; }
 .stTextInput input:focus { border-color: var(--gold) !important; }
 [data-testid="stFormSubmitButton"] button, .stButton button {
-    height: 46px; border: none !important; border-radius: 10px !important;
-    font-weight: 700 !important; letter-spacing: 1px;
+    min-height: 46px;
+    height: auto !important;
+    white-space: normal !important;
+    word-break: break-word !important;
+    padding: 8px 16px !important;
+    border: none !important;
+    border-radius: 10px !important;
+    font-weight: 700 !important;
+    letter-spacing: 1px;
     color: #1a1400 !important;
     background: linear-gradient(135deg, #ffd35a 0%, #f0b90b 55%, #d99a00 100%) !important;
     box-shadow: 0 6px 18px rgba(240,185,11,.28);
@@ -287,6 +296,19 @@ div[data-testid="stForm"] {
 [data-testid="stFormSubmitButton"] button:hover, .stButton button:hover {
     transform: translateY(-1px); filter: brightness(1.06);
     box-shadow: 0 10px 24px rgba(240,185,11,.38);
+}
+
+/* 修復展開面板與彈出設定圖示文字重疊問題 */
+[data-testid="stExpander"] summary span[data-testid="stIconMaterial"],
+[data-testid="stPopover"] button span[data-testid="stIconMaterial"] {
+    display: inline-flex !important;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+}
+[data-testid="stExpander"] summary p {
+    margin: 0 !important;
+    padding-left: 6px !important;
 }
 
 hr { border: none !important; height: 1px !important;
@@ -409,7 +431,6 @@ st.session_state.setdefault("auth_user", None)
 st.session_state.setdefault("auth_settings", {})
 
 OKX_BASE = "https://www.okx.com"
-# 已移除帳號格式限制，改為僅檢查是否有填寫內容
 TF_STEP = {"5m": "5min", "15m": "15min", "1h": "1h", "4h": "4h"}
 
 DEFAULT_TRADE_SETTINGS = {
@@ -979,8 +1000,23 @@ def render_okx_api_guide():
 
 
 def render_auth_gate():
-    st.markdown("### 🔐 請先註冊或登入")
-    tab_reg, tab_login = st.tabs(["📝 註冊", "🔑 登入"])
+    st.markdown("### 🔐 請先登入或註冊")
+    # 將登入放前面，註冊放後面
+    tab_login, tab_reg = st.tabs(["🔑 登入", "📝 註冊"])
+
+    with tab_login:
+        with st.form("login_form"):
+            l_user = st.text_input("系統帳號", key="login_user")
+            l_pw = st.text_input("系統密碼", type="password", key="login_pw")
+            login_submit = st.form_submit_button("登入", use_container_width=True)
+        if login_submit:
+            u, settings, err = login_user(l_user, l_pw)
+            if err:
+                st.error(err)
+            else:
+                st.session_state.auth_user = u
+                st.session_state.auth_settings = settings
+                st.rerun()
 
     with tab_reg:
         with st.expander("📖 如何申請 OKX API（點開查看步驟）", expanded=True):
@@ -999,20 +1035,6 @@ def render_auth_gate():
             else:
                 st.session_state.auth_user = u
                 st.session_state.auth_settings = dict(DEFAULT_TRADE_SETTINGS)
-                st.rerun()
-
-    with tab_login:
-        with st.form("login_form"):
-            l_user = st.text_input("系統帳號", key="login_user")
-            l_pw = st.text_input("系統密碼", type="password", key="login_pw")
-            login_submit = st.form_submit_button("登入", use_container_width=True)
-        if login_submit:
-            u, settings, err = login_user(l_user, l_pw)
-            if err:
-                st.error(err)
-            else:
-                st.session_state.auth_user = u
-                st.session_state.auth_settings = settings
                 st.rerun()
 
 
@@ -1104,7 +1126,7 @@ def render_settings_popover(user):
 
 
 def render_top_bar(user):
-    c1, c2 = st.columns([8, 1])
+    c1, c2 = st.columns([6, 1])
     with c1:
         st.caption(f"👤 已登入：{user}")
     with c2:
@@ -1118,7 +1140,7 @@ if not st.session_state.get("auth_user"):
 render_top_bar(st.session_state["auth_user"])
 
 with st.form("search_form"):
-    col1, col2 = st.columns([4, 1])
+    col1, col2 = st.columns([3, 1.3])
     with col1:
         input_val = st.text_input(
             "🔍 請輸入加密貨幣名稱（例如 BTC 或 ETH）：",
