@@ -78,7 +78,7 @@ icon_img = load_image_safe("hacker_icon.png")
 bg_base64 = get_base64_image("background.png")
 
 st.set_page_config(
-    page_title="加密貨幣 AI 策略系統 (專業增強版)",
+    page_title="加密貨幣 AI 策略系統",
     page_icon=icon_img if icon_img else "💻",
     layout="wide",
 )
@@ -1809,7 +1809,7 @@ def _build_chart_bundle(df_all_tf, symbol, pair, tf, user_thresh=45, trade_style
 
 def render_backtest_analytics(view_df):
     st.markdown("---")
-    st.markdown("### 📊 功能 3：進階策略績效與風險回測分析報表")
+    st.markdown("###策略績效與風險回測分析報表")
     closed_trades = view_df[view_df["Trade_Result"].isin(["成功", "未達標"])].copy()
     if closed_trades.empty:
         st.info("目前尚無足夠的已結算歷史交易訊號可供回測分析。")
