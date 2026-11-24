@@ -26,7 +26,7 @@ from datetime import datetime, timezone
 
 try:
     from cryptography.fernet import Fernet, InvalidToken
-except Exception:  # 未安裝 cryptography 時，註冊會提示安裝
+except Exception:
     Fernet = None
     InvalidToken = Exception
 
@@ -37,9 +37,6 @@ TAIWAN_TZ = ZoneInfo('Asia/Taipei')
 # ============================================================
 BASE_DIR = Path(__file__).resolve().parent
 
-# ------------------------------------------------------------
-# 保持 Render 活躍：Streamlit 內建健康檢查端點是 /_stcore/health（回傳 200 "ok"）。
-# ------------------------------------------------------------
 @st.cache_resource
 def _start_keep_alive():
     base = (os.getenv("RENDER_EXTERNAL_URL") or os.getenv("APP_PUBLIC_URL") or "").rstrip("/")
@@ -49,7 +46,7 @@ def _start_keep_alive():
     def _loop():
         url = base + "/_stcore/health"
         while True:
-            time.sleep(600)  # 每 10 分鐘一次
+            time.sleep(600)
             try:
                 urllib.request.urlopen(url, timeout=15).read()
             except Exception as e:
@@ -157,9 +154,6 @@ div[data-testid="stRadio"] > div {{ flex-direction: row; gap: 12px; flex-wrap: w
     height: 100%;
 }}
 
-/* ============================================================ */
-/* 手機版與電腦版登入註冊框與 RWD 優化                          */
-/* ============================================================ */
 div[data-testid="stForm"] {{
     max-width: 420px;
     margin: 0 auto;
@@ -209,7 +203,7 @@ div[data-testid="stForm"] {{
 
 
 # ============================================================
-# 0.5 精美介面樣式
+# 0.5 精美介面樣式（修復 expander 與 popover 的圖標文字重疊）
 # ============================================================
 UI_CSS = """
 <style>
@@ -298,17 +292,17 @@ div[data-testid="stForm"] {
     box-shadow: 0 10px 24px rgba(240,185,11,.38);
 }
 
-/* 修復展開面板與彈出設定圖示文字重疊問題 */
+/* 徹底隱藏並修復未渲染的展開/圖標文字溢位重疊問題 */
 [data-testid="stExpander"] summary span[data-testid="stIconMaterial"],
 [data-testid="stPopover"] button span[data-testid="stIconMaterial"] {
-    display: inline-flex !important;
-    align-items: center;
-    justify-content: center;
-    flex-shrink: 0;
+    font-size: 0 !important;
+    color: transparent !important;
+    width: 0 !important;
+    overflow: hidden !important;
 }
 [data-testid="stExpander"] summary p {
     margin: 0 !important;
-    padding-left: 6px !important;
+    padding-left: 0 !important;
 }
 
 hr { border: none !important; height: 1px !important;
@@ -434,14 +428,14 @@ OKX_BASE = "https://www.okx.com"
 TF_STEP = {"5m": "5min", "15m": "15min", "1h": "1h", "4h": "4h"}
 
 DEFAULT_TRADE_SETTINGS = {
-    "auto_trade": False,      # 是否啟用自動下單
-    "demo": False,            # 是否使用 OKX 模擬盤
-    "td_mode": "isolated",    # 保證金模式：isolated 逐倉 / cross 全倉
-    "fund_ratio": 95,         # 使用可用資金比例 (%)
-    "use_max_lever": True,    # 使用該合約最大槓桿
-    "manual_lever": 10,       # 不使用最大槓桿時的自訂槓桿
-    "protect_sl": True,       # 止損保護：強平價不可比止損價更近
-    "enabled_at": "",         # 開啟自動下單的時間（台北時間）
+    "auto_trade": False,
+    "demo": False,
+    "td_mode": "isolated",
+    "fund_ratio": 95,
+    "use_max_lever": True,
+    "manual_lever": 10,
+    "protect_sl": True,
+    "enabled_at": "",
 }
 
 st.markdown("""
@@ -461,7 +455,6 @@ class OrderSkip(Exception):
     pass
 
 
-# ---------- 資料庫（帳號與下單紀錄） ----------
 def _acct_db_url():
     url = os.getenv("SUPABASE_DB_URL", "").strip()
     if not url:
@@ -516,7 +509,6 @@ def _acct_engine():
     return engine
 
 
-# ---------- 加密與密碼 ----------
 def _secret_key_raw():
     v = os.getenv("APP_SECRET_KEY", "").strip()
     if not v:
@@ -558,7 +550,6 @@ def _verify_pw(password, salt_hex, hash_hex):
     return hmac.compare_digest(h, hash_hex)
 
 
-# ---------- 登入失敗鎖定（伺服器端） ----------
 @st.cache_resource
 def _login_fail_store():
     return {}
@@ -582,7 +573,6 @@ def _clear_fail(u):
     _login_fail_store().pop(u, None)
 
 
-# ---------- 使用者資料存取 ----------
 def _load_settings(raw_json):
     s = dict(DEFAULT_TRADE_SETTINGS)
     try:
@@ -639,7 +629,7 @@ def login_user(username, password):
         print(f"登入查詢失敗: {type(e).__name__}")
         return None, None, "資料庫連線失敗，請稍後再試。"
     if row is None:
-        _hash_pw(password)  # 避免以回應時間判斷帳號是否存在
+        _hash_pw(password)
         _record_fail(u)
         return None, None, "帳號或密碼錯誤。"
     if not _verify_pw(password, row[0], row[1]):
@@ -701,7 +691,6 @@ def _get_creds(username):
         raise OKXError("金鑰解密失敗（APP_SECRET_KEY 可能已變更），請到 ⚙️ 設定重新輸入 OKX 金鑰。")
 
 
-# ---------- OKX REST API ----------
 def _okx_request(method, path, creds=None, params=None, body=None, demo=False):
     query = ("?" + urllib.parse.urlencode(params)) if params else ""
     req_path = path + query
@@ -804,7 +793,6 @@ def _fmt_px(price, tick):
 
 
 def _plan_order(s, inst, avail, price, sl, direction):
-    """依可用資金與槓桿計算張數（槓桿預設為該合約最大槓桿）。"""
     max_lev = max(1, int(float(inst.get("lever") or 1)))
     if s.get("use_max_lever"):
         lever = max_lev
@@ -814,7 +802,7 @@ def _plan_order(s, inst, avail, price, sl, direction):
     note = ""
     sl_pct = abs(price - sl) / price if price > 0 else 0.0
     if s.get("protect_sl") and sl_pct > 0:
-        safe = max(1, int(0.8 / sl_pct))  # 強平距離約 1/槓桿，須比止損距離更遠
+        safe = max(1, int(0.8 / sl_pct))
         if safe < lever:
             note = f"（止損保護：槓桿 {lever}x → {safe}x）"
             lever = safe
@@ -877,7 +865,6 @@ def okx_place_signal_order(creds, s, pair, direction, price, sl, tp, clord_seed)
     )
 
 
-# ---------- 下單紀錄（以資料庫唯一鍵防止重複下單） ----------
 def _claim_order(user, symbol, tf, sig_time, direction):
     with _acct_engine().begin() as conn:
         row = conn.execute(
@@ -922,12 +909,11 @@ def _render_order_log(user):
         "signal_time": "訊號時間", "symbol": "幣種", "timeframe": "週期",
         "direction": "方向", "status": "狀態", "detail": "說明",
     })
-    with st.expander("📜 最近自動下單紀錄"):
+    with st.expander("最近自動下單紀錄"):
         st.dataframe(df, use_container_width=True, hide_index=True)
 
 
 def render_okx_trade_panel(symbol, pair, tf, latest, latest_close):
-    """放在右側訊號面板：偵測到最新 K 棒的進場訊號時，直接在 OKX 市價下單。"""
     user = st.session_state.get("auth_user")
     if not user:
         return
@@ -981,7 +967,6 @@ def render_okx_trade_panel(symbol, pair, tf, latest, latest_close):
     _render_order_log(user)
 
 
-# ---------- 註冊 / 登入畫面 ----------
 def render_okx_api_guide():
     st.markdown("""
 <div class="okx-guide">
@@ -1001,8 +986,7 @@ def render_okx_api_guide():
 
 def render_auth_gate():
     st.markdown("### 🔐 請先登入或註冊")
-    # 將登入放前面，註冊放後面
-    tab_login, tab_reg = st.tabs(["🔑 登入", "📝 註冊"])
+    tab_login, tab_reg = st.tabs(["登入", "註冊"])
 
     with tab_login:
         with st.form("login_form"):
@@ -1019,7 +1003,7 @@ def render_auth_gate():
                 st.rerun()
 
     with tab_reg:
-        with st.expander("📖 如何申請 OKX API（點開查看步驟）", expanded=True):
+        with st.expander("如何申請 OKX API（點開查看步驟）", expanded=True):
             render_okx_api_guide()
         with st.form("register_form"):
             r_user = st.text_input("系統帳號", key="reg_user", placeholder="請輸入帳號")
@@ -1038,7 +1022,6 @@ def render_auth_gate():
                 st.rerun()
 
 
-# ---------- 設定（齒輪圖示） ----------
 def render_settings_popover(user):
     s = dict(DEFAULT_TRADE_SETTINGS)
     s.update(st.session_state.get("auth_settings") or {})
@@ -1133,7 +1116,6 @@ def render_top_bar(user):
         render_settings_popover(user)
 
 
-# 未登入 → 只顯示註冊 / 登入；登入後 → 設定圖示 → 搜尋介面 → 圖
 if not st.session_state.get("auth_user"):
     render_auth_gate()
     st.stop()
@@ -1159,9 +1141,6 @@ if submitted:
 st.markdown("---")
 
 
-# ============================================================
-# 2. Supabase 連線與 K 棒資料載入
-# ============================================================
 def get_database_url():
     url = os.getenv("SUPABASE_DB_URL", "").strip()
     if not url:
@@ -1395,9 +1374,6 @@ def load_historical_data(table_name, symbol_name, tf=None):
     ])
 
 
-# ============================================================
-# 3. 技術指標與基本面特徵工程
-# ============================================================
 def calculate_trendline_channel(df, window=30, num_dev=1.8):
     df = df.copy()
     close = df["close_price"].astype(float).values
@@ -1466,9 +1442,6 @@ def calculate_indicators(df, tf):
     return df, win, dev
 
 
-# ============================================================
-# 4. 動態 TP/SL 與回測分析計算
-# ============================================================
 def calculate_dynamic_tp_sl(row, is_long):
     atr = row.get('ATR', 0)
     vol_r = row.get('vol_ratio', 1.0)
@@ -1719,9 +1692,6 @@ def add_trade_signals(df, model):
     return df
 
 
-# ============================================================
-# 5. 首頁說明區
-# ============================================================
 def render_homepage():
     st.markdown("""
     <div class="intro-card">
@@ -1744,9 +1714,6 @@ def render_homepage():
     """, unsafe_allow_html=True)
 
 
-# ============================================================
-# 6. K 線圖渲染與即時訊號自動寫入
-# ============================================================
 @st.cache_resource
 def _fired_signals():
     return {}
@@ -2128,7 +2095,6 @@ def _build_chart_bundle(df_tf, symbol, pair, tf):
 
 
 def render_backtest_analytics(view_df):
-    """計算並繪製策略回測分析（累計報酬率與最大回撤）"""
     st.markdown("---")
     st.markdown("### 📊 策略表現與風險回測分析 (Backtest & Risk Analytics)")
 
@@ -2375,9 +2341,6 @@ def render_live_kline_chart(table, symbol, pair, tf):
         )
 
 
-# ============================================================
-# 7. 主畫面
-# ============================================================
 if __name__ == "__main__":
     if st.session_state.is_searched:
         query = st.session_state.search_query.upper()
