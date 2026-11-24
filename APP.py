@@ -1691,7 +1691,7 @@ def _build_chart_bundle(df_all_tf, symbol, pair, tf):
         margin=dict(l=10, r=85, t=65, b=30), uirevision=f"{symbol}_{tf}",
         hoverlabel=dict(bgcolor="rgba(30,35,41,.95)", font_size=12, font_color="white", bordercolor="#f0b90b"),
     )
-    fig.update_layout(xaxis=dict(range=list(bundle["x_range"]), autorange=False))
+    fig.update_layout(xaxis=dict(range=[start_time, end_time], autorange=False))
     fig.update_xaxes(showline=True, linewidth=2, linecolor="#434c5e", mirror=True, row=2, col=1, fixedrange=False)
     fig.update_yaxes(side="right", gridcolor="#1e2329", zeroline=False, linecolor="#2b313a", tickformat=",.2f", showspikes=True, spikemode="across+toaxis", spikesnap="cursor", spikethickness=1, spikedash="dash", spikecolor="#a0a6b2", showline=True, row=1, col=1, range=y_range, fixedrange=False)
     fig.update_yaxes(side="right", gridcolor="#1e2329", zeroline=False, linecolor="#2b313a", tickformat=",.2f", showspikes=True, spikemode="across", spikesnap="cursor", spikethickness=1, spikedash="dash", spikecolor="#a0a6b2", row=2, col=1, range=[0, float(visible_df["volume"].max()) * 1.05], fixedrange=False)
