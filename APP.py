@@ -1,4 +1,4 @@
-[cite: 1]import os
+import os
 import base64
 from pathlib import Path
 
@@ -419,7 +419,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ============================================================
-# 1.5 帳號系統（註冊 / 登入 / 設定）與 OKX 直接下單
+# 1.5 帳號系統（註冊 / 登入 / 設定 / 保持登入）與 OKX 直接下單
 # ============================================================
 st.session_state.setdefault("auth_user", None)
 st.session_state.setdefault("auth_settings", {})
@@ -488,6 +488,7 @@ def _acct_engine():
                 okx_secret_enc TEXT NOT NULL,
                 okx_pass_enc TEXT NOT NULL,
                 settings_json TEXT NOT NULL DEFAULT '{}',
+                remember_token TEXT,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
             )
@@ -615,7 +616,7 @@ def register_user(username, password, api_key, api_secret, passphrase):
     return u, ""
 
 
-def login_user(username, password):
+def login_user(username, password, remember=False):
     u = username.strip().lower()
     if _is_locked(u):
         return None, None, "登入嘗試次數過多，請 5 分鐘後再試。"
@@ -636,7 +637,53 @@ def login_user(username, password):
         _record_fail(u)
         return None, None, "帳號或密碼錯誤。"
     _clear_fail(u)
+
+    token = None
+    if remember:
+        token = secrets.token_hex(32)
+        try:
+            with _acct_engine().begin() as conn:
+                conn.execute(
+                    text("UPDATE app_users SET remember_token = :t, updated_at = now() WHERE username = :u"),
+                    {"t": token, "u": u},
+                )
+            st.query_params["remember_token"] = token
+        except Exception as e:
+            print(f"儲存保持登入 Token 失敗: {e}")
+    else:
+        try:
+            with _acct_engine().begin() as conn:
+                conn.execute(
+                    text("UPDATE app_users SET remember_token = NULL, updated_at = now() WHERE username = :u"),
+                    {"u": u},
+                )
+            if "remember_token" in st.query_params:
+                st.query_params.pop("remember_token")
+        except Exception:
+            pass
+
     return u, _load_settings(row[2]), ""
+
+
+def check_remembered_login():
+    if st.session_state.get("auth_user"):
+        return True
+    token = st.query_params.get("remember_token")
+    if not token:
+        return False
+    try:
+        with _acct_engine().connect() as conn:
+            row = conn.execute(
+                text("SELECT username, settings_json FROM app_users WHERE remember_token = :t"),
+                {"t": token},
+            ).first()
+        if row:
+            st.session_state.auth_user = row[0]
+            st.session_state.auth_settings = _load_settings(row[1])
+            return True
+    except Exception as e:
+        print(f"驗證保持登入 Token 失敗: {e}")
+    return False
 
 
 def save_user_settings(username, settings):
@@ -992,9 +1039,10 @@ def render_auth_gate():
         with st.form("login_form"):
             l_user = st.text_input("系統帳號", key="login_user")
             l_pw = st.text_input("系統密碼", type="password", key="login_pw")
+            l_remember = st.checkbox("保持登入（記住裝置）", value=True, key="login_remember")
             login_submit = st.form_submit_button("登入", use_container_width=True)
         if login_submit:
-            u, settings, err = login_user(l_user, l_pw)
+            u, settings, err = login_user(l_user, l_pw, remember=l_remember)
             if err:
                 st.error(err)
             else:
@@ -1017,8 +1065,9 @@ def render_auth_gate():
             if err:
                 st.error(err)
             else:
-                st.session_state.auth_user = u
-                st.session_state.auth_settings = dict(DEFAULT_TRADE_SETTINGS)
+                u_logged, settings_logged, err_login = login_user(r_user, r_pw, remember=True)
+                st.session_state.auth_user = u_logged
+                st.session_state.auth_settings = settings_logged
                 st.rerun()
 
 
@@ -1103,6 +1152,16 @@ def render_settings_popover(user):
 
         st.markdown("---")
         if st.button("登出", key="logout_btn", use_container_width=True):
+            try:
+                with _acct_engine().begin() as conn:
+                    conn.execute(
+                        text("UPDATE app_users SET remember_token = NULL WHERE username = :u"),
+                        {"u": user}
+                    )
+            except Exception:
+                pass
+            if "remember_token" in st.query_params:
+                st.query_params.pop("remember_token")
             st.session_state.auth_user = None
             st.session_state.auth_settings = {}
             st.rerun()
@@ -1116,7 +1175,7 @@ def render_top_bar(user):
         render_settings_popover(user)
 
 
-if not st.session_state.get("auth_user"):
+if not check_remembered_login():
     render_auth_gate()
     st.stop()
 render_top_bar(st.session_state["auth_user"])
