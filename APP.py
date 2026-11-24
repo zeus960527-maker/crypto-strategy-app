@@ -1,18 +1,8 @@
-import os
+Import os
 import base64
-import hashlib
-import hmac
-import json
-import math
-import secrets
-from datetime import datetime, timezone, timedelta
-from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP
 from pathlib import Path
-from urllib.parse import urlencode
 
-import requests  # 🆕 OKX REST
 import streamlit as st
-import streamlit.components.v1 as components  # 🆕 寫入登入 cookie
 import pandas as pd
 import numpy as np
 from sqlalchemy import create_engine, text
@@ -373,23 +363,51 @@ h3, h4 { border-left: 3px solid var(--gold); padding-left: 10px !important; }
 .sig-time { font-size: 11px; color: var(--muted); }
 .sig-price { font-family: 'JetBrains Mono', monospace; font-size: 14px; font-weight: 700; color: #eaecef; text-align: right; }
 .sig-prob { font-size: 11px; color: var(--gold); text-align: right; }
-
-/* 🆕 登入 / 使用者列 */
-.user-bar {
-    display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
-    padding: 10px 14px; margin-bottom: 10px; border-radius: 14px;
-    background: var(--panel); border: 1px solid var(--line);
-}
-.user-bar .name { font-weight: 800; color: #fff; }
-.chip.demo { color: #7dd3fc; border-color: rgba(125,211,252,.35); background: rgba(125,211,252,.08); }
-.chip.real { color: var(--down); border-color: rgba(246,70,93,.4); background: rgba(246,70,93,.10); }
 </style>
 """
 st.markdown(UI_CSS, unsafe_allow_html=True)
 
 
 # ============================================================
-# 0.8 🆕 資料庫連線（由原本第 2 節原封不動搬到這裡，讓登入閘門能先用到資料庫）
+# 1. Session State 與標題搜尋列
+# ============================================================
+st.session_state.setdefault("is_searched", False)
+st.session_state.setdefault("search_query", "")
+st.session_state.setdefault("ai_models", {})
+
+st.title("加密貨幣 AI 策略系統")
+
+st.markdown("""
+<div class="hero-sub">
+    <span class="chip live">LIVE 即時監控</span>
+    <span class="chip">BTC / ETH 永續合約</span>
+    <span class="chip">123法則 · SMC · SNR</span>
+    <span class="chip">LightGBM + 動態 TP/SL</span>
+</div>
+""", unsafe_allow_html=True)
+
+with st.form("search_form"):
+    col1, col2 = st.columns([4, 1])
+    with col1:
+        input_val = st.text_input(
+            "🔍 請輸入加密貨幣名稱（例如 BTC 或 ETH）：",
+            value=st.session_state.search_query,
+            placeholder="BTC / ETH",
+        )
+    with col2:
+        st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+        submitted = st.form_submit_button("送出查詢", use_container_width=True)
+
+if submitted:
+    q = input_val.strip().upper()
+    st.session_state.search_query = q
+    st.session_state.is_searched = ("BTC" in q or "ETH" in q)
+
+st.markdown("---")
+
+
+# ============================================================
+# 2. Supabase 連線與 K 棒資料載入 (移除舊快取，確保每 5 秒抓取最新資料庫內容)
 # ============================================================
 def get_database_url():
     url = os.getenv("SUPABASE_DB_URL", "").strip()
@@ -423,623 +441,6 @@ def get_db_engine():
     )
 
 
-# ============================================================
-# 0.9 🆕 帳號系統 / 金鑰加密 / 保持登入
-# ============================================================
-SESSION_DAYS = 30
-
-
-@st.cache_resource
-def ensure_app_tables():
-    """建立帳號、登入 token、下單紀錄資料表（不存在才建立，不影響原有資料表）。"""
-    ddl = [
-        """CREATE TABLE IF NOT EXISTS app_users (
-            id SERIAL PRIMARY KEY,
-            username TEXT UNIQUE NOT NULL,
-            pw_salt TEXT NOT NULL,
-            pw_hash TEXT NOT NULL,
-            okx_key TEXT NOT NULL,
-            okx_secret TEXT NOT NULL,
-            okx_pass TEXT NOT NULL,
-            okx_demo BOOLEAN DEFAULT TRUE,
-            created_at TIMESTAMPTZ DEFAULT NOW()
-        )""",
-        """CREATE TABLE IF NOT EXISTS app_sessions (
-            token_hash TEXT PRIMARY KEY,
-            username TEXT NOT NULL,
-            expires_at TIMESTAMPTZ NOT NULL
-        )""",
-        """CREATE TABLE IF NOT EXISTS user_order_log (
-            id SERIAL PRIMARY KEY,
-            username TEXT NOT NULL,
-            symbol TEXT NOT NULL,
-            timeframe TEXT NOT NULL,
-            signal_time TIMESTAMP NOT NULL,
-            direction TEXT,
-            status TEXT,
-            detail TEXT,
-            created_at TIMESTAMPTZ DEFAULT NOW(),
-            UNIQUE (username, symbol, timeframe, signal_time)
-        )""",
-        # 🆕 記住每位使用者的下單資金比例
-        "ALTER TABLE app_users ADD COLUMN IF NOT EXISTS order_ratio INTEGER DEFAULT 95",
-    ]
-    engine = get_db_engine()
-    for stmt in ddl:
-        with engine.begin() as conn:
-            conn.execute(text(stmt))
-    return True
-
-
-def _fernet():
-    from cryptography.fernet import Fernet
-    secret = os.getenv("APP_SECRET_KEY", "").strip()
-    if not secret:
-        try:
-            secret = str(st.secrets.get("APP_SECRET_KEY", "")).strip()
-        except Exception:
-            secret = ""
-    if not secret:
-        # 沒設定時退而用資料庫連線字串推導（建議自行設定 APP_SECRET_KEY）
-        secret = "fallback:" + (get_database_url() or "no-db")
-    key = base64.urlsafe_b64encode(hashlib.sha256(secret.encode()).digest())
-    return Fernet(key)
-
-
-def enc(s):
-    return _fernet().encrypt(s.encode()).decode()
-
-
-def dec(s):
-    return _fernet().decrypt(s.encode()).decode()
-
-
-def hash_password(password, salt=None):
-    salt = salt or secrets.token_hex(16)
-    h = hashlib.scrypt(password.encode(), salt=salt.encode(), n=2 ** 14, r=8, p=1, dklen=32)
-    return salt, h.hex()
-
-
-def verify_password(password, salt, pw_hash):
-    _, h = hash_password(password, salt)
-    return hmac.compare_digest(h, pw_hash)
-
-
-def _sha(s):
-    return hashlib.sha256(s.encode()).hexdigest()
-
-
-def users_exist():
-    try:
-        ensure_app_tables()
-        with get_db_engine().connect() as conn:
-            return conn.execute(text("SELECT COUNT(*) FROM app_users")).scalar() > 0
-    except Exception:
-        return False
-
-
-def create_user(username, password, k, s, p, demo):
-    salt, h = hash_password(password)
-    with get_db_engine().begin() as conn:
-        conn.execute(
-            text("""INSERT INTO app_users
-                    (username, pw_salt, pw_hash, okx_key, okx_secret, okx_pass, okx_demo)
-                    VALUES (:u, :salt, :h, :k, :s, :p, :d)"""),
-            {"u": username, "salt": salt, "h": h,
-             "k": enc(k), "s": enc(s), "p": enc(p), "d": bool(demo)},
-        )
-
-
-def fetch_user(username):
-    with get_db_engine().connect() as conn:
-        return conn.execute(
-            text("""SELECT username, pw_salt, pw_hash, okx_key, okx_secret, okx_pass, okx_demo
-                    FROM app_users WHERE username = :u"""),
-            {"u": username},
-        ).fetchone()
-
-
-def load_order_ratio(username):
-    try:
-        with get_db_engine().connect() as conn:
-            r = conn.execute(
-                text("SELECT order_ratio FROM app_users WHERE username = :u"),
-                {"u": username},
-            ).scalar()
-        return min(max(int(r), 1), 100) if r is not None else 95
-    except Exception:
-        return 95
-
-
-def save_order_ratio():
-    """number_input 的 on_change：每次修改就存進資料庫。"""
-    u = st.session_state.get("user")
-    if not u:
-        return
-    try:
-        v = min(max(int(st.session_state.get("order_ratio", 95)), 1), 100)
-        with get_db_engine().begin() as conn:
-            conn.execute(
-                text("UPDATE app_users SET order_ratio = :r WHERE username = :u"),
-                {"r": v, "u": u},
-            )
-    except Exception as e:
-        print(f"儲存下單比例失敗: {e}")
-
-
-def start_user_session(row):
-    """把使用者資料與（解密後的）OKX 金鑰放進此次 session（只存在伺服器記憶體）。"""
-    st.session_state["user"] = row[0]
-    st.session_state["okx"] = {
-        "key": dec(row[3]), "secret": dec(row[4]),
-        "passphrase": dec(row[5]), "demo": bool(row[6]),
-    }
-    st.session_state["order_ratio"] = load_order_ratio(row[0])  # 🆕 帶出上次設定
-    st.session_state["logged_out"] = False
-
-
-def issue_login_token(username):
-    token = secrets.token_urlsafe(32)
-    exp = datetime.now(timezone.utc) + timedelta(days=SESSION_DAYS)
-    with get_db_engine().begin() as conn:
-        conn.execute(text("DELETE FROM app_sessions WHERE expires_at < NOW()"))
-        conn.execute(
-            text("INSERT INTO app_sessions (token_hash, username, expires_at) VALUES (:t, :u, :e)"),
-            {"t": _sha(token), "u": username, "e": exp},
-        )
-    st.session_state["cookie_op"] = ("set", token)
-
-
-def username_from_token(token):
-    try:
-        with get_db_engine().connect() as conn:
-            r = conn.execute(
-                text("SELECT username FROM app_sessions WHERE token_hash = :t AND expires_at > NOW()"),
-                {"t": _sha(token)},
-            ).fetchone()
-        return r[0] if r else None
-    except Exception:
-        return None
-
-
-def logout_user():
-    try:
-        tok = st.context.cookies.get("ai_token")
-        if tok:
-            with get_db_engine().begin() as conn:
-                conn.execute(text("DELETE FROM app_sessions WHERE token_hash = :t"), {"t": _sha(tok)})
-    except Exception:
-        pass
-    for k in ("user", "okx", "okx_balance", "auto_trade", "last_order_msg", "order_ratio"):
-        st.session_state.pop(k, None)
-    st.session_state["logged_out"] = True
-    st.session_state["is_searched"] = False
-    st.session_state["search_query"] = ""
-    st.session_state["cookie_op"] = ("clear", "")
-
-
-def flush_cookie_op():
-    """寫入 / 清除登入 token（cookie + localStorage 雙保險）。回傳是否有執行。"""
-    op = st.session_state.pop("cookie_op", None)
-    if not op:
-        return False
-    kind, token = op
-    if kind == "set":
-        js = (
-            f"var t='{token}';"
-            f"p.document.cookie='ai_token='+t+'; max-age={SESSION_DAYS * 86400}; path=/; SameSite=Lax';"
-            "try{p.localStorage.setItem('ai_token',t);p.sessionStorage.removeItem('ai_boot');}catch(e){}"
-        )
-    else:
-        js = (
-            "p.document.cookie='ai_token=; max-age=0; path=/; SameSite=Lax';"
-            "try{p.localStorage.removeItem('ai_token');p.sessionStorage.removeItem('ai_boot');}catch(e){}"
-        )
-    components.html(
-        f"<script>(function(){{var p=window.parent;try{{{js}}}catch(e){{}}}})();</script>",
-        height=0,
-    )
-    return True
-
-
-def inject_cookie_restore():
-    """cookie 不見但 localStorage 還有 token 時，補寫 cookie 並重新載入一次（只會執行一次，避免無限重整）。"""
-    components.html(
-        f"""<script>(function(){{
-        try{{
-          var p=window.parent;
-          var t=p.localStorage.getItem('ai_token');
-          var has=p.document.cookie.indexOf('ai_token=')>=0;
-          if(t && !has && !p.sessionStorage.getItem('ai_boot')){{
-            p.sessionStorage.setItem('ai_boot','1');
-            p.document.cookie='ai_token='+t+'; max-age={SESSION_DAYS * 86400}; path=/; SameSite=Lax';
-            p.location.reload();
-          }}
-        }}catch(e){{}}
-        }})();</script>""",
-        height=0,
-    )
-
-
-# ============================================================
-# 0.95 🆕 OKX REST 用戶端與自動下單
-# ============================================================
-class OKXClient:
-    BASE = "https://www.okx.com"
-
-    def __init__(self, key, secret, passphrase, demo=True):
-        self.key, self.secret, self.passphrase, self.demo = key, secret, passphrase, demo
-
-    def _req(self, method, path, params=None, body=None):
-        ts = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
-        req_path = path + (("?" + urlencode(params)) if params else "")
-        body_str = json.dumps(body) if body else ""
-        sign = base64.b64encode(
-            hmac.new(self.secret.encode(), (ts + method + req_path + body_str).encode(),
-                     hashlib.sha256).digest()
-        ).decode()
-        headers = {
-            "OK-ACCESS-KEY": self.key, "OK-ACCESS-SIGN": sign,
-            "OK-ACCESS-TIMESTAMP": ts, "OK-ACCESS-PASSPHRASE": self.passphrase,
-            "Content-Type": "application/json",
-        }
-        if self.demo:
-            headers["x-simulated-trading"] = "1"
-        r = requests.request(method, self.BASE + req_path, headers=headers,
-                             data=body_str if body else None, timeout=10)
-        j = r.json()
-        if j.get("code") != "0":
-            detail = ""
-            try:
-                detail = j["data"][0].get("sMsg", "")
-            except Exception:
-                pass
-            raise RuntimeError(f"OKX 錯誤 {j.get('code')}: {j.get('msg') or detail} {detail}".strip())
-        return j.get("data", [])
-
-    def balance(self):
-        d = self._req("GET", "/api/v5/account/balance", {"ccy": "USDT"})
-        for item in d[0].get("details", []):
-            if item.get("ccy") == "USDT":
-                return float(item.get("availBal") or 0)
-        return 0.0
-
-    def config(self):
-        return self._req("GET", "/api/v5/account/config")[0]
-
-    def instrument(self, inst_id):
-        return self._req("GET", "/api/v5/public/instruments",
-                         {"instType": "SWAP", "instId": inst_id})[0]
-
-    def positions(self, inst_id):
-        return self._req("GET", "/api/v5/account/positions", {"instId": inst_id})
-
-    def set_leverage(self, inst_id, lever, pos_side=None):
-        body = {"instId": inst_id, "lever": str(lever), "mgnMode": "cross"}
-        if pos_side:
-            body["posSide"] = pos_side
-        return self._req("POST", "/api/v5/account/set-leverage", body=body)
-
-    def place_order(self, body):
-        return self._req("POST", "/api/v5/trade/order", body=body)
-
-
-def get_okx_client():
-    c = st.session_state.get("okx")
-    if not c:
-        return None
-    return OKXClient(c["key"], c["secret"], c["passphrase"], c["demo"])
-
-
-def _fmt_px(p, tick):
-    q = (Decimal(str(p)) / tick).quantize(Decimal("1"), rounding=ROUND_HALF_UP) * tick
-    return format(q, "f")
-
-
-def execute_okx_order(client, pair, direction, price, sl, tp, ratio):
-    """用帳戶可用 USDT 乘上資金比例，槓桿拉到該合約最大值，市價進場並附 TP/SL。"""
-    inst = client.instrument(pair)
-    ct_val = Decimal(inst["ctVal"])
-    lot = Decimal(inst["lotSz"])
-    min_sz = Decimal(inst["minSz"])
-    tick = Decimal(inst["tickSz"])
-    max_lev = int(float(inst.get("lever") or 20))
-
-    # 已有持倉就不重複進場
-    for p in client.positions(pair):
-        if abs(float(p.get("pos") or 0)) > 0:
-            return "略過：該合約已有持倉"
-
-    avail = client.balance()
-    if avail <= 0:
-        return "失敗：可用 USDT 為 0"
-
-    pos_mode = client.config().get("posMode")
-    pos_side = None
-    if pos_mode == "long_short_mode":
-        pos_side = "long" if direction == "LONG" else "short"
-
-    lever_used, last_err = None, None
-    for lv in [max_lev] + [x for x in (100, 50, 20, 10, 5, 3) if x < max_lev]:
-        try:
-            client.set_leverage(pair, lv, pos_side)
-            lever_used = lv
-            break
-        except Exception as e:
-            last_err = e
-    if lever_used is None:
-        return f"失敗：無法設定槓桿 ({last_err})"
-
-    notional = Decimal(str(avail)) * Decimal(str(ratio)) * Decimal(lever_used)
-    contracts = notional / (Decimal(str(price)) * ct_val)
-    sz = (contracts / lot).to_integral_value(rounding=ROUND_DOWN) * lot
-    if sz < min_sz:
-        return f"失敗：資金不足（可用 {avail:,.2f} USDT，算出 {sz} 張 < 最小 {min_sz} 張）"
-
-    body = {
-        "instId": pair, "tdMode": "cross",
-        "side": "buy" if direction == "LONG" else "sell",
-        "ordType": "market", "sz": format(sz, "f"),
-        "attachAlgoOrds": [{
-            "tpTriggerPx": _fmt_px(tp, tick), "tpOrdPx": "-1", "tpTriggerPxType": "last",
-            "slTriggerPx": _fmt_px(sl, tick), "slOrdPx": "-1", "slTriggerPxType": "last",
-        }],
-    }
-    if pos_side:
-        body["posSide"] = pos_side
-    res = client.place_order(body)
-    oid = res[0].get("ordId", "") if res else ""
-    return f"成功：{direction} {format(sz, 'f')} 張 · {lever_used}x · 單號 {oid}"
-
-
-def try_auto_trade(symbol, tf, pair, latest, latest_close):
-    """最新 K 線有訊號且開啟自動下單時，每一筆訊號只下一次單（資料庫唯一鍵去重）。"""
-    if not st.session_state.get("auto_trade") or not st.session_state.get("user"):
-        return
-    is_long, is_short = bool(latest["Long_Signal"]), bool(latest["Short_Signal"])
-    if not (is_long or is_short):
-        return
-    sl, tp = latest["Stop_Loss"], latest["Take_Profit"]
-    if pd.isna(sl) or pd.isna(tp):
-        return
-
-    direction = "LONG" if is_long else "SHORT"
-    price = float(latest["Sig_Price"]) if ("Sig_Price" in latest.index and pd.notna(latest["Sig_Price"])) else latest_close
-    if (is_long and not (sl < latest_close < tp)) or (is_short and not (tp < latest_close < sl)):
-        return  # 現價已超出 TP / SL 區間，不追單
-
-    step = pd.Timedelta({"5m": "5min", "15m": "15min", "1h": "1h", "4h": "4h"}.get(tf, "5min"))
-    sig_time = pd.Timestamp(latest["open_time"])
-    now_tw = pd.Timestamp.now(tz=TAIWAN_TZ).tz_localize(None)
-    if now_tw - sig_time > step * 2:
-        return  # 資料過舊（例如資料庫停更），不下單
-
-    user = st.session_state["user"]
-    try:
-        ensure_app_tables()
-        engine = get_db_engine()
-        with engine.begin() as conn:
-            ins = conn.execute(
-                text("""INSERT INTO user_order_log
-                        (username, symbol, timeframe, signal_time, direction, status, detail)
-                        VALUES (:u, :s, :tf, :t, :d, 'pending', '')
-                        ON CONFLICT (username, symbol, timeframe, signal_time) DO NOTHING
-                        RETURNING id"""),
-                {"u": user, "s": symbol, "tf": tf, "t": sig_time.to_pydatetime(), "d": direction},
-            ).fetchone()
-        if not ins:
-            return  # 這筆訊號已處理過
-        log_id = ins[0]
-
-        try:
-            ratio = float(st.session_state.get("order_ratio", 95)) / 100.0
-            msg = execute_okx_order(get_okx_client(), pair, direction, price, float(sl), float(tp), ratio)
-            status = "success" if msg.startswith("成功") else ("skipped" if msg.startswith("略過") else "failed")
-        except Exception as e:
-            msg, status = f"失敗：{e}", "failed"
-
-        with engine.begin() as conn:
-            conn.execute(
-                text("UPDATE user_order_log SET status=:s, detail=:d WHERE id=:i"),
-                {"s": status, "d": msg, "i": log_id},
-            )
-        st.session_state["last_order_msg"] = f"{sig_time:%m/%d %H:%M} {direction} → {msg}"
-        st.session_state.pop("okx_balance", None)
-    except Exception as e:
-        st.session_state["last_order_msg"] = f"下單流程錯誤：{e}"
-
-
-def load_order_log(limit=30):
-    try:
-        with get_db_engine().connect() as conn:
-            return pd.read_sql(
-                text("""SELECT signal_time AS 訊號時間, symbol AS 幣種, timeframe AS 週期,
-                               direction AS 方向, status AS 狀態, detail AS 說明
-                        FROM user_order_log WHERE username = :u
-                        ORDER BY id DESC LIMIT :n"""),
-                con=conn, params={"u": st.session_state.get("user"), "n": limit},
-            )
-    except Exception:
-        return pd.DataFrame()
-
-
-# ---------- 登入 / 註冊介面 ----------
-def render_auth_gate():
-    did_cookie_op = flush_cookie_op()
-
-    if st.session_state.get("user"):
-        return True
-
-    try:
-        ensure_app_tables()
-    except Exception as e:
-        st.error(f"資料庫初始化失敗：{e}")
-        return False
-
-    # 有「保持登入」cookie 就自動登入（剛按登出的那次不會自動登入）
-    if not st.session_state.get("logged_out"):
-        try:
-            tok = st.context.cookies.get("ai_token")
-        except Exception:
-            tok = None
-        if tok:
-            uname = username_from_token(tok)
-            if uname:
-                row = fetch_user(uname)
-                if row:
-                    start_user_session(row)
-                    st.rerun()
-        elif not did_cookie_op:
-            inject_cookie_restore()  # 🆕 cookie 被擋時，從 localStorage 補回
-
-    default_idx = 1 if users_exist() else 0
-    mode = st.radio("帳號", ["註冊", "登入"], index=default_idx, horizontal=True, key="auth_mode")
-
-    if mode == "註冊":
-        st.markdown("### 📝 註冊帳號並綁定 OKX")
-        st.caption("OKX API 金鑰會加密後儲存；請只開啟「讀取」與「交易」權限，不要開啟「提現」。")
-        with st.form("register_form"):
-            ru = st.text_input("帳號", placeholder="至少 3 個字元")
-            rp = st.text_input("密碼", type="password", placeholder="至少 8 個字元")
-            rp2 = st.text_input("確認密碼", type="password")
-            ak = st.text_input("OKX API Key")
-            asec = st.text_input("OKX Secret Key", type="password")
-            apass = st.text_input("OKX API Passphrase", type="password")
-            demo = st.checkbox("使用 OKX 模擬盤（建議先用模擬盤測試）", value=True)
-            keep = st.checkbox("保持登入（30 天）", value=True)
-            ok = st.form_submit_button("註冊並登入", use_container_width=True)
-        if ok:
-            ru = ru.strip()
-            if len(ru) < 3 or len(rp) < 8:
-                st.error("帳號至少 3 個字元，密碼至少 8 個字元。")
-            elif rp != rp2:
-                st.error("兩次密碼不一致。")
-            elif not (ak.strip() and asec.strip() and apass.strip()):
-                st.error("請完整填寫 OKX API 資料。")
-            else:
-                try:
-                    OKXClient(ak.strip(), asec.strip(), apass.strip(), demo).balance()
-                except Exception as e:
-                    st.error(f"OKX 驗證失敗，請檢查金鑰與模擬盤/實盤選項：{e}")
-                    return False
-                try:
-                    if fetch_user(ru):
-                        st.error("此帳號已被註冊。")
-                        return False
-                    create_user(ru, rp, ak.strip(), asec.strip(), apass.strip(), demo)
-                except Exception as e:
-                    st.error(f"註冊失敗：{e}")
-                    return False
-                start_user_session(fetch_user(ru))
-                if keep:
-                    issue_login_token(ru)
-                st.rerun()
-    else:
-        st.markdown("### 🔐 登入")
-        with st.form("login_form"):
-            lu = st.text_input("帳號")
-            lp = st.text_input("密碼", type="password")
-            keep = st.checkbox("保持登入（30 天）", value=True)  # 🆕 預設勾選
-            ok = st.form_submit_button("登入", use_container_width=True)
-        if ok:
-            row = fetch_user(lu.strip()) if lu.strip() else None
-            if row and verify_password(lp, row[1], row[2]):
-                start_user_session(row)
-                if keep:
-                    issue_login_token(row[0])
-                st.rerun()
-            else:
-                st.error("帳號或密碼錯誤。")
-    return False
-
-
-def render_user_bar():
-    user = st.session_state["user"]
-    okx = st.session_state.get("okx", {})
-    is_demo = okx.get("demo", True)
-
-    # 餘額每 30 秒更新一次
-    cache = st.session_state.get("okx_balance")
-    if not cache or time.time() - cache[1] > 30:
-        try:
-            bal = get_okx_client().balance()
-            cache = (bal, time.time(), None)
-        except Exception as e:
-            cache = (None, time.time(), str(e))
-        st.session_state["okx_balance"] = cache
-
-    c1, c2, c3, c4, c5 = st.columns([2.2, 2, 1.6, 2.2, 1])
-    with c1:
-        chip = '<span class="chip demo">模擬盤</span>' if is_demo else '<span class="chip real">⚠ 實盤</span>'
-        st.markdown(f'<div class="user-bar"><span class="name">👤 {user}</span>{chip}</div>',
-                    unsafe_allow_html=True)
-    with c2:
-        if cache[0] is not None:
-            st.metric("OKX 可用 USDT", f"{cache[0]:,.2f}")
-        else:
-            st.caption(f"餘額讀取失敗：{cache[2]}")
-    with c3:
-        st.session_state.setdefault("order_ratio", 95)
-        st.number_input("使用資金比例 %", min_value=1, max_value=100, step=1,
-                        key="order_ratio", on_change=save_order_ratio)
-    with c4:
-        st.toggle("⚡ 訊號自動下單（槓桿拉滿）", key="auto_trade")
-        if st.session_state.get("auto_trade") and not is_demo:
-            st.caption("⚠️ 目前為實盤，訊號出現會直接用真錢下單。")
-    with c5:
-        st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
-        if st.button("登出", key="logout_btn"):
-            logout_user()
-            st.rerun()
-
-
-# ============================================================
-# 1. Session State 與標題搜尋列
-# ============================================================
-st.session_state.setdefault("is_searched", False)
-st.session_state.setdefault("search_query", "")
-st.session_state.setdefault("ai_models", {})
-
-st.title("加密貨幣 AI 策略系統")
-
-st.markdown("""
-<div class="hero-sub">
-    <span class="chip live">LIVE 即時監控</span>
-    <span class="chip">BTC / ETH 永續合約</span>
-    <span class="chip">123法則 · SMC · SNR</span>
-    <span class="chip">LightGBM + 動態 TP/SL</span>
-</div>
-""", unsafe_allow_html=True)
-
-# 🆕 第一關：註冊 / 登入（通過後才會看到搜尋介面與圖表）
-if not render_auth_gate():
-    st.stop()
-render_user_bar()
-
-with st.form("search_form"):
-    col1, col2 = st.columns([4, 1])
-    with col1:
-        input_val = st.text_input(
-            "🔍 請輸入加密貨幣名稱（例如 BTC 或 ETH）：",
-            value=st.session_state.search_query,
-            placeholder="BTC / ETH",
-        )
-    with col2:
-        st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
-        submitted = st.form_submit_button("送出查詢", use_container_width=True)
-
-if submitted:
-    q = input_val.strip().upper()
-    st.session_state.search_query = q
-    st.session_state.is_searched = ("BTC" in q or "ETH" in q)
-
-st.markdown("---")
-
-
-# ============================================================
-# 2. Supabase K 棒資料載入與訊號寫入 (移除舊快取，確保每 5 秒抓取最新資料庫內容)
-#    （get_database_url / get_db_engine 已移到 0.8 節）
-# ============================================================
 def save_signal_to_outbox(symbol, tf, signal_time, direction, price, ai_prob,
                           stop_loss=None, take_profit=None):
     """訊號已先顯示在網頁上，再把同一筆寫入資料庫。
@@ -1586,123 +987,6 @@ def add_trade_signals(df, model):
 
 
 # ============================================================
-# 4.5 🆕 策略表現與風險回測分析
-# ============================================================
-def compute_backtest(view_df, risk_pct, fee_pct, start_equity=10000.0):
-    """以 TP/SL 實際結算結果回測：成功 = +RR、未達標 = -1R，再扣除來回手續費（以 R 計）。
-    資金曲線採每筆固定風險 risk_pct% 複利。"""
-    d = view_df[
-        (view_df["Long_Signal"] | view_df["Short_Signal"])
-        & view_df["Trade_Result"].isin(["成功", "未達標"])
-        & view_df["Stop_Loss"].notna() & view_df["Take_Profit"].notna()
-    ].copy()
-    if d.empty:
-        return None
-
-    if "Sig_Price" in d.columns:
-        entry = d["Sig_Price"].fillna(d["close_price"]).astype(float)
-    else:
-        entry = d["close_price"].astype(float)
-
-    risk = (entry - d["Stop_Loss"]).abs().replace(0, np.nan)
-    reward = (d["Take_Profit"] - entry).abs()
-    win = (d["Trade_Result"] == "成功").values
-    gross_r = np.where(win, (reward / risk).values, -1.0)
-    cost_r = (entry * fee_pct / 100.0 * 2.0 / risk).values
-    d["R"] = gross_r - cost_r
-    d["win"] = win
-    d["dir"] = np.where(d["Long_Signal"], "LONG", "SHORT")
-    d = d.dropna(subset=["R"])
-    if d.empty:
-        return None
-
-    r = d["R"].values
-    growth = np.maximum(1 + risk_pct / 100.0 * r, 0.0)
-    eq = np.concatenate([[start_equity], start_equity * np.cumprod(growth)])
-    peak = np.maximum.accumulate(eq)
-    dd = eq / peak - 1.0
-
-    gp, gl = r[r > 0].sum(), -r[r < 0].sum()
-    streak = max_streak = 0
-    for w in d["win"].values:
-        streak = 0 if w else streak + 1
-        max_streak = max(max_streak, streak)
-
-    def _summ(sub):
-        if sub.empty:
-            return None
-        return {
-            "筆數": len(sub),
-            "勝率": f"{sub['win'].mean() * 100:.1f}%",
-            "期望值(R)": f"{sub['R'].mean():+.2f}",
-            "累計R": f"{sub['R'].sum():+.1f}",
-        }
-
-    by_dir = {k: _summ(d[d["dir"] == k]) for k in ("LONG", "SHORT")}
-
-    return {
-        "n": len(d), "win_rate": float(d["win"].mean()),
-        "expectancy": float(r.mean()),
-        "profit_factor": (gp / gl) if gl > 0 else float("inf"),
-        "avg_rr": float((reward / risk).mean()),
-        "max_dd": float(dd.min()), "max_loss_streak": int(max_streak),
-        "total_return": float(eq[-1] / start_equity - 1.0),
-        "equity": eq, "drawdown": dd, "times": d["open_time"].tolist(),
-        "by_dir": by_dir,
-        "pending": int((view_df["Trade_Result"] == "觀察中").sum()),
-    }
-
-
-def render_backtest(view_df, symbol, tf):
-    st.markdown("---")
-    st.markdown("### 📊 策略表現與風險回測分析")
-    c1, c2, _ = st.columns([1, 1, 2])
-    risk_pct = c1.number_input("每筆風險（占資金 %）", 0.1, 20.0, 1.0, 0.1,
-                               key=f"bt_risk_{symbol}_{tf}")
-    fee_pct = c2.number_input("單邊手續費+滑價 %", 0.0, 0.5, 0.05, 0.01,
-                              key=f"bt_fee_{symbol}_{tf}")
-
-    bt = compute_backtest(view_df, risk_pct, fee_pct)
-    if bt is None:
-        st.caption("目前沒有已結算（碰到 TP 或 SL）的訊號可回測。")
-        return
-
-    m = st.columns(4)
-    m[0].metric("已結算筆數", f"{bt['n']}")
-    m[1].metric("真實勝率", f"{bt['win_rate'] * 100:.1f}%")
-    m[2].metric("期望值 (R/筆)", f"{bt['expectancy']:+.2f}")
-    pf = bt["profit_factor"]
-    m[3].metric("盈虧因子", "∞" if pf == float("inf") else f"{pf:.2f}")
-    m2 = st.columns(4)
-    m2[0].metric("平均盈虧比", f"{bt['avg_rr']:.2f}")
-    m2[1].metric("最大回撤", f"{bt['max_dd'] * 100:.1f}%")
-    m2[2].metric("最大連虧", f"{bt['max_loss_streak']} 筆")
-    m2[3].metric("總報酬", f"{bt['total_return'] * 100:+.1f}%")
-
-    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.04,
-                        row_heights=[0.68, 0.32])
-    xs = [bt["times"][0]] + bt["times"]
-    fig.add_trace(go.Scatter(x=xs, y=bt["equity"], mode="lines", name="資金曲線",
-                             line=dict(color="#f0b90b", width=2)), row=1, col=1)
-    fig.add_trace(go.Scatter(x=xs, y=bt["drawdown"] * 100, mode="lines", name="回撤 %",
-                             fill="tozeroy", line=dict(color="#F6465D", width=1.2)), row=2, col=1)
-    fig.update_layout(template="plotly_dark", height=420, showlegend=False,
-                      paper_bgcolor="rgba(11,14,17,.6)", plot_bgcolor="rgba(11,14,17,.6)",
-                      margin=dict(l=10, r=10, t=20, b=20))
-    fig.update_yaxes(title_text="資金", row=1, col=1)
-    fig.update_yaxes(title_text="回撤 %", row=2, col=1)
-    st.plotly_chart(fig, use_container_width=True, key=f"bt_chart_{symbol}_{tf}")
-
-    rows = [{"方向": k, **v} for k, v in bt["by_dir"].items() if v]
-    if rows:
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-    st.caption(
-        f"另有 {bt['pending']} 筆訊號尚未碰到 TP/SL（觀察中），不納入統計。"
-        "回測為樣本內結果（訊號與 AI 標籤使用同一段資料），僅供參考，不保證未來績效。"
-    )
-
-
-# ============================================================
 # 5. 首頁說明區
 # ============================================================
 def render_homepage():
@@ -2161,9 +1445,6 @@ def render_live_kline_chart(table, symbol, pair, tf):
     training_count = bundle["training_count"]
     winning_count = bundle["winning_count"]
 
-    # 🆕 訊號已寫入資料表（見 _build_chart_bundle）之後，若開啟自動下單就送單到 OKX
-    try_auto_trade(symbol, tf, pair, latest, latest_close)
-
     fig.update_layout(
         xaxis=dict(range=list(bundle["x_range"]), autorange=False),
         yaxis=dict(range=list(bundle["y_range"])),
@@ -2215,20 +1496,6 @@ def render_live_kline_chart(table, symbol, pair, tf):
         else:
             st.warning("⏳ WAIT 目前沒有進場訊號")
             st.caption("等待符合高勝率技術與基本面過濾條件。")
-
-        # 🆕 自動下單狀態與紀錄
-        if st.session_state.get("auto_trade"):
-            st.caption("⚡ 自動下單：已開啟")
-        else:
-            st.caption("自動下單：關閉（在上方列開啟）")
-        if st.session_state.get("last_order_msg"):
-            st.info(f"🧾 最近一次下單：{st.session_state['last_order_msg']}")
-        with st.expander("📜 我的下單紀錄"):
-            log_df = load_order_log()
-            if log_df.empty:
-                st.caption("尚無下單紀錄。")
-            else:
-                st.dataframe(log_df, use_container_width=True, hide_index=True)
 
         st.markdown("---")
         st.markdown("#### 📌 最近進場訊號")
@@ -2284,9 +1551,6 @@ def render_live_kline_chart(table, symbol, pair, tf):
             use_container_width=True,
             hide_index=True,
         )
-
-    # 🆕 策略表現與風險回測分析
-    render_backtest(view_df, symbol, tf)
 
 
 # ============================================================
