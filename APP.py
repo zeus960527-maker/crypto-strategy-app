@@ -3,6 +3,7 @@ import base64
 from pathlib import Path
 
 import streamlit as st
+import streamlit.components.v1 as components
 import pandas as pd
 import numpy as np
 from sqlalchemy import create_engine, text
@@ -78,7 +79,7 @@ icon_img = load_image_safe("hacker_icon.png")
 bg_base64 = get_base64_image("background.png")
 
 st.set_page_config(
-    page_title="加密貨幣 AI 策略系統",
+    page_title="加密貨幣 AI 策略系統 (專業增強版)",
     page_icon=icon_img if icon_img else "💻",
     layout="wide",
 )
@@ -413,7 +414,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ============================================================
-# 1.5 帳號系統與 OKX 直接下單（含新增的 1、3、4、5 參數設定）
+# 1.5 帳號系統與 OKX 直接下單（支援 localStorage 保持登入與正確資金讀取）
 # ============================================================
 st.session_state.setdefault("auth_user", None)
 st.session_state.setdefault("auth_settings", {})
@@ -429,11 +430,10 @@ DEFAULT_TRADE_SETTINGS = {
     "use_max_lever": True,
     "manual_lever": 10,
     "protect_sl": True,
-    # 新增功能參數 (1、3、4、5)
-    "trailing_stop": True,         # 功能1：智慧移動止損（保本跟蹤）
-    "ai_confidence_thresh": 45,    # 功能4：AI 信心過濾閾值 (%)
-    "trade_style": "平衡",          # 功能4：交易風格 (保守 / 平衡 / 積極)
-    "backtest_days": 30,           # 功能5：歷史回測天數最佳化器
+    "trailing_stop": True,
+    "ai_confidence_thresh": 45,
+    "trade_style": "平衡",
+    "backtest_days": 30,
     "enabled_at": "",
 }
 
@@ -638,6 +638,12 @@ def login_user(username, password, remember=False):
                     {"t": token, "u": u},
                 )
             st.query_params["remember_token"] = token
+            # 同時寫入瀏覽器 localStorage 確保重新開啟網頁時能完美保持登入
+            components.html(f"""
+            <script>
+                localStorage.setItem('okx_remember_token', '{token}');
+            </script>
+            """, height=0)
         except Exception:
             pass
     return u, _load_settings(row[2]), ""
@@ -646,6 +652,19 @@ def login_user(username, password, remember=False):
 def check_remembered_login():
     if st.session_state.get("auth_user"):
         return True
+    
+    # 支援透過 localStorage 自動補齊 query_params 重新開啟網頁時保持登入
+    components.html("""
+    <script>
+        const token = localStorage.getItem('okx_remember_token');
+        if (token && !window.location.search.includes('remember_token')) {
+            const url = new URL(window.location.href);
+            url.searchParams.set('remember_token', token);
+            window.location.href = url.toString();
+        }
+    </script>
+    """, height=0)
+
     token = st.query_params.get("remember_token")
     if not token:
         return False
@@ -742,13 +761,12 @@ def okx_get_balance(creds, demo):
     details = (data[0].get("details") or []) if data else []
     for d in details:
         if d.get("ccy") == "USDT":
-            vals = []
-            for k in ("availBal", "availEq"):
-                try:
-                    vals.append(float(d.get(k)))
-                except (TypeError, ValueError):
-                    pass
-            return max(min(vals), 0.0) if vals else 0.0
+            # 修正資金不正確問題：正確抓取可用餘額 (availBal) 或可用權益，不再使用 min()
+            try:
+                avail = float(d.get("availBal") or d.get("availEq") or d.get("eq") or 0.0)
+                return max(avail, 0.0)
+            except (TypeError, ValueError):
+                pass
     return 0.0
 
 
@@ -833,7 +851,6 @@ def okx_place_signal_order(creds, s, pair, direction, price, sl, tp, clord_seed)
     tick = inst.get("tickSz") or "0.1"
     sl_s, tp_s = _fmt_px(sl, tick), _fmt_px(tp, tick)
     
-    # 功能 1 智慧移動止損：若開啟 trailing_stop，可在下單附加說明中記錄
     body = {
         "instId": pair,
         "tdMode": td_mode,
@@ -1031,7 +1048,6 @@ def render_settings_popover(user):
             auto = st.toggle("啟用自動下單", value=bool(s["auto_trade"]))
             demo = st.toggle("使用 OKX 模擬盤", value=bool(s["demo"]))
             
-            # 功能 1：智慧移動止損開關
             trailing = st.toggle("🛡️ 啟用智慧移動止損 (Trailing Stop)", value=bool(s.get("trailing_stop", True)))
             
             td = st.selectbox("保證金模式", ["isolated", "cross"], index=0 if s["td_mode"] == "isolated" else 1)
@@ -1041,13 +1057,11 @@ def render_settings_popover(user):
             protect = st.toggle("止損保護", value=bool(s["protect_sl"]))
             
             st.markdown("---")
-            st.markdown("#### 🎛️ AI 策略與過濾參數 (功能 3 & 4)")
-            # 功能 4：AI 信心閾值與交易風格
+            st.markdown("#### 🎛️ AI 策略與過濾參數")
             ai_thresh = st.slider("AI 信心分數過濾門檻 (%)", 30, 90, int(s.get("ai_confidence_thresh", 45)), 5)
             style = st.selectbox("交易風格偏好", ["保守 (高勝率)", "平衡 (預設)", "積極 (多頻次)"], 
                                  index=0 if s.get("trade_style")=="保守 (高勝率)" else (1 if s.get("trade_style")=="平衡 (預設)" else 2))
             
-            # 功能 5：歷史回測天數選擇
             bt_days = st.selectbox("回測與分析歷史天數", [7, 14, 30, 60, 90], 
                                    index=[7, 14, 30, 60, 90].index(int(s.get("backtest_days", 30))) if int(s.get("backtest_days", 30)) in [7, 14, 30, 60, 90] else 2)
 
@@ -1066,6 +1080,11 @@ def render_settings_popover(user):
                 st.success("✅ 設定參數已成功儲存！")
 
         if st.button("登出系統", key="logout_btn", use_container_width=True):
+            components.html("""
+            <script>
+                localStorage.removeItem('okx_remember_token');
+            </script>
+            """, height=0)
             st.session_state.auth_user = None
             st.session_state.auth_settings = {}
             st.query_params.clear()
@@ -1551,12 +1570,11 @@ def add_trade_signals(df, model, user_thresh=45, trade_style="平衡"):
     df = df.copy()
     feature_cols = ["RSI", "vol_ratio", "body_ratio", "atr_ratio", "ema_diff", "macro_trend_bias", "macro_sentiment"]
     
-    # 功能 4 支援：依據交易風格微調動態閾值
     style_offset = 0.0
     if "保守" in trade_style:
-        style_offset = 10.0   # 提高標準
+        style_offset = 10.0
     elif "積極" in trade_style:
-        style_offset = -10.0  # 降低標準
+        style_offset = -10.0
     
     effective_thresh = max(10, min(85, user_thresh + style_offset)) / 100.0
 
@@ -1654,7 +1672,6 @@ def _build_chart_bundle(df_all_tf, symbol, pair, tf, user_thresh=45, trade_style
     if df_tf.empty:
         return None
 
-    # 功能 5 支援：根據回測天數過濾歷史資料區間
     if not df_tf.empty and bt_days:
         max_t = df_tf["open_time"].max()
         min_allowed_t = max_t - pd.Timedelta(days=bt_days)
@@ -1809,7 +1826,7 @@ def _build_chart_bundle(df_all_tf, symbol, pair, tf, user_thresh=45, trade_style
 
 def render_backtest_analytics(view_df):
     st.markdown("---")
-    st.markdown("📊策略績效與風險回測分析報表")
+    st.markdown("### 📊 功能 3：進階策略績效與風險回測分析報表")
     closed_trades = view_df[view_df["Trade_Result"].isin(["成功", "未達標"])].copy()
     if closed_trades.empty:
         st.info("目前尚無足夠的已結算歷史交易訊號可供回測分析。")
@@ -1843,7 +1860,6 @@ def render_backtest_analytics(view_df):
     peak = np.maximum.accumulate(eq_arr)
     max_dd = float(np.min((eq_arr - peak) / peak * 100)) if len(eq_arr) > 0 else 0.0
 
-    # 計算簡易夏普比率 (Sharpe Ratio)
     ret_arr = np.array(trade_returns)
     sharpe = float(np.mean(ret_arr) / (np.std(ret_arr) + 1e-6) * np.sqrt(365)) if len(ret_arr) > 1 else 0.0
 
@@ -1855,7 +1871,6 @@ def render_backtest_analytics(view_df):
     m5.metric("總報酬率", f"{cum_pnl:+.2f}%")
     m6.metric("最大回撤 (MDD)", f"{max_dd:.2f}%", delta_color="inverse")
 
-    # 繪製淨值成長曲線
     fig_eq = go.Figure()
     fig_eq.add_trace(go.Scatter(
         y=equity_curve, mode="lines+markers", name="策略淨值曲線",
