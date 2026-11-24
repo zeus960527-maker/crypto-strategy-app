@@ -4,9 +4,8 @@ import ccxt
 import psycopg2
 import streamlit as st
 
-# 1. 必須要有網頁內容，讓 UptimeRobot 訪問時能收到 200 OK 正常回應
 st.title("ETH 數據自動同步系統")
-st.write("狀態：背景自動同步執行中 🚀")
+st.write("狀態：背景自動同步與歷史補齊執行中 🚀")
 
 SUPABASE_DB_URL = "postgresql://postgres.ygzeqvcyqtvhvjrxhzdv:%4010233960527Ken@aws-0-ap-northeast-1.pooler.supabase.com:6543/postgres"
 
@@ -17,7 +16,12 @@ def get_db_connection():
         options="-c statement_timeout=15000"
     )
 
-def fetch_single_timeframe(tf):
+def fetch_and_fill_timeframe(tf, is_backfill=False):
+    """
+    抓取並寫入資料。
+    若 is_backfill 為 True，代表是啟動時的歷史資料補齊，抓取量可以稍微拉大（例如 limit=100），
+    若是即時同步，limit=10 即可。
+    """
     exchange = ccxt.okx({'enableRateLimit': True})
     symbol = 'ETH/USDT:USDT'
     
@@ -31,7 +35,9 @@ def fetch_single_timeframe(tf):
             result = cursor.fetchone()
             last_open_time = result[0] if result and result[0] is not None else None
 
-            params = {'symbol': symbol, 'timeframe': tf, 'limit': 10}
+            # 補齊歷史時可以抓多一點筆數（例如 100 根），即時同步抓 10 根即可
+            limit_count = 100 if is_backfill else 10
+            params = {'symbol': symbol, 'timeframe': tf, 'limit': limit_count}
             if last_open_time:
                 params['since'] = last_open_time
 
@@ -62,7 +68,8 @@ def fetch_single_timeframe(tf):
                 """
                 cursor.executemany(sql, batch_data)
                 connection.commit()
-                print(f" -> [ETH-{tf}] 即時同步成功")
+                mode_str = "歷史補齊" if is_backfill else "即時同步"
+                print(f" -> [ETH-{tf}] {mode_str}成功")
 
     except Exception as e:
         connection.rollback()
@@ -71,12 +78,23 @@ def fetch_single_timeframe(tf):
         connection.close()
 
 def background_scanner():
-    """背景迴圈：每隔 60 秒執行一次資料抓取"""
+    """背景執行緒：開機先補齊資料，之後進入 60 秒循環即時同步"""
+    timeframes = ['5m', '15m', '1h', '4h']
+    
+    # 1. 程式啟動時，先執行一次「缺失資料補齊」
+    print("=== 開始執行啟動前的歷史資料補齊 ===")
+    try:
+        for tf in timeframes:
+            fetch_and_fill_timeframe(tf, is_backfill=True)
+        print("=== 歷史資料補齊完成，開始進入即時監控迴圈 ===")
+    except Exception as e:
+        print(f"初始化補齊資料錯誤: {e}")
+
+    # 2. 進入無限迴圈，每 60 秒跑一次即時同步
     while True:
         try:
-            timeframes = ['5m', '15m', '1h', '4h']
             for tf in timeframes:
-                fetch_single_timeframe(tf)
+                fetch_and_fill_timeframe(tf, is_backfill=False)
         except Exception as e:
             print(f"掃描執行錯誤: {e}")
         time.sleep(60)
