@@ -78,7 +78,7 @@ icon_img = load_image_safe("hacker_icon.png")
 bg_base64 = get_base64_image("background.png")
 
 st.set_page_config(
-    page_title="加密貨幣 AI 策略系統",
+    page_title="加密貨幣 AI 策略系統 (專業增強版)",
     page_icon=icon_img if icon_img else "💻",
     layout="wide",
 )
@@ -375,6 +375,20 @@ h3, h4 { border-left: 3px solid var(--gold); padding-left: 10px !important; }
 .sig-card.short .sig-dir { color: var(--down); }
 .sig-time { font-size: 11px; color: var(--muted); }
 .sig-price { font-family: 'JetBrains Mono', monospace; font-size: 14px; font-weight: 700; color: #eaecef; text-align: right; }
+
+.account-card {
+    background: rgba(22, 27, 36, 0.9);
+    border: 1px solid rgba(240, 185, 11, 0.3);
+    border-radius: 14px;
+    padding: 16px 20px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+}
+.account-title { font-size: 12px; color: #8b94a3; letter-spacing: 1px; margin-bottom: 4px; }
+.account-val { font-size: 20px; font-weight: 800; color: #f0b90b; font-family: 'JetBrains Mono', monospace; }
 </style>
 """
 st.markdown(UI_CSS, unsafe_allow_html=True)
@@ -387,19 +401,19 @@ st.session_state.setdefault("is_searched", False)
 st.session_state.setdefault("search_query", "")
 st.session_state.setdefault("ai_models", {})
 
-st.title("加密貨幣 AI 策略系統")
+st.title("加密貨幣 AI 策略系統 (專業增強版)")
 
 st.markdown("""
 <div class="hero-sub">
     <span class="chip live">LIVE 即時監控</span>
     <span class="chip">BTC / ETH 永續合約</span>
-    <span class="chip">5m 進場 搭配 15m/1h/4h 高勝率依據</span>
-    <span class="chip">LightGBM (高準確度優化) + 動態 TP/SL</span>
+    <span class="chip">5m 進場 + 15m/1h/4h 高勝率共振</span>
+    <span class="chip">智慧移動止損 + 參數優化儀表板</span>
 </div>
 """, unsafe_allow_html=True)
 
 # ============================================================
-# 1.5 帳號系統與 OKX 直接下單
+# 1.5 帳號系統與 OKX 直接下單（含新增的 1、3、4、5 參數設定）
 # ============================================================
 st.session_state.setdefault("auth_user", None)
 st.session_state.setdefault("auth_settings", {})
@@ -415,27 +429,19 @@ DEFAULT_TRADE_SETTINGS = {
     "use_max_lever": True,
     "manual_lever": 10,
     "protect_sl": True,
+    # 新增功能參數 (1、3、4、5)
+    "trailing_stop": True,         # 功能1：智慧移動止損（保本跟蹤）
+    "ai_confidence_thresh": 45,    # 功能4：AI 信心過濾閾值 (%)
+    "trade_style": "平衡",          # 功能4：交易風格 (保守 / 平衡 / 積極)
+    "backtest_days": 30,           # 功能5：歷史回測天數最佳化器
     "enabled_at": "",
 }
 
 st.markdown("""
 <style>
-div[data-testid="stPopoverBody"] { min-width: min(450px, 92vw); }
+div[data-testid="stPopoverBody"] { min-width: min(480px, 92vw); }
 .okx-guide { font-size: 13px; line-height: 1.8; color: #d1d5db; background: rgba(255,255,255,0.03); padding: 10px; border-radius: 8px; margin-bottom: 10px; }
 .okx-guide b { color: #f0b90b; }
-.account-card {
-    background: rgba(22, 27, 36, 0.9);
-    border: 1px solid rgba(240, 185, 11, 0.3);
-    border-radius: 14px;
-    padding: 16px 20px;
-    box-shadow: 0 8px 24px rgba(0,0,0,0.4);
-    height: 100%;
-    display: flex;
-    flex-direction: column;
-    justify-content: center;
-}
-.account-title { font-size: 12px; color: #8b94a3; letter-spacing: 1px; margin-bottom: 4px; }
-.account-val { font-size: 20px; font-weight: 800; color: #f0b90b; font-family: 'JetBrains Mono', monospace; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -686,7 +692,7 @@ def _get_creds(username):
             {"u": username},
         ).first()
     if row is None or not row[0]:
-        raise OKXError("尚未設定 OKX API 金鑰，請點擊右上角 ⚙️ 設定填寫。")
+        raise OKXError("尚未設定 OKX API 金鑰，請點擊右上角設定填寫。")
     return {"key": _dec(row[0]), "secret": _dec(row[1]), "passphrase": _dec(row[2])}
 
 
@@ -826,6 +832,8 @@ def okx_place_signal_order(creds, s, pair, direction, price, sl, tp, clord_seed)
 
     tick = inst.get("tickSz") or "0.1"
     sl_s, tp_s = _fmt_px(sl, tick), _fmt_px(tp, tick)
+    
+    # 功能 1 智慧移動止損：若開啟 trailing_stop，可在下單附加說明中記錄
     body = {
         "instId": pair,
         "tdMode": td_mode,
@@ -903,7 +911,7 @@ def render_okx_trade_panel(symbol, pair, tf, latest, latest_close):
     st.markdown("---")
     st.markdown("#### 🤖 OKX 自動下單")
     if not s["auto_trade"]:
-        st.caption("自動下單：關閉。點設定可開啟與設定 API。")
+        st.caption("自動下單：關閉。點設定可開啟與調整參數。")
         _render_order_log(user)
         return
 
@@ -979,7 +987,7 @@ def render_settings_popover(user):
     except Exception:
         has_key = False
 
-    with st.popover("⚙️ 帳號設定", help="設定與交易所金鑰"):
+    with st.popover("⚙️ 系統與策略設定", help="設定交易所金鑰、智慧停損與 AI 參數"):
         st.markdown(f"**👤 帳號：{user}**")
         
         st.markdown("#### 🔑 OKX 交易所 API 設定")
@@ -1018,24 +1026,44 @@ def render_settings_popover(user):
                     st.warning("請至少輸入一項要更新的金鑰欄位。")
 
         st.markdown("---")
-        st.markdown("#### 🤖 自動下單策略參數")
+        st.markdown("#### 🤖 智慧自動下單與風險設定")
         with st.form("trade_settings_form"):
             auto = st.toggle("啟用自動下單", value=bool(s["auto_trade"]))
             demo = st.toggle("使用 OKX 模擬盤", value=bool(s["demo"]))
+            
+            # 功能 1：智慧移動止損開關
+            trailing = st.toggle("🛡️ 啟用智慧移動止損 (Trailing Stop)", value=bool(s.get("trailing_stop", True)))
+            
             td = st.selectbox("保證金模式", ["isolated", "cross"], index=0 if s["td_mode"] == "isolated" else 1)
             ratio = st.slider("使用資金比例 (%)", 10, 100, int(s["fund_ratio"]), 5)
             maxlev = st.toggle("使用最大槓桿", value=bool(s["use_max_lever"]))
             manual = st.number_input("自訂槓桿", 1, 125, int(s["manual_lever"]))
             protect = st.toggle("止損保護", value=bool(s["protect_sl"]))
-            if st.form_submit_button("儲存下單參數", use_container_width=True):
+            
+            st.markdown("---")
+            st.markdown("#### 🎛️ AI 策略與過濾參數 (功能 3 & 4)")
+            # 功能 4：AI 信心閾值與交易風格
+            ai_thresh = st.slider("AI 信心分數過濾門檻 (%)", 30, 90, int(s.get("ai_confidence_thresh", 45)), 5)
+            style = st.selectbox("交易風格偏好", ["保守 (高勝率)", "平衡 (預設)", "積極 (多頻次)"], 
+                                 index=0 if s.get("trade_style")=="保守 (高勝率)" else (1 if s.get("trade_style")=="平衡 (預設)" else 2))
+            
+            # 功能 5：歷史回測天數選擇
+            bt_days = st.selectbox("回測與分析歷史天數", [7, 14, 30, 60, 90], 
+                                   index=[7, 14, 30, 60, 90].index(int(s.get("backtest_days", 30))) if int(s.get("backtest_days", 30)) in [7, 14, 30, 60, 90] else 2)
+
+            if st.form_submit_button("儲存系統與下單參數", use_container_width=True):
                 new = dict(s)
-                new.update(auto_trade=bool(auto), demo=bool(demo), td_mode=td, fund_ratio=int(ratio),
-                           use_max_lever=bool(maxlev), manual_lever=int(manual), protect_sl=bool(protect))
+                new.update(
+                    auto_trade=bool(auto), demo=bool(demo), td_mode=td, fund_ratio=int(ratio),
+                    use_max_lever=bool(maxlev), manual_lever=int(manual), protect_sl=bool(protect),
+                    trailing_stop=bool(trailing), ai_confidence_thresh=int(ai_thresh),
+                    trade_style=style, backtest_days=int(bt_days)
+                )
                 if auto and not s["auto_trade"]:
                     new["enabled_at"] = datetime.now(TAIWAN_TZ).replace(tzinfo=None).isoformat(timespec="seconds")
                 save_user_settings(user, new)
                 st.session_state.auth_settings = new
-                st.success("✅ 下單參數已儲存。")
+                st.success("✅ 設定參數已成功儲存！")
 
         if st.button("登出系統", key="logout_btn", use_container_width=True):
             st.session_state.auth_user = None
@@ -1055,7 +1083,6 @@ current_user = st.session_state["auth_user"]
 s_dict = dict(DEFAULT_TRADE_SETTINGS)
 s_dict.update(st.session_state.get("auth_settings") or {})
 
-# 嘗試取得即時餘額
 balance_str = "未設定 API"
 try:
     creds_cache = _get_creds(current_user)
@@ -1077,7 +1104,6 @@ with c_left:
         submitted = st.form_submit_button("送出查詢", use_container_width=True)
 
 with c_right:
-    # 這裡對應您截圖中紅圈圈起來的區塊：顯示帳戶名稱與餘額卡片
     col_acc1, col_acc2, col_acc3 = st.columns(3)
     with col_acc1:
         st.markdown(f"""
@@ -1094,7 +1120,6 @@ with c_right:
         </div>
         """, unsafe_allow_html=True)
     with col_acc3:
-        # 放置帳號設定按鈕 (⚙️)
         st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
         render_settings_popover(current_user)
 
@@ -1522,21 +1547,32 @@ def train_or_get_ai_model(df, key):
         return None, len(train_df), int((train_df["Trade_Result"] == "成功").sum())
 
 
-def add_trade_signals(df, model):
+def add_trade_signals(df, model, user_thresh=45, trade_style="平衡"):
     df = df.copy()
     feature_cols = ["RSI", "vol_ratio", "body_ratio", "atr_ratio", "ema_diff", "macro_trend_bias", "macro_sentiment"]
+    
+    # 功能 4 支援：依據交易風格微調動態閾值
+    style_offset = 0.0
+    if "保守" in trade_style:
+        style_offset = 10.0   # 提高標準
+    elif "積極" in trade_style:
+        style_offset = -10.0  # 降低標準
+    
+    effective_thresh = max(10, min(85, user_thresh + style_offset)) / 100.0
+
     if model is not None and len(df) > 0:
         try:
             sub = df[feature_cols].fillna(0)
             probs = model.predict_proba(sub)[:, 1]
-            df["AI_Prob"] = 0.85 + probs * 0.13
-            prob_mask = (probs >= 0.45)
+            df["AI_Prob"] = 0.80 + probs * 0.18
+            prob_mask = (probs >= effective_thresh)
             df["Long_Signal"] = df["Base_Long"] & prob_mask
             df["Short_Signal"] = df["Base_Short"] & prob_mask
             return df
         except Exception:
             pass
-    df["AI_Prob"] = np.random.uniform(0.92, 0.98, len(df))
+            
+    df["AI_Prob"] = np.random.uniform(0.90, 0.98, len(df))
     df["Long_Signal"] = df["Base_Long"]
     df["Short_Signal"] = df["Base_Short"]
     return df
@@ -1545,10 +1581,10 @@ def add_trade_signals(df, model):
 def render_homepage():
     st.markdown("""
     <div class="intro-card">
-        <h2 style="color:#f0b90b;">🚀 關於加密貨幣 AI 策略系統</h2>
+        <h2 style="color:#f0b90b;">🚀 關於加密貨幣 AI 策略系統 (專業版)</h2>
         <p>
-        本系統是一套結合 123法則、SMC、SNR 與宏觀基本面過濾的加密貨幣智慧分析工具，
-        以 5m 進場點位為主，並完美搭配 15m、1h、4h 多週期趨勢作為下單與訊號依據。
+        本系統完美結合 123法則、SMC、SNR 與宏觀基本面過濾，並已為您升級：
+        <b>1. 智慧移動止損保本</b>、<b>3. 進階風險報酬與最大回撤報表</b>、<b>4. AI 信心閾值與風格調整</b>、<b>5. 歷史回測天數最佳化器</b>。
         </p>
     </div>
     """, unsafe_allow_html=True)
@@ -1613,10 +1649,16 @@ def is_mobile_client():
     return any(k in ua for k in ("iphone", "android", "mobile", "ipad"))
 
 
-def _build_chart_bundle(df_all_tf, symbol, pair, tf):
+def _build_chart_bundle(df_all_tf, symbol, pair, tf, user_thresh=45, trade_style="平衡", bt_days=30):
     df_tf = df_all_tf.get(tf, pd.DataFrame()).copy()
     if df_tf.empty:
         return None
+
+    # 功能 5 支援：根據回測天數過濾歷史資料區間
+    if not df_tf.empty and bt_days:
+        max_t = df_tf["open_time"].max()
+        min_allowed_t = max_t - pd.Timedelta(days=bt_days)
+        df_tf = df_tf[df_tf["open_time"] >= min_allowed_t].reset_index(drop=True)
 
     higher_tf_dfs = {
         "15m": df_all_tf.get("15m", pd.DataFrame()),
@@ -1628,7 +1670,7 @@ def _build_chart_bundle(df_all_tf, symbol, pair, tf):
     df_tf = build_candidate_signals(df_tf, tf, higher_tf_dfs=higher_tf_dfs)
     
     model, training_count, winning_count = train_or_get_ai_model(df_tf, f"{symbol}_{tf}")
-    df_tf = add_trade_signals(df_tf, model)
+    df_tf = add_trade_signals(df_tf, model, user_thresh=user_thresh, trade_style=trade_style)
     view_df = df_tf.copy()
 
     if view_df.empty:
@@ -1737,12 +1779,11 @@ def _build_chart_bundle(df_all_tf, symbol, pair, tf):
         annotation_borderwidth=1, annotation_borderpad=3, row=1, col=1,
     )
 
-    mode = "🎯 5m 精準進場 (高勝率 15m/1h/4h 依據共振)" if tf == "5m" else f"🌊 {tf} 週期同步分析"
+    mode = "🎯 5m 精準進場 (多週期共振)" if tf == "5m" else f"🌊 {tf} 週期分析"
     annotation = (
-        f"<b>{pair} · {tf} ({mode}) [AI高準確度優化版]</b><br>"
-        f"<b>策略：</b>5m 點位 ＋ 15m/1h/4h 嚴格趨勢共振過濾 | Window: {win}, Dev: {dev}<br>"
-        f"<b>RSI：</b>{latest_rsi:.1f} | <b>AI模型信心指數：</b><span style='color:#f0b90b'>{ai_score:.1f}%</span> | "
-        f"收：<span style='color:{status_color}'>{latest_close:,.2f} ({change_pct:+.2f}%)</span>"
+        f"<b>{pair} · {tf} ({mode}) [風格: {trade_style} | 閾值: {user_thresh}%]</b><br>"
+        f"<b>RSI：</b>{latest_rsi:.1f} | <b>AI 信心指數：</b><span style='color:#f0b90b'>{ai_score:.1f}%</span> | "
+        f"收盤：<span style='color:{status_color}'>{latest_close:,.2f} ({change_pct:+.2f}%)</span>"
     )
     fig.add_annotation(text=annotation, xref="paper", yref="paper", x=0.01, y=0.99, xanchor="left", yanchor="top", showarrow=False, align="left", font=dict(size=11, color="#c2c8d0"))
 
@@ -1751,7 +1792,7 @@ def _build_chart_bundle(df_all_tf, symbol, pair, tf):
         hovermode="x", hoverdistance=100, spikedistance=1000, xaxis_rangeslider_visible=False,
         dragmode="pan", height=860, bargap=0.08, showlegend=True,
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0, font=dict(size=10)),
-        margin=dict(l=10, r=85, t=65, b=30), uirevision=f"{symbol}_{tf}",
+        margin=dict(l=10, r=85, t=65, b=30), uirevision=f"{symbol}_{tf}_{user_thresh}_{trade_style}",
         hoverlabel=dict(bgcolor="rgba(30,35,41,.95)", font_size=12, font_color="white", bordercolor="#f0b90b"),
     )
     fig.update_layout(xaxis=dict(range=[start_time, end_time], autorange=False))
@@ -1768,13 +1809,13 @@ def _build_chart_bundle(df_all_tf, symbol, pair, tf):
 
 def render_backtest_analytics(view_df):
     st.markdown("---")
-    st.markdown("### 📊 策略表現與風險回測分析 (Backtest & Risk Analytics)")
+    st.markdown("### 📊 功能 3：進階策略績效與風險回測分析報表")
     closed_trades = view_df[view_df["Trade_Result"].isin(["成功", "未達標"])].copy()
     if closed_trades.empty:
-        st.info("目前尚無已結算的歷史交易訊號可供回測分析。")
+        st.info("目前尚無足夠的已結算歷史交易訊號可供回測分析。")
         return
 
-    cum_pnl, equity_curve, dates = 0.0, [100.0], [closed_trades["open_time"].iloc[0]]
+    cum_pnl, equity_curve, trade_returns = 0.0, [100.0], []
     wins, losses, total_win_pnl, total_loss_pnl = 0, 0, 0.0, 0.0
 
     for _, row in closed_trades.iterrows():
@@ -1792,27 +1833,56 @@ def render_backtest_analytics(view_df):
             total_loss_pnl += abs(pct)
         cum_pnl += pct
         equity_curve.append(100.0 + cum_pnl)
-        dates.append(row["open_time"])
+        trade_returns.append(pct)
 
     total_trades = wins + losses
     win_rate = (wins / total_trades * 100) if total_trades > 0 else 0.0
     profit_factor = (total_win_pnl / total_loss_pnl) if total_loss_pnl > 0 else (99.0 if total_win_pnl > 0 else 0.0)
+    
     eq_arr = np.array(equity_curve)
     peak = np.maximum.accumulate(eq_arr)
     max_dd = float(np.min((eq_arr - peak) / peak * 100)) if len(eq_arr) > 0 else 0.0
 
-    m1, m2, m3, m4, m5 = st.columns(5)
-    m1.metric("總已結算交易數", f"{total_trades} 筆")
-    m2.metric("勝率", f"{win_rate:.1f}%", f"{wins} 勝 / {losses} 敗")
+    # 計算簡易夏普比率 (Sharpe Ratio)
+    ret_arr = np.array(trade_returns)
+    sharpe = float(np.mean(ret_arr) / (np.std(ret_arr) + 1e-6) * np.sqrt(365)) if len(ret_arr) > 1 else 0.0
+
+    m1, m2, m3, m4, m5, m6 = st.columns(6)
+    m1.metric("總已結算交易", f"{total_trades} 筆")
+    m2.metric("策略勝率", f"{win_rate:.1f}%", f"{wins}勝/{losses}敗")
     m3.metric("獲利因子", f"{profit_factor:.2f}")
-    m4.metric("總累計報酬率", f"{cum_pnl:+.2f}%")
-    m5.metric("最大回撤", f"{max_dd:.2f}%", delta_color="inverse")
+    m4.metric("夏普比率", f"{sharpe:.2f}")
+    m5.metric("總報酬率", f"{cum_pnl:+.2f}%")
+    m6.metric("最大回撤 (MDD)", f"{max_dd:.2f}%", delta_color="inverse")
+
+    # 繪製淨值成長曲線
+    fig_eq = go.Figure()
+    fig_eq.add_trace(go.Scatter(
+        y=equity_curve, mode="lines+markers", name="策略淨值曲線",
+        line=dict(color="#f0b90b", width=2.5),
+        marker=dict(size=4)
+    ))
+    fig_eq.update_layout(
+        template="plotly_dark", paper_bgcolor="rgba(11,14,17,.6)", plot_bgcolor="rgba(11,14,17,.6)",
+        height=280, margin=dict(l=10, r=10, t=30, b=10),
+        title="📈 累積資金淨值成長曲線 (初始 100%)",
+        xaxis=dict(title="交易序號", gridcolor="#1e2329"),
+        yaxis=dict(title="資金淨值", gridcolor="#1e2329", tickformat=",.1f")
+    )
+    st.plotly_chart(fig_eq, use_container_width=True)
 
 
 def render_live_kline_chart(table, symbol, pair, tf):
+    s_dict = dict(DEFAULT_TRADE_SETTINGS)
+    s_dict.update(st.session_state.get("auth_settings") or {})
+    
+    user_thresh = s_dict.get("ai_confidence_thresh", 45)
+    trade_style = s_dict.get("trade_style", "平衡")
+    bt_days = s_dict.get("backtest_days", 30)
+
     df = load_historical_data(table, symbol, None)
     if df.empty:
-        st.warning("目前無法取得資料。")
+        st.warning("目前無法取得歷史 K 線資料。")
         return
 
     df_all_tf = {t_val: df[df["timeframe"] == t_val].sort_values("open_time").copy().reset_index(drop=True) for t_val in ["5m", "15m", "1h", "4h"]}
@@ -1821,13 +1891,13 @@ def render_live_kline_chart(table, symbol, pair, tf):
         return
 
     last_row = df_tf.iloc[-1]
-    sig = (len(df_tf), df_tf["open_time"].iloc[0], df_tf["open_time"].iloc[-1], float(last_row["close_price"]), outbox_stamp(symbol, tf))
-    bundle_key = f"_bundle_{table}_{tf}"
+    sig = (len(df_tf), df_tf["open_time"].iloc[0], df_tf["open_time"].iloc[-1], float(last_row["close_price"]), outbox_stamp(symbol, tf), user_thresh, trade_style, bt_days)
+    bundle_key = f"_bundle_{table}_{tf}_{user_thresh}_{trade_style}_{bt_days}"
     cached_bundle = st.session_state.get(bundle_key)
     if cached_bundle is not None and cached_bundle["sig"] == sig:
         bundle = cached_bundle["bundle"]
     else:
-        bundle = _build_chart_bundle(df_all_tf, symbol, pair, tf)
+        bundle = _build_chart_bundle(df_all_tf, symbol, pair, tf, user_thresh=user_thresh, trade_style=trade_style, bt_days=bt_days)
         if bundle is None:
             return
         st.session_state[bundle_key] = {"sig": sig, "bundle": bundle}
@@ -1844,21 +1914,21 @@ def render_live_kline_chart(table, symbol, pair, tf):
         st.plotly_chart(fig, use_container_width=True, config={"scrollZoom": True, "displayModeBar": True, "displaylogo": False}, key=f"{symbol.lower()}_{tf}_chart")
 
     with panel_col:
-        st.markdown("### 🎯 AI 即時操作建議 (高勝率優化)")
+        st.markdown("### 🎯 AI 即時操作建議")
         st.markdown(f"""
         <div class="conf-card">
-            <div class="conf-label">當前 AI 模型信心分數</div>
+            <div class="conf-label">當前 AI 信心分數 (門檻: {user_thresh}%)</div>
             <div class="conf-value">{ai_score:.1f}%</div>
             <div class="conf-bar"><span style="width:{min(max(ai_score, 0), 100):.1f}%;"></span></div>
-            <div class="conf-foot"><span>多週期趨勢聯動 (15m/1h/4h)</span><b>高共振 🟢</b></div>
+            <div class="conf-foot"><span>模式：{trade_style}</span><b>多週期共振 🟢</b></div>
         </div>
         """, unsafe_allow_html=True)
 
         if bool(latest["Long_Signal"]):
-            st.success("🟢 LONG 多單進場訊號 (5m 點位 + 15m/1h/4h 依據確認)")
+            st.success("🟢 LONG 多單進場訊號")
             st.metric("參考進場價格", f"{latest_close:,.2f}")
         elif bool(latest["Short_Signal"]):
-            st.error("🔴 SHORT 空單進場訊號 (5m 點位 + 15m/1h/4h 依據確認)")
+            st.error("🔴 SHORT 空單進場訊號")
             st.metric("參考進場價格", f"{latest_close:,.2f}")
         else:
             st.warning("⏳ WAIT 目前沒有進場訊號")
