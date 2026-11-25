@@ -22,7 +22,7 @@ import hmac
 import hashlib
 import secrets
 from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 try:
     from cryptography.fernet import Fernet, InvalidToken
@@ -1068,32 +1068,59 @@ def _render_order_log(user):
 # ------------------------------------------------------------
 # 獨立背景自動下單執行緒（24小時不間斷背景監控）
 # ------------------------------------------------------------
+def _tw_log(msg):
+    try:
+        print(f"[trade-worker] {datetime.now(TAIWAN_TZ).strftime('%m-%d %H:%M:%S')} {msg}", flush=True)
+    except Exception:
+        pass
+
+
 @st.cache_resource
 def _start_background_trade_worker():
+    SCAN_BARS = 3           # 每輪檢查最近幾根 K 棒，避免剛好錯過最新一根
+    MAX_BAR_AGE_MIN = 15    # 超過這個分鐘數的舊訊號不追單
+
     def _worker_loop():
+        _tw_log("背景下單執行緒已啟動")
+        tick = 0
         while True:
             time.sleep(30)
+            tick += 1
             try:
                 with _acct_engine().connect() as conn:
                     users = conn.execute(text("SELECT username, settings_json FROM app_users")).fetchall()
-                
+
+                active = 0
+                now_tw = datetime.now(TAIWAN_TZ).replace(tzinfo=None)
+
                 for row in users:
                     user = row[0]
                     s = _load_settings(row[1])
                     if not s.get("auto_trade"):
                         continue
-                    
+                    active += 1
+
                     exchange = s.get("exchange", "OKX")
                     try:
                         creds = _get_exchange_creds(user, exchange)
-                    except Exception:
+                        if not creds.get("key") or not creds.get("secret"):
+                            _tw_log(f"{user}: {exchange} API 金鑰為空或解密失敗（請確認 APP_SECRET_KEY 沒有被更動）")
+                            continue
+                    except Exception as e:
+                        _tw_log(f"{user}: 讀取 {exchange} 金鑰失敗：{e}")
                         continue
-                    
+
+                    enabled_at = None
+                    try:
+                        if s.get("enabled_at"):
+                            enabled_at = datetime.fromisoformat(str(s["enabled_at"]))
+                    except Exception:
+                        enabled_at = None
+
                     symbols_config = [
                         ("BTC", "BTC-USDT-SWAP", "btc_contract_klines"),
-                        ("ETH", "ETH-USDT-SWAP", "eth_contract_klines")
+                        ("ETH", "ETH-USDT-SWAP", "eth_contract_klines"),
                     ]
-                    
                     user_thresh = s.get("ai_confidence_thresh", 45)
                     trade_style = s.get("trade_style", "平衡")
                     tf = "5m"
@@ -1102,46 +1129,65 @@ def _start_background_trade_worker():
                         try:
                             df_all = load_historical_data(tbl, sym, None)
                             if df_all.empty:
+                                _tw_log(f"{user} {sym}: 讀不到 K 線資料（資料庫連線或資料表為空）")
                                 continue
                             df_tf = df_all[df_all["timeframe"] == tf].sort_values("open_time").reset_index(drop=True)
                             if df_tf.empty:
+                                _tw_log(f"{user} {sym}: 沒有 {tf} K 線")
                                 continue
 
                             higher_tf_dfs = {
                                 "15m": df_all[df_all["timeframe"] == "15m"],
                                 "1h": df_all[df_all["timeframe"] == "1h"],
-                                "4h": df_all[df_all["timeframe"] == "4h"]
+                                "4h": df_all[df_all["timeframe"] == "4h"],
                             }
                             df_tf, _, _ = calculate_indicators(df_tf, tf)
                             df_tf = build_candidate_signals(df_tf, tf, higher_tf_dfs=higher_tf_dfs)
                             model, _, _ = train_or_get_ai_model(df_tf, f"{sym}_{tf}")
                             df_tf = add_trade_signals(df_tf, model, user_thresh=user_thresh, trade_style=trade_style)
+                            df_tf = fill_missing_tp_sl(df_tf)
                             df_tf = filter_single_signal_per_wave(df_tf)
 
-                            last_row = df_tf.iloc[-1]
-                            long_sig, short_sig = bool(last_row["Long_Signal"]), bool(last_row["Short_Signal"])
-                            if long_sig != short_sig:
+                            for _, r in df_tf.tail(SCAN_BARS).iloc[::-1].iterrows():
+                                long_sig, short_sig = bool(r["Long_Signal"]), bool(r["Short_Signal"])
+                                if long_sig == short_sig:
+                                    continue
+                                bar_t = pd.Timestamp(r["open_time"]).to_pydatetime()
+                                if (now_tw - bar_t).total_seconds() > MAX_BAR_AGE_MIN * 60:
+                                    continue
+                                if enabled_at and bar_t + timedelta(minutes=5) <= enabled_at:
+                                    continue
                                 direction = "LONG" if long_sig else "SHORT"
-                                sl, tp = last_row.get("Stop_Loss"), last_row.get("Take_Profit")
-                                bar_t = pd.Timestamp(last_row["open_time"]).to_pydatetime()
-                                if not pd.isna(sl) and not pd.isna(tp):
-                                    order_id = _claim_order(user, exchange, sym, tf, bar_t, direction)
-                                    if order_id:
-                                        try:
-                                            seed = f"{user}|{exchange}|{sym}|{tf}|{bar_t.isoformat()}"
-                                            detail = place_exchange_order(
-                                                exchange, creds, s, pr, direction,
-                                                float(last_row["close_price"]), float(sl), float(tp), seed
-                                            )
-                                            _finish_order(order_id, "success", detail)
-                                        except OrderSkip as e:
-                                            _finish_order(order_id, "skipped", str(e))
-                                        except Exception as e:
-                                            _finish_order(order_id, "failed", str(e))
-                        except Exception:
-                            pass
-            except Exception:
-                pass
+                                sl, tp = r.get("Stop_Loss"), r.get("Take_Profit")
+                                if pd.isna(sl) or pd.isna(tp):
+                                    _tw_log(f"{user} {sym} {bar_t:%m/%d %H:%M} {direction}: 缺少止損/止盈，略過")
+                                    continue
+
+                                order_id = _claim_order(user, exchange, sym, tf, bar_t, direction)
+                                if not order_id:
+                                    continue  # 這根訊號已處理過
+                                try:
+                                    seed = f"{user}|{exchange}|{sym}|{tf}|{bar_t.isoformat()}"
+                                    detail = place_exchange_order(
+                                        exchange, creds, s, pr, direction,
+                                        float(r["close_price"]), float(sl), float(tp), seed,
+                                    )
+                                    _finish_order(order_id, "success", detail)
+                                    _tw_log(f"{user} {sym} {direction} 下單成功：{detail}")
+                                except OrderSkip as e:
+                                    _finish_order(order_id, "skipped", str(e))
+                                    _tw_log(f"{user} {sym} {direction} 略過：{e}")
+                                except Exception as e:
+                                    _finish_order(order_id, "failed", str(e))
+                                    _tw_log(f"{user} {sym} {direction} 下單失敗：{e}")
+                                break  # 每輪每個幣種最多下一張
+                        except Exception as e:
+                            _tw_log(f"{user} {sym}: 處理失敗：{e}")
+
+                if tick % 20 == 1:
+                    _tw_log(f"運作中，已啟用自動下單的使用者數：{active}")
+            except Exception as e:
+                _tw_log(f"主迴圈錯誤：{e}")
 
     t = threading.Thread(target=_worker_loop, daemon=True, name="background-trade-worker")
     t.start()
