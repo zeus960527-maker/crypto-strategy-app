@@ -401,7 +401,7 @@ st.session_state.setdefault("is_searched", False)
 st.session_state.setdefault("search_query", "")
 st.session_state.setdefault("ai_models", {})
 
-st.title("加密貨幣 AI 策略系統 (專業增強版)")
+st.title("加密貨幣 AI 策略系統")
 
 st.markdown("""
 <div class="hero-sub">
