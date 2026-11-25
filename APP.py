@@ -650,8 +650,6 @@ def check_fingerprint_login():
             if row:
                 st.session_state.auth_user = row[0]
                 st.session_state.auth_settings = _load_settings(row[1])
-                # 登入成功後直接預設進入主搜尋介面
-                st.session_state.is_searched = True
                 st.query_params.clear()
                 return True
             else:
@@ -1007,7 +1005,6 @@ def render_auth_gate():
                 </div>
                 <script>
                     function requestFingerprintLogin() {
-                        // 擴大搜尋範圍，優先抓取最外層 Android WebView 的介面
                         const android = (window.top && window.top.AndroidInterface) || 
                                         (window.parent && window.parent.AndroidInterface) || 
                                         window.AndroidInterface;
@@ -1015,7 +1012,6 @@ def render_auth_gate():
                         if (android && typeof android.requestFingerprintAuth === 'function') {
                             android.requestFingerprintAuth();
                         } else {
-                            // 備用方案：從 localStorage 讀取
                             const savedToken = window.localStorage.getItem('okx_fingerprint_token') || 
                                                (window.parent && window.parent.localStorage.getItem('okx_fingerprint_token'));
                             if (savedToken) {
@@ -1026,7 +1022,6 @@ def render_auth_gate():
                         }
                     }
                     
-                    // 接收指紋驗證成功後的 Token 並導向
                     function onFingerprintLoginSuccess(token) {
                         if (token) {
                             const targetWin = window.top || window.parent;
@@ -1038,7 +1033,6 @@ def render_auth_gate():
                         }
                     }
                     
-                    // 同步掛載至全域讓 Android 原生程式碼呼叫
                     if (window.top) {
                         window.top.onFingerprintLoginSuccess = onFingerprintLoginSuccess;
                     }
@@ -1092,7 +1086,6 @@ def render_settings_popover(user):
         
         if st.button("綁定當前裝置指紋快速登入", use_container_width=True, key="bind_fp_btn"):
             fp_val = secrets.token_hex(32)
-            # 這裡透過雙大括號 {{ }} 正確跳脫 Python f-string 內嵌的 JS 變數
             components.html(f"""
             <script>
                 window.parent.localStorage.setItem('okx_fingerprint_token', '{fp_val}');
