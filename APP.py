@@ -605,6 +605,7 @@ def _load_settings(raw_json):
         s.update(json.loads(raw_json or "{}"))
     except Exception:
         pass
+    # 相容舊版參數轉新版欄位
     if "fund_ratio" in s and "fund_amount" not in s:
         s["fund_amount"] = 100.0
     if "td_mode" in s:
@@ -935,6 +936,7 @@ def place_exchange_order(exchange, creds, s, pair, direction, price, sl, tp, clo
         lot = Decimal(str(inst["lotSz"]))
         min_sz = Decimal(str(inst["minSz"]))
         
+        # 依使用者設定的「使用金額 (USDT)」計算下單本金（以帳戶可用餘額為上限）
         target_amount = min(Decimal(str(s.get("fund_amount", 100.0))), Decimal(str(avail)))
         budget = target_amount * Decimal(lever)
         
@@ -1252,6 +1254,7 @@ def render_settings_popover(user):
     s = dict(DEFAULT_TRADE_SETTINGS)
     s.update(st.session_state.get("auth_settings") or {})
     
+    # 嘗試取得當前帳戶餘額以作為「使用金額」的最大上限參考
     curr_ex = s.get("exchange", "OKX")
     max_bal_limit = 10000.0
     try:
@@ -1360,11 +1363,13 @@ def render_settings_popover(user):
             
             trailing = st.toggle("🛡️ 啟用智慧移動止損 (Trailing Stop)", value=bool(s.get("trailing_stop", True)))
             
+            # 保證金模式改為「逐倉」與「全倉」
             td_current = s.get("td_mode", "逐倉")
             if td_current not in ["逐倉", "全倉"]:
                 td_current = "逐倉"
             td = st.selectbox("保證金模式", ["逐倉", "全倉"], index=0 if td_current == "逐倉" else 1)
             
+            # 使用資金改為「使用金額 (USDT)」，以帳戶資金餘額為上限
             curr_fund_amount = float(s.get("fund_amount", 100.0))
             fund_amount = st.number_input(
                 "每次下單使用金額 (USDT)", 
@@ -2144,7 +2149,7 @@ def _build_chart_bundle(df_all_tf, symbol, pair, tf, user_thresh=45, trade_style
         margin=dict(l=10, r=85, t=65, b=30), uirevision=f"{symbol}_{tf}_{user_thresh}_{trade_style}",
         hoverlabel=dict(bgcolor="rgba(30,35,41,.95)", font_size=12, font_color="white", bordercolor="#f0b90b"),
     )
-    fig.update_layout(xaxis=dict(range=[start_time, end_time], autorange=False))
+    fig.update_layout(xaxis=dict(range=list(bundle["x_range"]), autorange=False))
     fig.update_xaxes(showline=True, linewidth=2, linecolor="#434c5e", mirror=True, row=2, col=1, fixedrange=False)
     fig.update_yaxes(side="right", gridcolor="#1e2329", zeroline=False, linecolor="#2b313a", tickformat=",.2f", showspikes=True, spikemode="across+toaxis", spikesnap="cursor", spikethickness=1, spikedash="dash", spikecolor="#a0a6b2", showline=True, row=1, col=1, range=y_range, fixedrange=False)
     fig.update_yaxes(side="right", gridcolor="#1e2329", zeroline=False, linecolor="#2b313a", tickformat=",.2f", showspikes=True, spikemode="across", spikesnap="cursor", spikethickness=1, spikedash="dash", spikecolor="#a0a6b2", row=2, col=1, range=[0, float(visible_df["volume"].max()) * 1.05], fixedrange=False)
@@ -2235,7 +2240,6 @@ def render_live_kline_chart(table, symbol, pair, tf):
     df_all_tf = {t_val: df[df["timeframe"] == t_val].sort_values("open_time").copy().reset_index(drop=True) for t_val in ["5m", "15m", "1h", "4h"]}
     df_tf = df_all_tf.get(tf, pd.DataFrame())
     if df_tf.empty:
-        st.warning(f"目前無 {tf} 週期的 K 線資料。")
         return
 
     last_row = df_tf.iloc[-1]
@@ -2247,7 +2251,6 @@ def render_live_kline_chart(table, symbol, pair, tf):
     else:
         bundle = _build_chart_bundle(df_all_tf, symbol, pair, tf, user_thresh=user_thresh, trade_style=trade_style, bt_days=bt_days)
         if bundle is None:
-            st.warning("資料不足，無法產生圖表與策略分析。")
             return
         st.session_state[bundle_key] = {"sig": sig, "bundle": bundle}
 
