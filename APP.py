@@ -638,7 +638,6 @@ def login_user(username, password, remember=False):
                     {"t": token, "u": u},
                 )
             st.query_params["remember_token"] = token
-            # 💡 修正：寫入 parent window 的 localStorage
             components.html(f"""
             <script>
                 window.parent.localStorage.setItem('okx_remember_token', '{token}');
@@ -653,7 +652,6 @@ def check_remembered_login():
     if st.session_state.get("auth_user"):
         return True
     
-    # 💡 修正：從 parent window 的 localStorage 讀取 Token 並導向
     components.html("""
     <script>
         const token = window.parent.localStorage.getItem('okx_remember_token');
@@ -1011,10 +1009,10 @@ def render_okx_trade_panel(symbol, pair, tf, latest, latest_close):
 def render_auth_gate():
     st.markdown("### 🔐 請先登入或註冊")
     
-    # 💡 修正：使用 window.parent 存取 Android 介面與導向主視窗
+    # 支援 Android 指紋快速登入的按鈕與橋接邏輯
     components.html("""
     <div style="margin-bottom: 15px; text-align: center;">
-        <button id="bio-login-btn" onclick="requestFingerprintLogin()" style="width:100%; padding:10px; background:linear-gradient(135deg, #ffd35a, #f0b90b); color:#1a1400; font-weight:bold; border:none; border-radius:10px; cursor:pointer; box-shadow: 0 4px 14px rgba(240,185,11,.35); display:none;">
+        <button id="bio-login-btn" onclick="requestFingerprintLogin()" style="width:100%; padding:12px; background:linear-gradient(135deg, #ffd35a, #f0b90b); color:#1a1400; font-weight:bold; border:none; border-radius:10px; cursor:pointer; box-shadow: 0 4px 14px rgba(240,185,11,.35); display:none; font-size:15px;">
             👆 使用指紋快速登入
         </button>
     </div>
@@ -1030,7 +1028,7 @@ def render_auth_gate():
             if (android && typeof android.requestFingerprintAuth === 'function') {
                 android.requestFingerprintAuth();
             } else {
-                alert("目前環境不支援指紋快速登入。");
+                alert("目前環境不支援指紋快速登入，請先使用帳密登入並至設定綁定。");
             }
         }
         window.parent.onFingerprintLoginSuccess = function(token) {
@@ -1041,7 +1039,7 @@ def render_auth_gate():
             }
         }
     </script>
-    """, height=60)
+    """, height=70)
 
     tab_login, tab_reg = st.tabs(["登入", "註冊"])
     with tab_login:
