@@ -1007,31 +1007,44 @@ def render_auth_gate():
                 </div>
                 <script>
                     function requestFingerprintLogin() {
-                        const android = window.AndroidInterface || window.parent.AndroidInterface;
+                        // 擴大搜尋範圍，優先抓取最外層 Android WebView 的介面
+                        const android = (window.top && window.top.AndroidInterface) || 
+                                        (window.parent && window.parent.AndroidInterface) || 
+                                        window.AndroidInterface;
+                                        
                         if (android && typeof android.requestFingerprintAuth === 'function') {
                             android.requestFingerprintAuth();
                         } else {
-                            const savedToken = window.parent.localStorage.getItem('okx_fingerprint_token');
+                            // 備用方案：從 localStorage 讀取
+                            const savedToken = window.localStorage.getItem('okx_fingerprint_token') || 
+                                               (window.parent && window.parent.localStorage.getItem('okx_fingerprint_token'));
                             if (savedToken) {
-                                window.parent.onFingerprintLoginSuccess(savedToken);
+                                onFingerprintLoginSuccess(savedToken);
                             } else {
-                                alert("💡 尚未綁定指紋或非 Android 容器環境。請先用帳密登入並至設定完成綁定。");
+                                alert("💡 尚未偵測到 Android 容器指紋介面或尚未綁定。請先用帳密登入並至設定完成綁定。");
                             }
                         }
                     }
                     
-                    window.parent.onFingerprintLoginSuccess = function(token) {
+                    // 接收指紋驗證成功後的 Token 並導向
+                    function onFingerprintLoginSuccess(token) {
                         if (token) {
-                            const url = new URL(window.parent.location.origin + window.parent.location.pathname);
+                            const targetWin = window.top || window.parent;
+                            const url = new URL(targetWin.location.origin + targetWin.location.pathname);
                             url.searchParams.set('fp_token', token);
-                            window.parent.location.href = url.toString();
+                            targetWin.location.href = url.toString();
                         } else {
                             alert("❌ 指紋驗證回傳的 Token 效期失效或為空，請重新登入綁定。");
                         }
                     }
+                    
+                    // 同步掛載至全域讓 Android 原生程式碼呼叫
+                    if (window.top) {
+                        window.top.onFingerprintLoginSuccess = onFingerprintLoginSuccess;
+                    }
+                    window.onFingerprintLoginSuccess = onFingerprintLoginSuccess;
                 </script>
                 """, height=55)
-
             if submitted:
                 u, settings, err = login_user(l_user, l_pw)
                 if err:
