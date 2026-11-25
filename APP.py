@@ -893,6 +893,89 @@ def _render_order_log(user):
         st.dataframe(df, use_container_width=True, hide_index=True)
 
 
+# ------------------------------------------------------------
+# 獨立背景自動下單執行緒（24小時不間斷背景監控）
+# ------------------------------------------------------------
+@st.cache_resource
+def _start_background_trade_worker():
+    def _worker_loop():
+        while True:
+            time.sleep(30) # 每 30 秒背景檢查一次
+            try:
+                with _acct_engine().connect() as conn:
+                    users = conn.execute(text("SELECT username, settings_json FROM app_users")).fetchall()
+                
+                for row in users:
+                    user = row[0]
+                    s = _load_settings(row[1])
+                    if not s.get("auto_trade"):
+                        continue
+                    
+                    try:
+                        creds = _get_creds(user)
+                    except Exception:
+                        continue
+                    
+                    symbols_config = [
+                        ("BTC", "BTC-USDT-SWAP", "btc_contract_klines"),
+                        ("ETH", "ETH-USDT-SWAP", "eth_contract_klines")
+                    ]
+                    
+                    user_thresh = s.get("ai_confidence_thresh", 45)
+                    trade_style = s.get("trade_style", "平衡")
+                    tf = "5m" # 預設以 5m 即時進場週期掃描
+
+                    for sym, pr, tbl in symbols_config:
+                        try:
+                            df_all = load_historical_data(tbl, sym, None)
+                            if df_all.empty:
+                                continue
+                            df_tf = df_all[df_all["timeframe"] == tf].sort_values("open_time").reset_index(drop=True)
+                            if df_tf.empty:
+                                continue
+
+                            higher_tf_dfs = {
+                                "15m": df_all[df_all["timeframe"] == "15m"],
+                                "1h": df_all[df_all["timeframe"] == "1h"],
+                                "4h": df_all[df_all["timeframe"] == "4h"]
+                            }
+                            df_tf, _, _ = calculate_indicators(df_tf, tf)
+                            df_tf = build_candidate_signals(df_tf, tf, higher_tf_dfs=higher_tf_dfs)
+                            model, _, _ = train_or_get_ai_model(df_tf, f"{sym}_{tf}")
+                            df_tf = add_trade_signals(df_tf, model, user_thresh=user_thresh, trade_style=trade_style)
+
+                            last_row = df_tf.iloc[-1]
+                            long_sig, short_sig = bool(last_row["Long_Signal"]), bool(last_row["Short_Signal"])
+                            if long_sig != short_sig:
+                                direction = "LONG" if long_sig else "SHORT"
+                                sl, tp = last_row.get("Stop_Loss"), last_row.get("Take_Profit")
+                                bar_t = pd.Timestamp(last_row["open_time"]).to_pydatetime()
+                                if not pd.isna(sl) and not pd.isna(tp):
+                                    order_id = _claim_order(user, sym, tf, bar_t, direction)
+                                    if order_id:
+                                        try:
+                                            seed = f"{user}|{sym}|{tf}|{bar_t.isoformat()}"
+                                            detail = okx_place_signal_order(
+                                                creds, s, pr, direction,
+                                                float(last_row["close_price"]), float(sl), float(tp), seed
+                                            )
+                                            _finish_order(order_id, "success", detail)
+                                        except OrderSkip as e:
+                                            _finish_order(order_id, "skipped", str(e))
+                                        except Exception as e:
+                                            _finish_order(order_id, "failed", str(e))
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+
+    t = threading.Thread(target=_worker_loop, daemon=True, name="background-trade-worker")
+    t.start()
+    return True
+
+_start_background_trade_worker()
+
+
 def render_okx_trade_panel(symbol, pair, tf, latest, latest_close):
     user = st.session_state.get("auth_user")
     if not user:
@@ -907,6 +990,7 @@ def render_okx_trade_panel(symbol, pair, tf, latest, latest_close):
         _render_order_log(user)
         return
 
+    st.caption("🤖 背景 24 小時自動下單執行中（即使關閉介面或未在該頁面也會自動監控執行）。")
     try:
         symbols_config = [
             ("BTC", "BTC-USDT-SWAP", "btc_contract_klines"),
