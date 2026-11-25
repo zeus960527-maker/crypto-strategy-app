@@ -638,9 +638,10 @@ def login_user(username, password, remember=False):
                     {"t": token, "u": u},
                 )
             st.query_params["remember_token"] = token
+            # 💡 修正：寫入 parent window 的 localStorage
             components.html(f"""
             <script>
-                localStorage.setItem('okx_remember_token', '{token}');
+                window.parent.localStorage.setItem('okx_remember_token', '{token}');
             </script>
             """, height=0)
         except Exception:
@@ -652,13 +653,14 @@ def check_remembered_login():
     if st.session_state.get("auth_user"):
         return True
     
+    # 💡 修正：從 parent window 的 localStorage 讀取 Token 並導向
     components.html("""
     <script>
-        const token = localStorage.getItem('okx_remember_token');
-        if (token && !window.location.search.includes('remember_token')) {
-            const url = new URL(window.location.href);
+        const token = window.parent.localStorage.getItem('okx_remember_token');
+        if (token && !window.parent.location.search.includes('remember_token')) {
+            const url = new URL(window.parent.location.href);
             url.searchParams.set('remember_token', token);
-            window.location.href = url.toString();
+            window.parent.location.href = url.toString();
         }
     </script>
     """, height=0)
@@ -1009,7 +1011,7 @@ def render_okx_trade_panel(symbol, pair, tf, latest, latest_close):
 def render_auth_gate():
     st.markdown("### 🔐 請先登入或註冊")
     
-    # 支援 Android 指紋快速登入的觸發介面（透過 App 容器注入 Token）
+    # 💡 修正：使用 window.parent 存取 Android 介面與導向主視窗
     components.html("""
     <div style="margin-bottom: 15px; text-align: center;">
         <button id="bio-login-btn" onclick="requestFingerprintLogin()" style="width:100%; padding:10px; background:linear-gradient(135deg, #ffd35a, #f0b90b); color:#1a1400; font-weight:bold; border:none; border-radius:10px; cursor:pointer; box-shadow: 0 4px 14px rgba(240,185,11,.35); display:none;">
@@ -1017,25 +1019,25 @@ def render_auth_gate():
         </button>
     </div>
     <script>
-        // 檢查 Android 容器是否已綁定指紋 Token
         window.addEventListener('load', function() {
-            if (window.AndroidInterface && window.AndroidInterface.hasFingerprintToken && window.AndroidInterface.hasFingerprintToken()) {
+            const android = window.AndroidInterface || window.parent.AndroidInterface;
+            if (android && android.hasFingerprintToken && android.hasFingerprintToken()) {
                 document.getElementById('bio-login-btn').style.display = 'block';
             }
         });
         function requestFingerprintLogin() {
-            if (window.AndroidInterface && typeof window.AndroidInterface.requestFingerprintAuth === 'function') {
-                window.AndroidInterface.requestFingerprintAuth();
+            const android = window.AndroidInterface || window.parent.AndroidInterface;
+            if (android && typeof android.requestFingerprintAuth === 'function') {
+                android.requestFingerprintAuth();
             } else {
                 alert("目前環境不支援指紋快速登入。");
             }
         }
-        // 由 Android 原生呼叫此函數帶入 Token 進行自動登入
-        window.onFingerprintLoginSuccess = function(token) {
+        window.parent.onFingerprintLoginSuccess = function(token) {
             if (token) {
-                const url = new URL(window.location.href);
+                const url = new URL(window.parent.location.href);
                 url.searchParams.set('remember_token', token);
-                window.location.href = url.toString();
+                window.parent.location.href = url.toString();
             }
         }
     </script>
@@ -1087,7 +1089,7 @@ def render_settings_popover(user):
     with st.popover("⚙️ 系統與策略設定", help="設定交易所金鑰、智慧停損與 AI 參數"):
         st.markdown(f"**👤 帳號：{user}**")
         
-        # ================= 新增：指紋登入設定區塊 =================
+        # ================= 指紋登入設定區塊 =================
         st.markdown("---")
         st.markdown("#### 👆 指紋 / 生物辨識登入設定")
         st.caption("綁定後，下次開啟 App 可直接使用手機指紋快速驗證登入。")
@@ -1097,13 +1099,14 @@ def render_settings_popover(user):
         </button>
         <script>
             document.getElementById('enable-bio').onclick = function() {
-                const token = localStorage.getItem('okx_remember_token') || '';
+                const token = window.parent.localStorage.getItem('okx_remember_token') || '';
                 if (!token) {
                     alert("找不到登入憑證，請重新整理或重新登入後再綁定。");
                     return;
                 }
-                if (window.AndroidInterface && typeof window.AndroidInterface.saveFingerprintToken === 'function') {
-                    window.AndroidInterface.saveFingerprintToken(token);
+                const android = window.AndroidInterface || window.parent.AndroidInterface;
+                if (android && typeof android.saveFingerprintToken === 'function') {
+                    android.saveFingerprintToken(token);
                     alert("✅ 指紋快速登入已成功綁定至此 Android 裝置！");
                 } else {
                     alert("💡 提示：此功能需在 Android App 容器中執行才能生效。");
@@ -1111,7 +1114,7 @@ def render_settings_popover(user):
             };
         </script>
         """, height=65)
-        # ========================================================
+        # ====================================================
 
         st.markdown("---")
         st.markdown("#### 🔑 OKX 交易所 API 設定")
@@ -1189,7 +1192,7 @@ def render_settings_popover(user):
         if st.button("登出系統", key="logout_btn", use_container_width=True):
             components.html("""
             <script>
-                localStorage.removeItem('okx_remember_token');
+                window.parent.localStorage.removeItem('okx_remember_token');
             </script>
             """, height=0)
             st.session_state.auth_user = None
@@ -2083,8 +2086,8 @@ if __name__ == "__main__":
         selected_tf = st.radio("時間軸週期", ["5m", "15m", "1h", "4h"], horizontal=True, key="timeframe_select")
 
         @st.fragment(run_every=5)
-        def render_live_fragment(tbl, sym, pair, timeframe):
-            render_live_kline_chart(tbl, sym, pair, timeframe)
+        def render_live_fragment(tbl, sig_pair, timeframe):
+            render_live_kline_chart(table_name, symbol_name, pair_name, timeframe)
 
         render_live_fragment(table_name, symbol_name, pair_name, selected_tf)
     elif st.session_state.search_query:
