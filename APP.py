@@ -2184,8 +2184,8 @@ def _build_chart_bundle(df_all_tf, symbol, pair, tf, user_thresh=45, trade_style
     low, high = visible_df["low_price"].min(), visible_df["high_price"].max()
     span = max(high - low, abs(high) * 0.001, 1e-8)
     center_y = (float(latest["high_price"]) + float(latest["low_price"])) / 2
-    # 調整此處的乘數（原本 1.12 改為 0.78），縮小上下邊距即可讓每根 K 棒在視覺上高度增加、垂直振幅更顯著
-    half = max(high - center_y, center_y - low, span * 0.05) * 0.78
+    # 再次將乘數從 0.78 縮小至 0.55，讓 K 棒在畫面中拉得更高、振幅更大
+    half = max(high - center_y, center_y - low, span * 0.05) * 0.55
     y_range = [center_y - half, center_y + half]
     change_pct = ((latest_close - latest["open_price"]) / latest["open_price"] * 100) if latest["open_price"] else 0
     status_color = "#0ECB81" if latest["close_price"] >= latest["open_price"] else "#F6465D"
