@@ -1077,19 +1077,15 @@ def render_settings_popover(user):
         
         if st.button("綁定當前裝置指紋快速登入", use_container_width=True, key="bind_fp_btn"):
             fp_val = secrets.token_hex(32)
-            
-            # 使用安全的字串取代以避免 Python 與 JS 大括號衝突
-            js_code = """
+            components.html(f"""
             <script>
-                window.parent.localStorage.setItem('okx_fingerprint_token', '%s');
+                window.parent.localStorage.setItem('okx_fingerprint_token', '{fp_val}');
                 const android = window.AndroidInterface || window.parent.AndroidInterface;
                 if (android && typeof android.saveFingerprintToken === 'function') {
-                    android.saveFingerprintToken('%s');
+                    android.saveFingerprintToken('{fp_val}');
                 }
             </script>
-            """ % (fp_val, fp_val)
-            
-            components.html(js_code, height=0)
+            """, height=0)
             
             try:
                 with _acct_engine().begin() as conn:
