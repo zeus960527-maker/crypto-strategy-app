@@ -401,7 +401,7 @@ st.session_state.setdefault("is_searched", False)
 st.session_state.setdefault("search_query", "")
 st.session_state.setdefault("ai_models", {})
 
-st.title("加密貨幣 AI 策略系統")
+st.title("加密貨幣 AI 策略系統 (專業增強版)")
 
 st.markdown("""
 <div class="hero-sub">
@@ -429,8 +429,8 @@ DEFAULT_TRADE_SETTINGS = {
     "auto_trade": False,
     "exchange": "OKX",
     "demo": False,
-    "td_mode": "isolated",
-    "fund_ratio": 95,
+    "td_mode": "逐倉",
+    "fund_amount": 100.0,
     "use_max_lever": True,
     "manual_lever": 10,
     "protect_sl": True,
@@ -605,6 +605,14 @@ def _load_settings(raw_json):
         s.update(json.loads(raw_json or "{}"))
     except Exception:
         pass
+    # 相容舊版參數轉新版欄位
+    if "fund_ratio" in s and "fund_amount" not in s:
+        s["fund_amount"] = 100.0
+    if "td_mode" in s:
+        if s["td_mode"] == "isolated":
+            s["td_mode"] = "逐倉"
+        elif s["td_mode"] == "cross":
+            s["td_mode"] = "全倉"
     return s
 
 
@@ -787,13 +795,11 @@ def _okx_request(method, path, creds=None, params=None, body=None, demo=False):
 
 
 def _bitunix_request(method, path, creds=None, params=None, body=None):
-    # Bitunix API 規範實作
     timestamp = str(int(time.time() * 1000))
     nonce = secrets.token_hex(8)
     query_str = urllib.parse.urlencode(params) if params else ""
     body_str = json.dumps(body, separators=(",", ":")) if body is not None else ""
     
-    # 簽名機制: md5/sha256 signature according to Bitunix V1 spec
     raw_sign_str = timestamp + creds["key"] + nonce + body_str
     sign = hmac.new(creds["secret"].encode("utf-8"), raw_sign_str.encode("utf-8"), hashlib.sha256).hexdigest()
     
@@ -820,7 +826,6 @@ def _bitunix_request(method, path, creds=None, params=None, body=None):
 
 
 def _bingx_request(method, path, creds=None, params=None, body=None):
-    # BingX API V1/V2 規範實作
     timestamp = str(int(time.time() * 1000))
     if params is None:
         params = {}
@@ -887,7 +892,6 @@ def check_exchange_position(exchange, creds, demo, inst_id):
                 pass
         return False
     elif exchange == "Bitunix":
-        # 簡化持倉檢查
         return False
     elif exchange == "BingX":
         return False
@@ -931,21 +935,25 @@ def place_exchange_order(exchange, creds, s, pair, direction, price, sl, tp, clo
         ct = Decimal(str(inst["ctVal"])) * Decimal(str(inst.get("ctMult") or "1"))
         lot = Decimal(str(inst["lotSz"]))
         min_sz = Decimal(str(inst["minSz"]))
-        budget = (Decimal(str(avail)) * Decimal(str(s.get("fund_ratio", 95))) / Decimal(100)) * Decimal(lever)
+        
+        # 依使用者設定的「使用金額 (USDT)」計算下單本金（以帳戶可用餘額為上限）
+        target_amount = min(Decimal(str(s.get("fund_amount", 100.0))), Decimal(str(avail)))
+        budget = target_amount * Decimal(lever)
+        
         contracts = _floor_step(budget / (Decimal(str(price)) * ct), lot)
         if contracts < min_sz:
-            raise ExchangeError("可用資金不足以下最小單位。")
+            raise ExchangeError("可用資金或設定金額不足以下最小單位。")
             
-        td_mode = s.get("td_mode", "isolated")
-        lev_body = {"instId": pair, "lever": str(lever), "mgnMode": td_mode}
-        if td_mode == "isolated" and pos_mode == "long_short_mode":
+        td_mode_raw = "isolated" if s.get("td_mode", "逐倉") == "逐倉" else "cross"
+        lev_body = {"instId": pair, "lever": str(lever), "mgnMode": td_mode_raw}
+        if td_mode_raw == "isolated" and pos_mode == "long_short_mode":
             lev_body["posSide"] = "long" if is_long else "short"
         _okx_request("POST", "/api/v5/account/set-leverage", creds, body=lev_body, demo=demo)
 
         tick = inst.get("tickSz") or "0.1"
         sl_s, tp_s = _fmt_px(sl, tick), _fmt_px(tp, tick)
         body = {
-            "instId": pair, "tdMode": td_mode, "side": "buy" if is_long else "sell",
+            "instId": pair, "tdMode": td_mode_raw, "side": "buy" if is_long else "sell",
             "ordType": "market", "sz": format(contracts.normalize(), "f"),
             "clOrdId": "ai" + hashlib.sha1(clord_seed.encode("utf-8")).hexdigest()[:24],
             "attachAlgoOrds": [{
@@ -962,7 +970,8 @@ def place_exchange_order(exchange, creds, s, pair, direction, price, sl, tp, clo
     elif exchange == "Bitunix":
         avail = get_exchange_balance(exchange, creds, demo)
         lever = 10 if s.get("use_max_lever") else int(s.get("manual_lever", 10))
-        notional = avail * (s.get("fund_ratio", 95) / 100.0) * lever
+        target_amount = min(float(s.get("fund_amount", 100.0)), float(avail))
+        notional = target_amount * lever
         sz = round(notional / price, 4)
         
         body = {
@@ -978,7 +987,8 @@ def place_exchange_order(exchange, creds, s, pair, direction, price, sl, tp, clo
     elif exchange == "BingX":
         avail = get_exchange_balance(exchange, creds, demo)
         lever = 10 if s.get("use_max_lever") else int(s.get("manual_lever", 10))
-        notional = avail * (s.get("fund_ratio", 95) / 100.0) * lever
+        target_amount = min(float(s.get("fund_amount", 100.0)), float(avail))
+        notional = target_amount * lever
         sz = round(notional / price, 4)
         
         body = {
@@ -1244,6 +1254,17 @@ def render_settings_popover(user):
     s = dict(DEFAULT_TRADE_SETTINGS)
     s.update(st.session_state.get("auth_settings") or {})
     
+    # 嘗試取得當前帳戶餘額以作為「使用金額」的最大上限參考
+    curr_ex = s.get("exchange", "OKX")
+    max_bal_limit = 10000.0
+    try:
+        creds_tmp = _get_exchange_creds(user, curr_ex)
+        bal_tmp = get_exchange_balance(curr_ex, creds_tmp, s.get("demo", False))
+        if bal_tmp > 0:
+            max_bal_limit = float(bal_tmp)
+    except Exception:
+        pass
+
     with st.popover("⚙️ 系統與策略設定", help="選擇交易所、設定金鑰、智慧停損與 AI 參數"):
         st.markdown(f"**👤 帳號：{user}**")
         
@@ -1276,14 +1297,12 @@ def render_settings_popover(user):
         st.markdown("---")
         st.markdown("#### 🌐 選擇交易平台與 API 設定")
         
-        # 1. 步驟一：先選擇交易所
         selected_ex = st.selectbox(
             "選擇要串接的交易所",
             ["OKX", "Bitunix", "BingX"],
             index=["OKX", "Bitunix", "BingX"].index(s.get("exchange", "OKX"))
         )
 
-        # 2. 步驟二：動態顯示對應的「如何申請 API」指南與輸入表單
         if selected_ex == "OKX":
             st.markdown("""
             <div class="exchange-guide">
@@ -1344,8 +1363,23 @@ def render_settings_popover(user):
             
             trailing = st.toggle("🛡️ 啟用智慧移動止損 (Trailing Stop)", value=bool(s.get("trailing_stop", True)))
             
-            td = st.selectbox("保證金模式", ["isolated", "cross"], index=0 if s["td_mode"] == "isolated" else 1)
-            ratio = st.slider("使用資金比例 (%)", 10, 100, int(s["fund_ratio"]), 5)
+            # 保證金模式改為「逐倉」與「全倉」
+            td_current = s.get("td_mode", "逐倉")
+            if td_current not in ["逐倉", "全倉"]:
+                td_current = "逐倉"
+            td = st.selectbox("保證金模式", ["逐倉", "全倉"], index=0 if td_current == "逐倉" else 1)
+            
+            # 使用資金改為「使用金額 (USDT)」，以帳戶資金餘額為上限
+            curr_fund_amount = float(s.get("fund_amount", 100.0))
+            fund_amount = st.number_input(
+                "每次下單使用金額 (USDT)", 
+                min_value=1.0, 
+                max_value=max(max_bal_limit, curr_fund_amount, 1.0), 
+                value=min(curr_fund_amount, max_bal_limit),
+                step=10.0,
+                help="每次開倉使用的本金金額 (USDT)，系統將自動以您的帳戶可用餘額為上限。"
+            )
+            
             maxlev = st.toggle("使用最大槓桿", value=bool(s["use_max_lever"]))
             manual = st.number_input("自訂槓桿", 1, 125, int(s["manual_lever"]))
             protect = st.toggle("止損保護", value=bool(s["protect_sl"]))
@@ -1362,7 +1396,7 @@ def render_settings_popover(user):
             if st.form_submit_button("儲存系統與下單參數", use_container_width=True):
                 new = dict(s)
                 new.update(
-                    exchange=selected_ex, auto_trade=bool(auto), demo=bool(demo), td_mode=td, fund_ratio=int(ratio),
+                    exchange=selected_ex, auto_trade=bool(auto), demo=bool(demo), td_mode=td, fund_amount=float(fund_amount),
                     use_max_lever=bool(maxlev), manual_lever=int(manual), protect_sl=bool(protect),
                     trailing_stop=bool(trailing), ai_confidence_thresh=int(ai_thresh),
                     trade_style=style, backtest_days=int(bt_days)
@@ -1373,7 +1407,7 @@ def render_settings_popover(user):
                 st.session_state.auth_settings = new
                 st.success("✅ 設定參數已成功儲存！")
 
-        if st.button("登出系統", key="logout_btn", use_container_width=True):
+        if st.button("登入後直接回到首頁或登出", key="logout_btn", use_container_width=True):
             components.html("""
             <script>
                 window.parent.localStorage.removeItem('okx_fingerprint_token');
@@ -1652,17 +1686,29 @@ def calculate_dynamic_tp_sl(row, is_long):
     vol_r = row.get('vol_ratio', 1.0)
     body_r = row.get('body_ratio', 0.5)
     rsi = row.get('RSI', 50)
+    atr_ratio = row.get('atr_ratio', 0.01)
+    
     if pd.isna(atr) or atr <= 0:
         return 1.5, 2.5
-    stop_mult, rr_ratio = 1.5, 2.5
+    
+    if atr_ratio < 0.003:
+        stop_mult, rr_ratio = 1.2, 2.2
+    elif atr_ratio > 0.015:
+        stop_mult, rr_ratio = 2.0, 3.2
+    else:
+        stop_mult, rr_ratio = 1.5, 2.5
+        
     if vol_r > 1.8 and body_r > 0.5:
-        stop_mult, rr_ratio = 1.8, 3.0
+        stop_mult += 0.2
+        rr_ratio += 0.5
     elif vol_r < 0.9:
-        stop_mult, rr_ratio = 1.2, 2.0
-    if is_long and rsi > 75:
-        rr_ratio = 2.0
-    elif not is_long and rsi < 25:
-        rr_ratio = 2.0
+        stop_mult = max(1.0, stop_mult - 0.2)
+        
+    if is_long and rsi > 78:
+        rr_ratio = max(1.8, rr_ratio - 0.5)
+    elif not is_long and rsi < 22:
+        rr_ratio = max(1.8, rr_ratio - 0.5)
+        
     return stop_mult, rr_ratio
 
 
@@ -1693,19 +1739,19 @@ def build_candidate_signals(df, tf, higher_tf_dfs=None):
     df["SNR_Resistance"] = rolling_high
     df["SNR_Support"] = rolling_low
 
-    macro_long_filter = df["macro_trend_bias"] > 0
-    macro_short_filter = df["macro_trend_bias"] < 0
+    macro_long_filter = df["macro_trend_bias"] > -0.005
+    macro_short_filter = df["macro_trend_bias"] < 0.005
     
-    ema_long_ok = (df["EMA_21"] > df["EMA_50"]) & (df["close_price"] > df["EMA_21"])
-    ema_short_ok = (df["EMA_21"] < df["EMA_50"]) & (df["close_price"] < df["EMA_21"])
+    ema_long_ok = (df["EMA_21"] >= df["EMA_50"]) & (df["close_price"] > df["EMA_21"] * 0.998)
+    ema_short_ok = (df["EMA_21"] <= df["EMA_50"]) & (df["close_price"] < df["EMA_21"] * 1.002)
 
     candle_rng = (df["high_price"] - df["low_price"]).replace(0, np.nan)
     close_pos = (df["close_price"] - df["low_price"]) / candle_rng
-    close_strong_long = close_pos >= 0.78
-    close_strong_short = close_pos <= 0.22
+    close_strong_long = close_pos >= 0.72
+    close_strong_short = close_pos <= 0.28
 
-    not_chasing_long = (df["close_price"] - df["Trend_Resistance"]) <= df["ATR"] * 0.6
-    not_chasing_short = (df["Trend_Support"] - df["close_price"]) <= df["ATR"] * 0.6
+    not_chasing_long = (df["close_price"] - df["Trend_Resistance"]) <= df["ATR"] * 0.8
+    not_chasing_short = (df["Trend_Support"] - df["close_price"]) <= df["ATR"] * 0.8
 
     htf_long_ok = pd.Series(True, index=df.index)
     htf_short_ok = pd.Series(True, index=df.index)
@@ -1721,39 +1767,35 @@ def build_candidate_signals(df, tf, higher_tf_dfs=None):
                     on="open_time",
                     direction="backward"
                 )
-                l_ok = (merged_htf["close_price"] > merged_htf["HTF_EMA50"]) & (merged_htf["HTF_EMA21"] > merged_htf["HTF_EMA50"]) & (merged_htf["HTF_EMA21"] > merged_htf["HTF_EMA21"].shift(1))
-                s_ok = (merged_htf["close_price"] < merged_htf["HTF_EMA50"]) & (merged_htf["HTF_EMA21"] < merged_htf["HTF_EMA50"]) & (merged_htf["HTF_EMA21"] < merged_htf["HTF_EMA21"].shift(1))
+                l_ok = (merged_htf["close_price"] >= merged_htf["HTF_EMA50"] * 0.995) & (merged_htf["HTF_EMA21"] >= merged_htf["HTF_EMA50"])
+                s_ok = (merged_htf["close_price"] <= merged_htf["HTF_EMA50"] * 1.005) & (merged_htf["HTF_EMA21"] <= merged_htf["HTF_EMA50"])
                 htf_long_ok = htf_long_ok & l_ok.fillna(True).values
                 htf_short_ok = htf_short_ok & s_ok.fillna(True).values
 
     is_5m = (tf == "5m")
-    rsi_l_min, rsi_l_max = (58, 66) if is_5m else (54, 68)
-    rsi_s_min, rsi_s_max = (34, 42) if is_5m else (32, 46)
-    vol_mult = 1.8 if is_5m else 1.5
-    body_min = 0.68 if is_5m else 0.60
+    rsi_l_min, rsi_l_max = (55, 68) if is_5m else (52, 70)
+    rsi_s_min, rsi_s_max = (32, 45) if is_5m else (30, 48)
+    vol_mult = 1.4 if is_5m else 1.3
+    body_min = 0.55 if is_5m else 0.50
 
-    df["Rule1_Long_Break"] = (df["close_price"] > df["Trend_Resistance"]) & (df["close_price"] > df["open_price"])
-    df["Base_Long"] = (
-        df["Rule1_Long_Break"] & (df["Body_Ratio"] > body_min)
-        & df["RSI"].between(rsi_l_min, rsi_l_max) & (df["volume"] > df["Vol_SMA20"] * vol_mult)
-        & (df["close_price"] >= df["SNR_Support"] * 0.999) & macro_long_filter
-        & ema_long_ok & htf_long_ok & close_strong_long & not_chasing_long
-        & ((df["EMA_21"] - df["EMA_50"]) / df["close_price"] > 0.0005)
-    )
-
-    df["Rule1_Short_Break"] = (df["close_price"] < df["Trend_Support"]) & (df["close_price"] < df["open_price"])
-    df["Base_Short"] = (
-        df["Rule1_Short_Break"] & (df["Body_Ratio"] > body_min)
-        & df["RSI"].between(rsi_s_min, rsi_s_max) & (df["volume"] > df["Vol_SMA20"] * vol_mult)
-        & (df["close_price"] <= df["SNR_Resistance"] * 1.001) & macro_short_filter
-        & ema_short_ok & htf_short_ok & close_strong_short & not_chasing_short
-        & ((df["EMA_50"] - df["EMA_21"]) / df["close_price"] > 0.0005)
-    )
-
+    df["atr_ratio"] = df["ATR"] / df["close_price"].replace(0, np.nan)
     df["vol_ratio"] = df["volume"] / df["Vol_SMA20"].replace(0, np.nan)
     df["body_ratio"] = df["Body_Ratio"]
-    df["atr_ratio"] = df["ATR"] / df["close_price"].replace(0, np.nan)
     df["ema_diff"] = (df["EMA_21"] - df["EMA_50"]) / df["close_price"].replace(0, np.nan)
+
+    df["Rule1_Long_Break"] = (df["close_price"] > df["Trend_Resistance"] * 0.998) & (df["close_price"] > df["open_price"])
+    df["Base_Long"] = (
+        (df["Rule1_Long_Break"] | (df["close_price"] > df["EMA_21"])) & (df["Body_Ratio"] > body_min)
+        & df["RSI"].between(rsi_l_min, rsi_l_max) & (df["volume"] > df["Vol_SMA20"] * vol_mult)
+        & macro_long_filter & ema_long_ok & htf_long_ok & close_strong_long & not_chasing_long
+    )
+
+    df["Rule1_Short_Break"] = (df["close_price"] < df["Trend_Support"] * 1.002) & (df["close_price"] < df["open_price"])
+    df["Base_Short"] = (
+        (df["Rule1_Short_Break"] | (df["close_price"] < df["EMA_21"])) & (df["Body_Ratio"] > body_min)
+        & df["RSI"].between(rsi_s_min, rsi_s_max) & (df["volume"] > df["Vol_SMA20"] * vol_mult)
+        & macro_short_filter & ema_short_ok & htf_short_ok & close_strong_short & not_chasing_short
+    )
 
     trade_results, stop_losses, take_profits = [], [], []
     close_arr = df["close_price"].values
@@ -1783,12 +1825,12 @@ def build_candidate_signals(df, tf, higher_tf_dfs=None):
         dyn_stop_mult, dyn_rr = calculate_dynamic_tp_sl(df.iloc[i], is_l)
         sw_low, sw_high = swing_low_arr[i], swing_high_arr[i]
         if is_l:
-            struct_sl = (sw_low - atr * 0.2) if pd.notna(sw_low) else entry - atr * dyn_stop_mult
-            risk = min(max(entry - struct_sl, atr * 1.0), atr * 3.0)
+            struct_sl = (sw_low - atr * 0.15) if pd.notna(sw_low) else entry - atr * dyn_stop_mult
+            risk = min(max(entry - struct_sl, atr * 0.8), atr * 3.5)
             sl, tp, direction = entry - risk, entry + risk * dyn_rr, 'LONG'
         else:
-            struct_sl = (sw_high + atr * 0.2) if pd.notna(sw_high) else entry + atr * dyn_stop_mult
-            risk = min(max(struct_sl - entry, atr * 1.0), atr * 3.0)
+            struct_sl = (sw_high + atr * 0.15) if pd.notna(sw_high) else entry + atr * dyn_stop_mult
+            risk = min(max(struct_sl - entry, atr * 0.8), atr * 3.5)
             sl, tp, direction = entry + risk, entry - risk * dyn_rr, 'SHORT'
 
         stop_losses.append(sl)
@@ -1826,13 +1868,13 @@ def fill_missing_tp_sl(df):
         dyn_stop_mult, dyn_rr = calculate_dynamic_tp_sl(df.iloc[i], is_l)
         if is_l:
             sw = swing_low_arr[i]
-            struct_sl = (sw - atr * 0.2) if pd.notna(sw) else entry - atr * dyn_stop_mult
-            risk = min(max(entry - struct_sl, atr * 1.0), atr * 3.0)
+            struct_sl = (sw - atr * 0.15) if pd.notna(sw) else entry - atr * dyn_stop_mult
+            risk = min(max(entry - struct_sl, atr * 0.8), atr * 3.5)
             sl, tp, direction = entry - risk, entry + risk * dyn_rr, "LONG"
         else:
             sw = swing_high_arr[i]
-            struct_sl = (sw + atr * 0.2) if pd.notna(sw) else entry + atr * dyn_stop_mult
-            risk = min(max(struct_sl - entry, atr * 1.0), atr * 3.0)
+            struct_sl = (sw + atr * 0.15) if pd.notna(sw) else entry + atr * dyn_stop_mult
+            risk = min(max(struct_sl - entry, atr * 0.8), atr * 3.5)
             sl, tp, direction = entry + risk, entry - risk * dyn_rr, "SHORT"
         df.iloc[i, ci("Stop_Loss")] = sl
         df.iloc[i, ci("Take_Profit")] = tp
@@ -1854,8 +1896,8 @@ def train_or_get_ai_model(df, key):
     train_df["target"] = (train_df["Trade_Result"] == "成功").astype(int)
     try:
         model = lgb.LGBMClassifier(
-            n_estimators=80, learning_rate=0.03, max_depth=4, num_leaves=7,
-            subsample=0.8, colsample_bytree=0.8, class_weight="balanced",
+            n_estimators=100, learning_rate=0.025, max_depth=5, num_leaves=15,
+            subsample=0.85, colsample_bytree=0.85, class_weight="balanced",
             random_state=42, verbose=-1
         )
         model.fit(train_df[feature_cols], train_df["target"])
@@ -1870,9 +1912,9 @@ def add_trade_signals(df, model, user_thresh=45, trade_style="平衡"):
     
     style_offset = 5.0
     if "保守" in trade_style:
-        style_offset = 15.0
+        style_offset = 12.0
     elif "積極" in trade_style:
-        style_offset = -5.0
+        style_offset = -4.0
     
     effective_thresh = max(20, min(90, user_thresh + style_offset)) / 100.0
 
@@ -1881,7 +1923,7 @@ def add_trade_signals(df, model, user_thresh=45, trade_style="平衡"):
             sub = df[feature_cols].fillna(0)
             probs = model.predict_proba(sub)[:, 1]
             df["AI_Prob"] = 0.75 + probs * 0.20
-            prob_mask = (probs >= max(effective_thresh, 0.52))
+            prob_mask = (probs >= max(effective_thresh, 0.50))
             df["Long_Signal"] = df["Base_Long"] & prob_mask
             df["Short_Signal"] = df["Base_Short"] & prob_mask
             return df
@@ -2107,7 +2149,7 @@ def _build_chart_bundle(df_all_tf, symbol, pair, tf, user_thresh=45, trade_style
         margin=dict(l=10, r=85, t=65, b=30), uirevision=f"{symbol}_{tf}_{user_thresh}_{trade_style}",
         hoverlabel=dict(bgcolor="rgba(30,35,41,.95)", font_size=12, font_color="white", bordercolor="#f0b90b"),
     )
-    fig.update_layout(xaxis=dict(range=[start_time, end_time], autorange=False))
+    fig.update_layout(xaxis=dict(range=list(bundle["x_range"]), autorange=False))
     fig.update_xaxes(showline=True, linewidth=2, linecolor="#434c5e", mirror=True, row=2, col=1, fixedrange=False)
     fig.update_yaxes(side="right", gridcolor="#1e2329", zeroline=False, linecolor="#2b313a", tickformat=",.2f", showspikes=True, spikemode="across+toaxis", spikesnap="cursor", spikethickness=1, spikedash="dash", spikecolor="#a0a6b2", showline=True, row=1, col=1, range=y_range, fixedrange=False)
     fig.update_yaxes(side="right", gridcolor="#1e2329", zeroline=False, linecolor="#2b313a", tickformat=",.2f", showspikes=True, spikemode="across", spikesnap="cursor", spikethickness=1, spikedash="dash", spikecolor="#a0a6b2", row=2, col=1, range=[0, float(visible_df["volume"].max()) * 1.05], fixedrange=False)
