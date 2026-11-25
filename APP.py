@@ -1008,32 +1008,6 @@ def render_okx_trade_panel(symbol, pair, tf, latest, latest_close):
 
 def render_auth_gate():
     st.markdown("### 🔐 請先登入或註冊")
-    
-    # 強制顯示指紋快速登入按鈕供測試與使用
-    components.html("""
-    <div style="margin-bottom: 15px; text-align: center;">
-        <button id="bio-login-btn" onclick="requestFingerprintLogin()" style="width:100%; padding:12px; background:linear-gradient(135deg, #ffd35a, #f0b90b); color:#1a1400; font-weight:bold; border:none; border-radius:10px; cursor:pointer; box-shadow: 0 4px 14px rgba(240,185,11,.35); font-size:15px;">
-            👆 使用指紋快速登入
-        </button>
-    </div>
-    <script>
-        function requestFingerprintLogin() {
-            const android = window.AndroidInterface || window.parent.AndroidInterface;
-            if (android && typeof android.requestFingerprintAuth === 'function') {
-                android.requestFingerprintAuth();
-            } else {
-                alert("目前環境為網頁預覽，指紋硬體介面需在 Android App 容器中執行。");
-            }
-        }
-        window.parent.onFingerprintLoginSuccess = function(token) {
-            if (token) {
-                const url = new URL(window.parent.location.href);
-                url.searchParams.set('remember_token', token);
-                window.parent.location.href = url.toString();
-            }
-        }
-    </script>
-    """, height=70)
 
     tab_login, tab_reg = st.tabs(["登入", "註冊"])
     with tab_login:
@@ -1041,7 +1015,47 @@ def render_auth_gate():
             l_user = st.text_input("系統帳號", key="login_user")
             l_pw = st.text_input("系統密碼", type="password", key="login_pw")
             l_remember = st.checkbox("保持登入", value=True, key="login_remember")
-            if st.form_submit_button("登入", use_container_width=True):
+            
+            # 使用兩欄把「登入」與「指紋快速登入」並排放在一起
+            c_btn1, c_btn2 = st.columns(2)
+            submitted = c_btn1.form_submit_button("登入", use_container_width=True)
+            
+            with c_btn2:
+                components.html("""
+                <div style="margin-top: 2px;">
+                    <button type="button" onclick="requestFingerprintLogin()" style="width:100%; height:46px; background:linear-gradient(135deg, #ffd35a, #f0b90b); color:#1a1400; font-weight:bold; border:none; border-radius:10px; cursor:pointer; box-shadow: 0 4px 14px rgba(240,185,11,.35); font-size:14px;">
+                        👆 指紋快速登入
+                    </button>
+                </div>
+                <script>
+                    function requestFingerprintLogin() {
+                        const android = window.AndroidInterface || window.parent.AndroidInterface;
+                        if (android && typeof android.requestFingerprintAuth === 'function') {
+                            android.requestFingerprintAuth();
+                        } else {
+                            const savedToken = window.parent.localStorage.getItem('okx_remember_token');
+                            if (savedToken) {
+                                window.parent.onFingerprintLoginSuccess(savedToken);
+                            } else {
+                                alert("💡 尚未綁定指紋或非 Android 容器環境。請先用帳密登入並至設定完成綁定。");
+                            }
+                        }
+                    }
+                    
+                    window.parent.onFingerprintLoginSuccess = function(token) {
+                        if (token) {
+                            window.parent.localStorage.setItem('okx_remember_token', token);
+                            const url = new URL(window.parent.location.href);
+                            url.searchParams.set('remember_token', token);
+                            window.parent.location.href = url.toString();
+                        } else {
+                            alert("❌ 指紋驗證回傳的 Token 效期失效或為空，請重新登入綁定。");
+                        }
+                    }
+                </script>
+                """, height=55)
+
+            if submitted:
                 u, settings, err = login_user(l_user, l_pw, remember=l_remember)
                 if err:
                     st.error(err)
@@ -1049,6 +1063,7 @@ def render_auth_gate():
                     st.session_state.auth_user = u
                     st.session_state.auth_settings = settings
                     st.rerun()
+
     with tab_reg:
         with st.form("register_form"):
             r_user = st.text_input("系統帳號", key="reg_user")
