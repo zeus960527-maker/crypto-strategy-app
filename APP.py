@@ -17,7 +17,6 @@ import time
 import urllib.request
 import urllib.error
 import urllib.parse
-import re
 import json
 import hmac
 import hashlib
@@ -414,7 +413,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ============================================================
-# 1.5 帳號系統與 OKX 直接下單（含自動即時刷新可用餘額）
+# 1.5 帳號系統與 OKX 直接下單
 # ============================================================
 st.session_state.setdefault("auth_user", None)
 st.session_state.setdefault("auth_settings", {})
@@ -488,10 +487,16 @@ def _acct_engine():
                 okx_pass_enc TEXT NOT NULL DEFAULT '',
                 settings_json TEXT NOT NULL DEFAULT '{}',
                 remember_token TEXT,
+                fingerprint_token TEXT,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
             )
         """))
+        try:
+            conn.execute(text("ALTER TABLE app_users ADD COLUMN IF NOT EXISTS fingerprint_token TEXT;"))
+        except Exception:
+            pass
+
         conn.execute(text("""
             CREATE TABLE IF NOT EXISTS okx_order_log (
                 id BIGSERIAL PRIMARY KEY,
@@ -1210,7 +1215,7 @@ if not check_remembered_login():
     st.stop()
 
 # ============================================================
-# 搜尋列與紅圈區域配置（使用 @st.fragment 讓 OKX 資金自動每 5 秒即時更新）
+# 搜尋列與帳戶標頭區塊
 # ============================================================
 current_user = st.session_state["auth_user"]
 s_dict = dict(DEFAULT_TRADE_SETTINGS)
@@ -1229,36 +1234,32 @@ with c_left:
         submitted = st.form_submit_button("送出查詢", use_container_width=True)
 
 with c_right:
-    @st.fragment(run_every=5)
-    def render_live_account_header():
-        balance_str = "未設定 API"
-        try:
-            creds_cache = _get_creds(current_user)
-            bal_val = okx_get_balance(creds_cache, s_dict.get("demo", False))
-            balance_str = f"{bal_val:,.2f} USDT"
-        except Exception:
-            balance_str = "尚無 API 或金鑰有誤"
+    balance_str = "未設定 API"
+    try:
+        creds_cache = _get_creds(current_user)
+        bal_val = okx_get_balance(creds_cache, s_dict.get("demo", False))
+        balance_str = f"{bal_val:,.2f} USDT"
+    except Exception:
+        balance_str = "尚無 API 或金鑰有誤"
 
-        col_acc1, col_acc2, col_acc3 = st.columns(3)
-        with col_acc1:
-            st.markdown(f"""
-            <div class="account-card">
-                <div class="account-title">👤 系統帳戶</div>
-                <div class="account-val" style="font-size:16px;">{current_user}</div>
-            </div>
-            """, unsafe_allow_html=True)
-        with col_acc2:
-            st.markdown(f"""
-            <div class="account-card">
-                <div class="account-title">💰 OKX 即時可用餘額</div>
-                <div class="account-val">{balance_str}</div>
-            </div>
-            """, unsafe_allow_html=True)
-        with col_acc3:
-            st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
-            render_settings_popover(current_user)
-
-    render_live_account_header()
+    col_acc1, col_acc2, col_acc3 = st.columns(3)
+    with col_acc1:
+        st.markdown(f"""
+        <div class="account-card">
+            <div class="account-title">👤 系統帳戶</div>
+            <div class="account-val" style="font-size:16px;">{current_user}</div>
+        </div>
+        """, unsafe_allow_html=True)
+    with col_acc2:
+        st.markdown(f"""
+        <div class="account-card">
+            <div class="account-title">💰 OKX 即時可用餘額</div>
+            <div class="account-val">{balance_str}</div>
+        </div>
+        """, unsafe_allow_html=True)
+    with col_acc3:
+        st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
+        render_settings_popover(current_user)
 
 if submitted:
     q = input_val.strip().upper()
@@ -2089,11 +2090,7 @@ if __name__ == "__main__":
 
         selected_tf = st.radio("時間軸週期", ["5m", "15m", "1h", "4h"], horizontal=True, key="timeframe_select")
 
-        @st.fragment(run_every=5)
-        def render_live_fragment(tbl, sig_pair, timeframe):
-            render_live_kline_chart(table_name, symbol_name, pair_name, timeframe)
-
-        render_live_fragment(table_name, symbol_name, pair_name, selected_tf)
+        render_live_kline_chart(table_name, symbol_name, pair_name, selected_tf)
     elif st.session_state.search_query:
         st.warning(f"找不到與「{st.session_state.search_query}」相關的圖表。")
         render_homepage()
