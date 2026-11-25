@@ -1009,26 +1009,20 @@ def render_okx_trade_panel(symbol, pair, tf, latest, latest_close):
 def render_auth_gate():
     st.markdown("### 🔐 請先登入或註冊")
     
-    # 支援 Android 指紋快速登入的按鈕與橋接邏輯
+    # 強制顯示指紋快速登入按鈕供測試與使用
     components.html("""
     <div style="margin-bottom: 15px; text-align: center;">
-        <button id="bio-login-btn" onclick="requestFingerprintLogin()" style="width:100%; padding:12px; background:linear-gradient(135deg, #ffd35a, #f0b90b); color:#1a1400; font-weight:bold; border:none; border-radius:10px; cursor:pointer; box-shadow: 0 4px 14px rgba(240,185,11,.35); display:none; font-size:15px;">
+        <button id="bio-login-btn" onclick="requestFingerprintLogin()" style="width:100%; padding:12px; background:linear-gradient(135deg, #ffd35a, #f0b90b); color:#1a1400; font-weight:bold; border:none; border-radius:10px; cursor:pointer; box-shadow: 0 4px 14px rgba(240,185,11,.35); font-size:15px;">
             👆 使用指紋快速登入
         </button>
     </div>
     <script>
-        window.addEventListener('load', function() {
-            const android = window.AndroidInterface || window.parent.AndroidInterface;
-            if (android && android.hasFingerprintToken && android.hasFingerprintToken()) {
-                document.getElementById('bio-login-btn').style.display = 'block';
-            }
-        });
         function requestFingerprintLogin() {
             const android = window.AndroidInterface || window.parent.AndroidInterface;
             if (android && typeof android.requestFingerprintAuth === 'function') {
                 android.requestFingerprintAuth();
             } else {
-                alert("目前環境不支援指紋快速登入，請先使用帳密登入並至設定綁定。");
+                alert("目前環境為網頁預覽，指紋硬體介面需在 Android App 容器中執行。");
             }
         }
         window.parent.onFingerprintLoginSuccess = function(token) {
@@ -1087,7 +1081,7 @@ def render_settings_popover(user):
     with st.popover("⚙️ 系統與策略設定", help="設定交易所金鑰、智慧停損與 AI 參數"):
         st.markdown(f"**👤 帳號：{user}**")
         
-        # ================= 指紋登入設定區塊 =================
+        # 指紋登入設定區塊
         st.markdown("---")
         st.markdown("#### 👆 指紋 / 生物辨識登入設定")
         st.caption("綁定後，下次開啟 App 可直接使用手機指紋快速驗證登入。")
@@ -1112,7 +1106,6 @@ def render_settings_popover(user):
             };
         </script>
         """, height=65)
-        # ====================================================
 
         st.markdown("---")
         st.markdown("#### 🔑 OKX 交易所 API 設定")
