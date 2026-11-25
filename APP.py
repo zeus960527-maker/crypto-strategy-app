@@ -401,7 +401,7 @@ st.session_state.setdefault("is_searched", False)
 st.session_state.setdefault("search_query", "")
 st.session_state.setdefault("ai_models", {})
 
-st.title("加密貨幣 AI 策略系統")
+st.title("加密貨幣 AI 策略系統 (專業增強版)")
 
 st.markdown("""
 <div class="hero-sub">
@@ -1936,7 +1936,12 @@ def filter_single_signal_per_wave(df):
     """
     確保同方向的連續波段中，只保留第一個出現的進場訊號 (LONG 或 SHORT)
     """
+    if df is None or df.empty:
+        return df
     df = df.copy()
+    if "Long_Signal" not in df.columns or "Short_Signal" not in df.columns:
+        return df
+
     long_signals = []
     short_signals = []
     current_wave_dir = None
