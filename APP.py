@@ -1127,7 +1127,7 @@ def _start_background_trade_worker():
 
                     for sym, pr, tbl in symbols_config:
                         try:
-                            df_all = load_historical_data(tbl, sym, None)
+                            df_all = load_historical_data(tbl, sym, None, days=14)
                             if df_all.empty:
                                 _tw_log(f"{user} {sym}: 讀不到 K 線資料（資料庫連線或資料表為空）")
                                 continue
@@ -1466,7 +1466,7 @@ if not check_fingerprint_login() and not st.session_state.get("auth_user"):
     st.stop()
 
 # ============================================================
-# 搜尋列與帳戶標頭區塊（含 5 秒自動重新整理可用餘額）
+# 搜尋列與帳戶標頭區塊（含 15 秒自動重新整理可用餘額）
 # ============================================================
 current_user = st.session_state["auth_user"]
 s_dict = dict(DEFAULT_TRADE_SETTINGS)
@@ -1485,7 +1485,7 @@ with c_left:
         submitted = st.form_submit_button("送出查詢", width="stretch")
 
 with c_right:
-    @st.fragment(run_every=5)
+    @st.fragment(run_every=15)
     def render_live_account_header():
         curr_ex = s_dict.get("exchange", "OKX")
         balance_str = f"未設定 {curr_ex} API"
@@ -1544,10 +1544,23 @@ def get_db_engine():
     url = get_database_url()
     if not url:
         raise RuntimeError("找不到 SUPABASE_DB_URL。")
-    return create_engine(
+    engine = create_engine(
         url, pool_size=3, max_overflow=2, pool_pre_ping=True,
         pool_recycle=300, connect_args={"connect_timeout": 5},
     )
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("CREATE INDEX IF NOT EXISTS idx_btc_klines_tf_time ON btc_contract_klines (timeframe, open_time DESC);"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS idx_eth_klines_tf_time ON eth_contract_klines (timeframe, open_time DESC);"))
+            conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS idx_outbox_sym_tf_time ON strategy_signal_outbox (symbol, timeframe, signal_time_taipei);"))
+    except Exception:
+        pass
+    return engine
+
+
+@st.cache_resource
+def _saved_outbox_cache():
+    return set()
 
 
 def save_all_signals_to_outbox(symbol, tf, view_df):
@@ -1556,16 +1569,25 @@ def save_all_signals_to_outbox(symbol, tf, view_df):
         sigs = sigs[sigs["Stop_Loss"].notna() & sigs["Take_Profit"].notna()]
         if sigs.empty:
             return
+        cache = _saved_outbox_cache()
+        if len(cache) > 10000:
+            cache.clear()
         rows = []
+        sym_u = str(symbol).upper()
+        tf_l = str(tf).lower()
         for _, r in sigs.iterrows():
             t0 = pd.Timestamp(r["open_time"])
+            cache_key = (sym_u, tf_l, t0)
+            if cache_key in cache:
+                continue
             price = r["Sig_Price"] if pd.notna(r.get("Sig_Price")) else r["close_price"]
             rows.append({
-                "sym": str(symbol).upper(), "tf": str(tf).lower(),
+                "sym": sym_u, "tf": tf_l,
                 "t0": t0.to_pydatetime().replace(tzinfo=TAIWAN_TZ),
                 "d": "LONG" if bool(r["Long_Signal"]) else "SHORT",
                 "e": float(price), "sl": float(r["Stop_Loss"]), "tp": float(r["Take_Profit"]),
             })
+            cache.add(cache_key)
         if not rows:
             return
         engine = get_db_engine()
@@ -1575,6 +1597,7 @@ def save_all_signals_to_outbox(symbol, tf, view_df):
                     INSERT INTO strategy_signal_outbox
                         (symbol, timeframe, signal_time_taipei, direction, entry_price, stop_loss, take_profit)
                     VALUES (:sym, :tf, :t0, :d, :e, :sl, :tp)
+                    ON CONFLICT DO NOTHING
                 """),
                 rows,
             )
@@ -1582,6 +1605,7 @@ def save_all_signals_to_outbox(symbol, tf, view_df):
         pass
 
 
+@st.cache_data(ttl=10, show_spinner=False)
 def outbox_stamp(symbol, tf):
     try:
         engine = get_db_engine()
@@ -1596,6 +1620,7 @@ def outbox_stamp(symbol, tf):
         return None
 
 
+@st.cache_data(ttl=15, show_spinner=False)
 def load_outbox_signals(symbol, tf, since_time):
     try:
         engine = get_db_engine()
@@ -1631,19 +1656,42 @@ def load_outbox_signals(symbol, tf, since_time):
         return {}
 
 
-def load_historical_data(table_name, symbol_name, tf=None):
+@st.cache_data(ttl=15, show_spinner=False)
+def load_historical_data(table_name, symbol_name, tf=None, days=95):
     allowed_tables = {"btc_contract_klines", "eth_contract_klines"}
     if table_name not in allowed_tables:
         return pd.DataFrame()
     try:
         engine = get_db_engine()
         cols = "timeframe, open_time, open_price, high_price, low_price, close_price, volume"
-        tf_where = "timeframe = :tf AND " if tf else ""
-        sql = text(f"SELECT {cols} FROM {table_name} WHERE {tf_where} TRUE ORDER BY open_time ASC")
+        cutoff_dt = datetime.now(timezone.utc) - timedelta(days=int(days))
+        cutoff_ms = int(cutoff_dt.timestamp() * 1000)
+        tfs = [tf] if tf else ["5m", "15m", "1h", "4h"]
+        dfs = []
         with engine.connect() as conn:
-            raw = pd.read_sql(sql, con=conn, params={"tf": tf} if tf else {})
-        if raw.empty:
-            return raw
+            for t_item in tfs:
+                limit_rows = 30000 if t_item == "5m" else (10000 if t_item == "15m" else 3000)
+                sql = text(f"""
+                    SELECT {cols} FROM {table_name}
+                    WHERE timeframe = :tf
+                      AND (
+                          (pg_typeof(open_time)::text IN ('bigint', 'integer', 'numeric', 'double precision') AND open_time::bigint >= :cutoff_ms)
+                          OR
+                          (pg_typeof(open_time)::text NOT IN ('bigint', 'integer', 'numeric', 'double precision') AND open_time::timestamptz >= :cutoff_dt)
+                      )
+                    ORDER BY open_time DESC
+                    LIMIT :lim
+                """)
+                try:
+                    part = pd.read_sql(sql, con=conn, params={"tf": t_item, "cutoff_ms": cutoff_ms, "cutoff_dt": cutoff_dt, "lim": limit_rows})
+                except Exception:
+                    fallback_sql = text(f"SELECT {cols} FROM {table_name} WHERE timeframe = :tf ORDER BY open_time DESC LIMIT :lim")
+                    part = pd.read_sql(fallback_sql, con=conn, params={"tf": t_item, "lim": limit_rows})
+                if not part.empty:
+                    dfs.append(part)
+        if not dfs:
+            return pd.DataFrame()
+        raw = pd.concat(dfs, ignore_index=True)
         df = raw.drop_duplicates(subset=["timeframe", "open_time"], keep="last").sort_values("open_time").reset_index(drop=True)
     except Exception:
         return pd.DataFrame()
@@ -2326,7 +2374,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
     trade_style = s_dict.get("trade_style", "平衡")
     bt_days = s_dict.get("backtest_days", 30)
 
-    df = load_historical_data(table, symbol, None)
+    df = load_historical_data(table, symbol, None, days=max(int(bt_days) + 5, 14))
     if df.empty:
         st.warning("目前無法取得歷史 K 線資料。")
         return
@@ -2424,7 +2472,7 @@ if __name__ == "__main__":
 
         selected_tf = st.radio("時間軸週期", ["5m", "15m", "1h", "4h"], horizontal=True, key="timeframe_select")
 
-        @st.fragment(run_every=5)
+        @st.fragment(run_every=15)
         def render_live_kline_fragment(tbl, sym, pair, tf):
             render_live_kline_chart(tbl, sym, pair, tf)
 
