@@ -915,9 +915,6 @@ def _render_order_log(user):
         st.dataframe(df, use_container_width=True, hide_index=True)
 
 
-# ============================================================
-# 修改重點：支援「多幣種同時掃描與聯合下單」的處理邏輯
-# ============================================================
 def render_okx_trade_panel(symbol, pair, tf, latest, latest_close):
     user = st.session_state.get("auth_user")
     if not user:
@@ -933,7 +930,6 @@ def render_okx_trade_panel(symbol, pair, tf, latest, latest_close):
         return
 
     try:
-        # 同時掃描市場上所有關注的幣種（例如 BTC 與 ETH），若同時出現訊號則一起下單
         symbols_config = [
             ("BTC", "BTC-USDT-SWAP", "btc_contract_klines"),
             ("ETH", "ETH-USDT-SWAP", "eth_contract_klines")
@@ -946,7 +942,6 @@ def render_okx_trade_panel(symbol, pair, tf, latest, latest_close):
         for sym, pr, tbl in symbols_config:
             df_all = load_historical_data(tbl, sym, None)
             if df_all.empty:
-                # 若無全面歷史，退而使用當前傳入的 latest 判定目前檢視的幣種
                 if sym == symbol:
                     long_sig, short_sig = bool(latest["Long_Signal"]), bool(latest["Short_Signal"])
                     if long_sig != short_sig:
@@ -964,7 +959,6 @@ def render_okx_trade_panel(symbol, pair, tf, latest, latest_close):
             if df_tf.empty:
                 continue
 
-            # 計算指標與訊號
             higher_tf_dfs = {
                 "15m": df_all[df_all["timeframe"] == "15m"],
                 "1h": df_all[df_all["timeframe"] == "1h"],
@@ -989,7 +983,6 @@ def render_okx_trade_panel(symbol, pair, tf, latest, latest_close):
                         "bar_t": pd.Timestamp(last_row["open_time"]).to_pydatetime()
                     })
 
-        # 若同時有多個幣種觸發訊號，進行聯合批次送出
         if triggered_signals:
             creds = _get_creds(user)
             for sig in triggered_signals:
@@ -1015,6 +1008,39 @@ def render_okx_trade_panel(symbol, pair, tf, latest, latest_close):
 
 def render_auth_gate():
     st.markdown("### 🔐 請先登入或註冊")
+    
+    # 支援 Android 指紋快速登入的觸發介面（透過 App 容器注入 Token）
+    components.html("""
+    <div style="margin-bottom: 15px; text-align: center;">
+        <button id="bio-login-btn" onclick="requestFingerprintLogin()" style="width:100%; padding:10px; background:linear-gradient(135deg, #ffd35a, #f0b90b); color:#1a1400; font-weight:bold; border:none; border-radius:10px; cursor:pointer; box-shadow: 0 4px 14px rgba(240,185,11,.35); display:none;">
+            👆 使用指紋快速登入
+        </button>
+    </div>
+    <script>
+        // 檢查 Android 容器是否已綁定指紋 Token
+        window.addEventListener('load', function() {
+            if (window.AndroidInterface && window.AndroidInterface.hasFingerprintToken && window.AndroidInterface.hasFingerprintToken()) {
+                document.getElementById('bio-login-btn').style.display = 'block';
+            }
+        });
+        function requestFingerprintLogin() {
+            if (window.AndroidInterface && typeof window.AndroidInterface.requestFingerprintAuth === 'function') {
+                window.AndroidInterface.requestFingerprintAuth();
+            } else {
+                alert("目前環境不支援指紋快速登入。");
+            }
+        }
+        // 由 Android 原生呼叫此函數帶入 Token 進行自動登入
+        window.onFingerprintLoginSuccess = function(token) {
+            if (token) {
+                const url = new URL(window.location.href);
+                url.searchParams.set('remember_token', token);
+                window.location.href = url.toString();
+            }
+        }
+    </script>
+    """, height=60)
+
     tab_login, tab_reg = st.tabs(["登入", "註冊"])
     with tab_login:
         with st.form("login_form"):
@@ -1061,6 +1087,33 @@ def render_settings_popover(user):
     with st.popover("⚙️ 系統與策略設定", help="設定交易所金鑰、智慧停損與 AI 參數"):
         st.markdown(f"**👤 帳號：{user}**")
         
+        # ================= 新增：指紋登入設定區塊 =================
+        st.markdown("---")
+        st.markdown("#### 👆 指紋 / 生物辨識登入設定")
+        st.caption("綁定後，下次開啟 App 可直接使用手機指紋快速驗證登入。")
+        components.html("""
+        <button id="enable-bio" style="width:100%; padding:10px; background:linear-gradient(135deg, #ffd35a, #f0b90b); color:#1a1400; font-weight:bold; border:none; border-radius:8px; cursor:pointer; box-shadow: 0 4px 14px rgba(240,185,11,.25);">
+            綁定當前裝置指紋快速登入
+        </button>
+        <script>
+            document.getElementById('enable-bio').onclick = function() {
+                const token = localStorage.getItem('okx_remember_token') || '';
+                if (!token) {
+                    alert("找不到登入憑證，請重新整理或重新登入後再綁定。");
+                    return;
+                }
+                if (window.AndroidInterface && typeof window.AndroidInterface.saveFingerprintToken === 'function') {
+                    window.AndroidInterface.saveFingerprintToken(token);
+                    alert("✅ 指紋快速登入已成功綁定至此 Android 裝置！");
+                } else {
+                    alert("💡 提示：此功能需在 Android App 容器中執行才能生效。");
+                }
+            };
+        </script>
+        """, height=65)
+        # ========================================================
+
+        st.markdown("---")
         st.markdown("#### 🔑 OKX 交易所 API 設定")
         st.markdown("""
         <div class="okx-guide">
