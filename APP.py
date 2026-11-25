@@ -1062,7 +1062,7 @@ def _render_order_log(user):
         "direction": "方向", "status": "狀態", "detail": "說明",
     })
     with st.expander("最近自動下單紀錄"):
-        st.dataframe(df, width="stretch", hide_index=True)
+        st.dataframe(df, use_container_width=True, hide_index=True)
 
 
 # ------------------------------------------------------------
@@ -1179,7 +1179,7 @@ def render_auth_gate():
             l_pw = st.text_input("系統密碼", type="password", key="login_pw")
             
             c_btn1, c_btn2 = st.columns(2)
-            submitted = c_btn1.form_submit_button("登入", width="stretch")
+            submitted = c_btn1.form_submit_button("登入", use_container_width=True)
             
             with c_btn2:
                 components.html("""
@@ -1238,7 +1238,7 @@ def render_auth_gate():
             r_user = st.text_input("系統帳號", key="reg_user")
             r_pw = st.text_input("系統密碼", type="password", key="reg_pw")
             st.caption("💡 註冊只需帳號與密碼！交易所 API 於登入後至設定填寫。")
-            if st.form_submit_button("註冊並登入", width="stretch"):
+            if st.form_submit_button("註冊並登入", use_container_width=True):
                 u, err = register_user(r_user, r_pw)
                 if err:
                     st.error(err)
@@ -1270,7 +1270,7 @@ def render_settings_popover(user):
         st.markdown("#### 👆 指紋 / 生物辨識登入設定")
         st.caption("綁定後，下次開啟 App 可直接使用手機指紋快速驗證登入。")
         
-        if st.button("綁定當前裝置指紋快速登入", width="stretch", key="bind_fp_btn"):
+        if st.button("綁定當前裝置指紋快速登入", use_container_width=True, key="bind_fp_btn"):
             fp_val = secrets.token_hex(32)
             components.html(f"""
             <script>
@@ -1339,7 +1339,7 @@ def render_settings_popover(user):
             if selected_ex == "OKX":
                 p_input = st.text_input("OKX Passphrase", type="password", placeholder="留空則保持不變")
 
-            if st.form_submit_button(f"儲存 {selected_ex} API 金鑰與設定", width="stretch"):
+            if st.form_submit_button(f"儲存 {selected_ex} API 金鑰與設定", use_container_width=True):
                 if k_input.strip() or s_input.strip() or (selected_ex == "OKX" and p_input.strip()):
                     try:
                         update_exchange_credentials(user, selected_ex, k_input, s_input, p_input)
@@ -1389,7 +1389,7 @@ def render_settings_popover(user):
             bt_days = st.selectbox("回測與分析歷史天數", [7, 14, 30, 60, 90], 
                                    index=[7, 14, 30, 60, 90].index(int(s.get("backtest_days", 30))) if int(s.get("backtest_days", 30)) in [7, 14, 30, 60, 90] else 2)
 
-            if st.form_submit_button("儲存系統與下單參數", width="stretch"):
+            if st.form_submit_button("儲存系統與下單參數", use_container_width=True):
                 new = dict(s)
                 new.update(
                     exchange=selected_ex, auto_trade=bool(auto), demo=bool(demo), td_mode=td, fund_amount=float(fund_amount),
@@ -1403,7 +1403,7 @@ def render_settings_popover(user):
                 st.session_state.auth_settings = new
                 st.success("✅ 設定參數已成功儲存！")
 
-        if st.button("登入後直接回到首頁或登出", key="logout_btn", width="stretch"):
+        if st.button("登入後直接回到首頁或登出", key="logout_btn", use_container_width=True):
             components.html("""
             <script>
                 window.parent.localStorage.removeItem('okx_fingerprint_token');
@@ -1436,7 +1436,7 @@ with c_left:
             placeholder="BTC / ETH",
         )
         st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
-        submitted = st.form_submit_button("送出查詢", width="stretch")
+        submitted = st.form_submit_button("送出查詢", use_container_width=True)
 
 with c_right:
     @st.fragment(run_every=5)
@@ -1757,15 +1757,12 @@ def build_candidate_signals(df, tf, higher_tf_dfs=None):
                 htf_df = htf_df.copy()
                 htf_df["HTF_EMA21"] = htf_df["close_price"].ewm(span=21, adjust=False).mean()
                 htf_df["HTF_EMA50"] = htf_df["close_price"].ewm(span=50, adjust=False).mean()
-                htf_df = htf_df.sort_values("open_time").drop_duplicates(subset=["open_time"])
-                
                 merged_htf = pd.merge_asof(
-                    df[["open_time"]].sort_values("open_time"),
+                    df[["open_time"]],
                     htf_df[["open_time", "close_price", "HTF_EMA21", "HTF_EMA50"]],
                     on="open_time",
                     direction="backward"
-                ).sort_index()
-                
+                )
                 l_ok = (merged_htf["close_price"] >= merged_htf["HTF_EMA50"] * 0.995) & (merged_htf["HTF_EMA21"] >= merged_htf["HTF_EMA50"])
                 s_ok = (merged_htf["close_price"] <= merged_htf["HTF_EMA50"] * 1.005) & (merged_htf["HTF_EMA21"] <= merged_htf["HTF_EMA50"])
                 htf_long_ok = htf_long_ok & l_ok.fillna(True).values
@@ -1939,12 +1936,7 @@ def filter_single_signal_per_wave(df):
     """
     確保同方向的連續波段中，只保留第一個出現的進場訊號 (LONG 或 SHORT)
     """
-    if df is None or df.empty:
-        return df
     df = df.copy()
-    if "Long_Signal" not in df.columns or "Short_Signal" not in df.columns:
-        return df
-
     long_signals = []
     short_signals = []
     current_wave_dir = None
@@ -2263,7 +2255,7 @@ def render_backtest_analytics(view_df):
         xaxis=dict(title="交易序號", gridcolor="#1e2329"),
         yaxis=dict(title="資金淨值", gridcolor="#1e2329", tickformat=",.1f")
     )
-    st.plotly_chart(fig_eq, width="stretch")
+    st.plotly_chart(fig_eq, use_container_width=True)
 
 
 def render_live_kline_chart(table, symbol, pair, tf):
@@ -2307,7 +2299,7 @@ def render_live_kline_chart(table, symbol, pair, tf):
 
     chart_col, panel_col = st.columns([3.6, 1.2])
     with chart_col:
-        st.plotly_chart(fig, width="stretch", config={"scrollZoom": True, "displayModeBar": True, "displaylogo": False}, key=f"{symbol.lower()}_{tf}_chart")
+        st.plotly_chart(fig, use_container_width=True, config={"scrollZoom": True, "displayModeBar": True, "displaylogo": False}, key=f"{symbol.lower()}_{tf}_chart")
 
     with panel_col:
         st.markdown("### 🎯 AI 即時操作建議")
