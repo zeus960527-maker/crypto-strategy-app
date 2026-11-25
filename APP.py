@@ -401,7 +401,7 @@ st.session_state.setdefault("is_searched", False)
 st.session_state.setdefault("search_query", "")
 st.session_state.setdefault("ai_models", {})
 
-st.title("加密貨幣 AI 策略系統 (專業增強版)")
+st.title("加密貨幣 AI 策略系統")
 
 st.markdown("""
 <div class="hero-sub">
@@ -1373,7 +1373,7 @@ def render_settings_popover(user):
                 st.session_state.auth_settings = new
                 st.success("✅ 設定參數已成功儲存！")
 
-        if st.button("登入後直接回到首頁或登出", key="logout_btn", use_container_width=True):
+        if st.button("登出系統", key="logout_btn", use_container_width=True):
             components.html("""
             <script>
                 window.parent.localStorage.removeItem('okx_fingerprint_token');
