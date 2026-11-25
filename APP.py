@@ -650,7 +650,9 @@ def check_fingerprint_login():
             if row:
                 st.session_state.auth_user = row[0]
                 st.session_state.auth_settings = _load_settings(row[1])
-                st.query_params.pop("fp_token", None)
+                # 登入成功後直接預設進入主搜尋介面
+                st.session_state.is_searched = True
+                st.query_params.clear()
                 return True
             else:
                 st.error("❌ 指紋憑證與資料庫紀錄不符或已失效，請重新以帳密登入。")
@@ -1020,7 +1022,7 @@ def render_auth_gate():
                     
                     window.parent.onFingerprintLoginSuccess = function(token) {
                         if (token) {
-                            const url = new URL(window.parent.location.href);
+                            const url = new URL(window.parent.location.origin + window.parent.location.pathname);
                             url.searchParams.set('fp_token', token);
                             window.parent.location.href = url.toString();
                         } else {
