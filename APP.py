@@ -1116,6 +1116,7 @@ def _start_background_trade_worker():
                             df_tf = build_candidate_signals(df_tf, tf, higher_tf_dfs=higher_tf_dfs)
                             model, _, _ = train_or_get_ai_model(df_tf, f"{sym}_{tf}")
                             df_tf = add_trade_signals(df_tf, model, user_thresh=user_thresh, trade_style=trade_style)
+                            df_tf = filter_single_signal_per_wave(df_tf)
 
                             last_row = df_tf.iloc[-1]
                             long_sig, short_sig = bool(last_row["Long_Signal"]), bool(last_row["Short_Signal"])
@@ -1931,6 +1932,43 @@ def add_trade_signals(df, model, user_thresh=45, trade_style="平衡"):
     return df
 
 
+def filter_single_signal_per_wave(df):
+    """
+    確保同方向的連續波段中，只保留第一個出現的進場訊號 (LONG 或 SHORT)
+    """
+    df = df.copy()
+    long_signals = []
+    short_signals = []
+    current_wave_dir = None
+
+    for _, row in df.iterrows():
+        is_l = bool(row.get("Long_Signal", False))
+        is_s = bool(row.get("Short_Signal", False))
+
+        if current_wave_dir == "LONG" and is_s:
+            current_wave_dir = None
+        elif current_wave_dir == "SHORT" and is_l:
+            current_wave_dir = None
+
+        valid_l = False
+        valid_s = False
+
+        if is_l and current_wave_dir != "LONG":
+            valid_l = True
+            current_wave_dir = "LONG"
+
+        if is_s and current_wave_dir != "SHORT":
+            valid_s = True
+            current_wave_dir = "SHORT"
+
+        long_signals.append(valid_l)
+        short_signals.append(valid_s)
+
+    df["Long_Signal"] = long_signals
+    df["Short_Signal"] = short_signals
+    return df
+
+
 def render_homepage():
     st.markdown("""
     <div class="intro-card">
@@ -2029,6 +2067,7 @@ def _build_chart_bundle(df_all_tf, symbol, pair, tf, user_thresh=45, trade_style
 
     view_df = remember_and_apply_signals(view_df, symbol, tf)
     view_df = fill_missing_tp_sl(view_df)
+    view_df = filter_single_signal_per_wave(view_df)
 
     latest = view_df.iloc[-1]
     latest_close = float(latest["close_price"])
