@@ -1016,7 +1016,6 @@ def render_auth_gate():
             l_pw = st.text_input("系統密碼", type="password", key="login_pw")
             l_remember = st.checkbox("保持登入", value=True, key="login_remember")
             
-            # 使用兩欄把「登入」與「指紋快速登入」並排放在一起
             c_btn1, c_btn2 = st.columns(2)
             submitted = c_btn1.form_submit_button("登入", use_container_width=True)
             
@@ -1096,7 +1095,6 @@ def render_settings_popover(user):
     with st.popover("⚙️ 系統與策略設定", help="設定交易所金鑰、智慧停損與 AI 參數"):
         st.markdown(f"**👤 帳號：{user}**")
         
-        # 指紋登入設定區塊
         st.markdown("---")
         st.markdown("#### 👆 指紋 / 生物辨識登入設定")
         st.caption("綁定後，下次開啟 App 可直接使用手機指紋快速驗證登入。")
