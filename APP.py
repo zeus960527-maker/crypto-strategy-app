@@ -401,7 +401,7 @@ st.session_state.setdefault("is_searched", False)
 st.session_state.setdefault("search_query", "")
 st.session_state.setdefault("ai_models", {})
 
-st.title("加密貨幣 AI 策略系統")
+st.title("加密貨幣 AI 策略系統 (專業增強版)")
 
 st.markdown("""
 <div class="hero-sub">
@@ -1121,27 +1121,38 @@ def render_settings_popover(user):
         st.markdown("---")
         st.markdown("#### 👆 指紋 / 生物辨識登入設定")
         st.caption("綁定後，下次開啟 App 可直接使用手機指紋快速驗證登入。")
-        components.html("""
-        <button id="enable-bio" style="width:100%; padding:10px; background:linear-gradient(135deg, #ffd35a, #f0b90b); color:#1a1400; font-weight:bold; border:none; border-radius:8px; cursor:pointer; box-shadow: 0 4px 14px rgba(240,185,11,.25);">
-            綁定當前裝置指紋快速登入
-        </button>
-        <script>
-            document.getElementById('enable-bio').onclick = function() {
+        
+        # 使用 Streamlit 原生按鈕，手機點擊反應最靈敏
+        if st.button("綁定當前裝置指紋快速登入", use_container_width=True, key="bind_fp_btn"):
+            components.html("""
+            <script>
                 const token = window.parent.localStorage.getItem('okx_remember_token') || '';
-                if (!token) {
-                    alert("找不到登入憑證，請重新整理或重新登入後再綁定。");
-                    return;
+                if (token) {
+                    const android = window.AndroidInterface || window.parent.AndroidInterface;
+                    if (android && typeof android.saveFingerprintToken === 'function') {
+                        android.saveFingerprintToken(token);
+                    }
                 }
-                const android = window.AndroidInterface || window.parent.AndroidInterface;
-                if (android && typeof android.saveFingerprintToken === 'function') {
-                    android.saveFingerprintToken(token);
-                }
-                const url = new URL(window.parent.location.href);
-                url.searchParams.set('bind_fingerprint', token);
-                window.parent.location.href = url.toString();
-            };
-        </script>
-        """, height=65)
+            </script>
+            """, height=0)
+            
+            try:
+                with _acct_engine().connect() as conn:
+                    rem_row = conn.execute(
+                        text("SELECT remember_token FROM app_users WHERE username = :u"),
+                        {"u": user}
+                    ).first()
+                
+                fp_val = rem_row[0] if (rem_row and rem_row[0]) else secrets.token_hex(32)
+                
+                with _acct_engine().begin() as conn:
+                    conn.execute(
+                        text("UPDATE app_users SET fingerprint_token = :t, updated_at = now() WHERE username = :u"),
+                        {"t": fp_val, "u": user},
+                    )
+                st.success("✅ 指紋快速登入已成功綁定並寫入 Supabase 資料庫！")
+            except Exception as e:
+                st.error(f"寫入資料庫失敗：{e}")
 
         st.markdown("---")
         st.markdown("#### 🔑 OKX 交易所 API 設定")
@@ -1228,22 +1239,6 @@ def render_settings_popover(user):
             st.rerun()
 
 
-# 處理指紋綁定寫入資料庫請求
-bind_token_param = st.query_params.get("bind_fingerprint")
-if bind_token_param and st.session_state.get("auth_user"):
-    try:
-        current_u = st.session_state["auth_user"]
-        with _acct_engine().begin() as conn:
-            conn.execute(
-                text("UPDATE app_users SET fingerprint_token = :t, updated_at = now() WHERE username = :u"),
-                {"t": bind_token_param, "u": current_u},
-            )
-        st.success("✅ 指紋快速登入已成功綁定並寫入資料庫！")
-        st.query_params.pop("bind_fingerprint", None)
-    except Exception as e:
-        st.error(f"寫入資料庫失敗：{e}")
-
-
 if not check_remembered_login():
     render_auth_gate()
     st.stop()
@@ -1317,7 +1312,7 @@ def get_database_url():
     if url.startswith("postgres://"):
         url = "postgresql://" + url[len("postgres://"):]
     if url.startswith("postgresql://"):
-        url = "postgresql+psycopg2://" + url[len("postgresql://"):]
+        url = "postgresql+psycopg2://" + url[len("postgres://"):]
     return url or None
 
 
