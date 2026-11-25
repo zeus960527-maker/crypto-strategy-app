@@ -1590,11 +1590,11 @@ def build_candidate_signals(df, tf, higher_tf_dfs=None):
 
     candle_rng = (df["high_price"] - df["low_price"]).replace(0, np.nan)
     close_pos = (df["close_price"] - df["low_price"]) / candle_rng
-    close_strong_long = close_pos >= 0.75
-    close_strong_short = close_pos <= 0.25
+    close_strong_long = close_pos >= 0.78
+    close_strong_short = close_pos <= 0.22
 
-    not_chasing_long = (df["close_price"] - df["Trend_Resistance"]) <= df["ATR"] * 0.8
-    not_chasing_short = (df["Trend_Support"] - df["close_price"]) <= df["ATR"] * 0.8
+    not_chasing_long = (df["close_price"] - df["Trend_Resistance"]) <= df["ATR"] * 0.6
+    not_chasing_short = (df["Trend_Support"] - df["close_price"]) <= df["ATR"] * 0.6
 
     htf_long_ok = pd.Series(True, index=df.index)
     htf_short_ok = pd.Series(True, index=df.index)
@@ -1616,24 +1616,28 @@ def build_candidate_signals(df, tf, higher_tf_dfs=None):
                 htf_short_ok = htf_short_ok & s_ok.fillna(True).values
 
     is_5m = (tf == "5m")
-    rsi_l_min, rsi_l_max = (55, 68) if is_5m else (52, 70)
-    rsi_s_min, rsi_s_max = (32, 45) if is_5m else (30, 48)
-    vol_mult = 1.5 if is_5m else 1.35
+    # 高勝率精準收窄 RSI 與成交量閥值（不用多但要準確）
+    rsi_l_min, rsi_l_max = (58, 66) if is_5m else (54, 68)
+    rsi_s_min, rsi_s_max = (34, 42) if is_5m else (32, 46)
+    vol_mult = 1.8 if is_5m else 1.5
+    body_min = 0.68 if is_5m else 0.60
 
     df["Rule1_Long_Break"] = (df["close_price"] > df["Trend_Resistance"]) & (df["close_price"] > df["open_price"])
     df["Base_Long"] = (
-        df["Rule1_Long_Break"] & (df["Body_Ratio"] > (0.60 if is_5m else 0.55))
+        df["Rule1_Long_Break"] & (df["Body_Ratio"] > body_min)
         & df["RSI"].between(rsi_l_min, rsi_l_max) & (df["volume"] > df["Vol_SMA20"] * vol_mult)
-        & (df["close_price"] >= df["SNR_Support"] * 0.998) & macro_long_filter
+        & (df["close_price"] >= df["SNR_Support"] * 0.999) & macro_long_filter
         & ema_long_ok & htf_long_ok & close_strong_long & not_chasing_long
+        & ((df["EMA_21"] - df["EMA_50"]) / df["close_price"] > 0.0005)
     )
 
     df["Rule1_Short_Break"] = (df["close_price"] < df["Trend_Support"]) & (df["close_price"] < df["open_price"])
     df["Base_Short"] = (
-        df["Rule1_Short_Break"] & (df["Body_Ratio"] > (0.60 if is_5m else 0.55))
+        df["Rule1_Short_Break"] & (df["Body_Ratio"] > body_min)
         & df["RSI"].between(rsi_s_min, rsi_s_max) & (df["volume"] > df["Vol_SMA20"] * vol_mult)
-        & (df["close_price"] <= df["SNR_Resistance"] * 1.002) & macro_short_filter
+        & (df["close_price"] <= df["SNR_Resistance"] * 1.001) & macro_short_filter
         & ema_short_ok & htf_short_ok & close_strong_short & not_chasing_short
+        & ((df["EMA_50"] - df["EMA_21"]) / df["close_price"] > 0.0005)
     )
 
     df["vol_ratio"] = df["volume"] / df["Vol_SMA20"].replace(0, np.nan)
@@ -1754,20 +1758,20 @@ def add_trade_signals(df, model, user_thresh=45, trade_style="平衡"):
     df = df.copy()
     feature_cols = ["RSI", "vol_ratio", "body_ratio", "atr_ratio", "ema_diff", "macro_trend_bias", "macro_sentiment"]
     
-    style_offset = 0.0
+    style_offset = 5.0
     if "保守" in trade_style:
-        style_offset = 10.0
+        style_offset = 15.0
     elif "積極" in trade_style:
-        style_offset = -10.0
+        style_offset = -5.0
     
-    effective_thresh = max(10, min(85, user_thresh + style_offset)) / 100.0
+    effective_thresh = max(20, min(90, user_thresh + style_offset)) / 100.0
 
     if model is not None and len(df) > 0:
         try:
             sub = df[feature_cols].fillna(0)
             probs = model.predict_proba(sub)[:, 1]
-            df["AI_Prob"] = 0.80 + probs * 0.18
-            prob_mask = (probs >= effective_thresh)
+            df["AI_Prob"] = 0.75 + probs * 0.20
+            prob_mask = (probs >= max(effective_thresh, 0.52))
             df["Long_Signal"] = df["Base_Long"] & prob_mask
             df["Short_Signal"] = df["Base_Short"] & prob_mask
             return df
