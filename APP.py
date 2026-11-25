@@ -420,7 +420,7 @@ st.session_state.setdefault("auth_settings", {})
 
 EXCHANGE_URLS = {
     "OKX": "https://www.okx.com",
-    "Bitunix": "https://www.bitunix.com",
+    "Bitunix": "https://fapi.bitunix.com",
     "BingX": "https://open-api.bingx.com",
 }
 TF_STEP = {"5m": "5min", "15m": "15min", "1h": "1h", "4h": "4h"}
@@ -2184,7 +2184,6 @@ def _build_chart_bundle(df_all_tf, symbol, pair, tf, user_thresh=45, trade_style
     low, high = visible_df["low_price"].min(), visible_df["high_price"].max()
     span = max(high - low, abs(high) * 0.001, 1e-8)
     center_y = (float(latest["high_price"]) + float(latest["low_price"])) / 2
-    # 再次將乘數從 0.78 縮小至 0.55，讓 K 棒在畫面中拉得更高、振幅更大
     half = max(high - center_y, center_y - low, span * 0.05) * 0.55
     y_range = [center_y - half, center_y + half]
     change_pct = ((latest_close - latest["open_price"]) / latest["open_price"] * 100) if latest["open_price"] else 0
