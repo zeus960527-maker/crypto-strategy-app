@@ -33,7 +33,7 @@ except Exception:
 TAIWAN_TZ = ZoneInfo('Asia/Taipei')
 
 # ============================================================
-# 0. 頁面設定、圖片與背景（含頂級精緻手機 RWD 響應式 CSS）與 Render 保活機制
+# 0. 頁面設定、圖片與背景（含頂級精緻手機 RWD 響應式 CSS）與保活機制
 # ============================================================
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -657,10 +657,29 @@ def check_remembered_login():
     if st.session_state.get("auth_user"):
         return True
     
+    # 支援透過前端帶入指紋憑證進行資料庫比對登入
+    fp_token = st.query_params.get("fp_token")
+    if fp_token:
+        try:
+            with _acct_engine().connect() as conn:
+                row = conn.execute(
+                    text("SELECT username, settings_json FROM app_users WHERE fingerprint_token = :t"),
+                    {"t": fp_token},
+                ).first()
+            if row:
+                st.session_state.auth_user = row[0]
+                st.session_state.auth_settings = _load_settings(row[1])
+                st.query_params.pop("fp_token", None)
+                return True
+            else:
+                st.error("❌ 指紋憑證與資料庫紀錄不符或已失效，請重新以帳密登入。")
+        except Exception:
+            pass
+
     components.html("""
     <script>
         const token = window.parent.localStorage.getItem('okx_remember_token');
-        if (token && !window.parent.location.search.includes('remember_token')) {
+        if (token && !window.parent.location.search.includes('remember_token') && !window.parent.location.search.includes('fp_token')) {
             const url = new URL(window.parent.location.href);
             url.searchParams.set('remember_token', token);
             window.parent.location.href = url.toString();
@@ -1048,9 +1067,8 @@ def render_auth_gate():
                     
                     window.parent.onFingerprintLoginSuccess = function(token) {
                         if (token) {
-                            window.parent.localStorage.setItem('okx_remember_token', token);
                             const url = new URL(window.parent.location.href);
-                            url.searchParams.set('remember_token', token);
+                            url.searchParams.set('fp_token', token);
                             window.parent.location.href = url.toString();
                         } else {
                             alert("❌ 指紋驗證回傳的 Token 效期失效或為空，請重新登入綁定。");
@@ -1117,10 +1135,10 @@ def render_settings_popover(user):
                 const android = window.AndroidInterface || window.parent.AndroidInterface;
                 if (android && typeof android.saveFingerprintToken === 'function') {
                     android.saveFingerprintToken(token);
-                    alert("✅ 指紋快速登入已成功綁定至此 Android 裝置！");
-                } else {
-                    alert("💡 提示：此功能需在 Android App 容器中執行才能生效。");
                 }
+                const url = new URL(window.parent.location.href);
+                url.searchParams.set('bind_fingerprint', token);
+                window.parent.location.href = url.toString();
             };
         </script>
         """, height=65)
@@ -1210,12 +1228,28 @@ def render_settings_popover(user):
             st.rerun()
 
 
+# 處理指紋綁定寫入資料庫請求
+bind_token_param = st.query_params.get("bind_fingerprint")
+if bind_token_param and st.session_state.get("auth_user"):
+    try:
+        current_u = st.session_state["auth_user"]
+        with _acct_engine().begin() as conn:
+            conn.execute(
+                text("UPDATE app_users SET fingerprint_token = :t, updated_at = now() WHERE username = :u"),
+                {"t": bind_token_param, "u": current_u},
+            )
+        st.success("✅ 指紋快速登入已成功綁定並寫入資料庫！")
+        st.query_params.pop("bind_fingerprint", None)
+    except Exception as e:
+        st.error(f"寫入資料庫失敗：{e}")
+
+
 if not check_remembered_login():
     render_auth_gate()
     st.stop()
 
 # ============================================================
-# 搜尋列與帳戶標頭區塊
+# 搜尋列與帳戶標頭區塊（含 5 秒自動重新整理可用餘額）
 # ============================================================
 current_user = st.session_state["auth_user"]
 s_dict = dict(DEFAULT_TRADE_SETTINGS)
@@ -1234,32 +1268,36 @@ with c_left:
         submitted = st.form_submit_button("送出查詢", use_container_width=True)
 
 with c_right:
-    balance_str = "未設定 API"
-    try:
-        creds_cache = _get_creds(current_user)
-        bal_val = okx_get_balance(creds_cache, s_dict.get("demo", False))
-        balance_str = f"{bal_val:,.2f} USDT"
-    except Exception:
-        balance_str = "尚無 API 或金鑰有誤"
+    @st.fragment(run_every=5)
+    def render_live_account_header():
+        balance_str = "未設定 API"
+        try:
+            creds_cache = _get_creds(current_user)
+            bal_val = okx_get_balance(creds_cache, s_dict.get("demo", False))
+            balance_str = f"{bal_val:,.2f} USDT"
+        except Exception:
+            balance_str = "尚無 API 或金鑰有誤"
 
-    col_acc1, col_acc2, col_acc3 = st.columns(3)
-    with col_acc1:
-        st.markdown(f"""
-        <div class="account-card">
-            <div class="account-title">👤 系統帳戶</div>
-            <div class="account-val" style="font-size:16px;">{current_user}</div>
-        </div>
-        """, unsafe_allow_html=True)
-    with col_acc2:
-        st.markdown(f"""
-        <div class="account-card">
-            <div class="account-title">💰 OKX 即時可用餘額</div>
-            <div class="account-val">{balance_str}</div>
-        </div>
-        """, unsafe_allow_html=True)
-    with col_acc3:
-        st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
-        render_settings_popover(current_user)
+        col_acc1, col_acc2, col_acc3 = st.columns(3)
+        with col_acc1:
+            st.markdown(f"""
+            <div class="account-card">
+                <div class="account-title">👤 系統帳戶</div>
+                <div class="account-val" style="font-size:16px;">{current_user}</div>
+            </div>
+            """, unsafe_allow_html=True)
+        with col_acc2:
+            st.markdown(f"""
+            <div class="account-card">
+                <div class="account-title">💰 OKX 即時可用餘額</div>
+                <div class="account-val">{balance_str}</div>
+            </div>
+            """, unsafe_allow_html=True)
+        with col_acc3:
+            st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
+            render_settings_popover(current_user)
+
+    render_live_account_header()
 
 if submitted:
     q = input_val.strip().upper()
@@ -2090,7 +2128,11 @@ if __name__ == "__main__":
 
         selected_tf = st.radio("時間軸週期", ["5m", "15m", "1h", "4h"], horizontal=True, key="timeframe_select")
 
-        render_live_kline_chart(table_name, symbol_name, pair_name, selected_tf)
+        @st.fragment(run_every=5)
+        def render_live_kline_fragment(tbl, sym, pair, tf):
+            render_live_kline_chart(tbl, sym, pair, tf)
+
+        render_live_kline_fragment(table_name, symbol_name, pair_name, selected_tf)
     elif st.session_state.search_query:
         st.warning(f"找不到與「{st.session_state.search_query}」相關的圖表。")
         render_homepage()
