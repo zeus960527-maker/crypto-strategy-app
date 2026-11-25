@@ -486,7 +486,6 @@ def _acct_engine():
                 okx_secret_enc TEXT NOT NULL DEFAULT '',
                 okx_pass_enc TEXT NOT NULL DEFAULT '',
                 settings_json TEXT NOT NULL DEFAULT '{}',
-                remember_token TEXT,
                 fingerprint_token TEXT,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -616,7 +615,7 @@ def register_user(username, password):
     return u, ""
 
 
-def login_user(username, password, remember=False):
+def login_user(username, password):
     u = username.strip().lower()
     if _is_locked(u):
         return None, None, "登入嘗試次數過多，請 5 分鐘後再試。"
@@ -633,31 +632,13 @@ def login_user(username, password, remember=False):
         return None, None, "帳號或密碼錯誤。"
     _clear_fail(u)
 
-    token = None
-    if remember:
-        token = secrets.token_hex(32)
-        try:
-            with _acct_engine().begin() as conn:
-                conn.execute(
-                    text("UPDATE app_users SET remember_token = :t, updated_at = now() WHERE username = :u"),
-                    {"t": token, "u": u},
-                )
-            st.query_params["remember_token"] = token
-            components.html(f"""
-            <script>
-                window.parent.localStorage.setItem('okx_remember_token', '{token}');
-            </script>
-            """, height=0)
-        except Exception:
-            pass
     return u, _load_settings(row[2]), ""
 
 
-def check_remembered_login():
+def check_fingerprint_login():
     if st.session_state.get("auth_user"):
         return True
     
-    # 支援透過前端帶入指紋憑證進行資料庫比對登入
     fp_token = st.query_params.get("fp_token")
     if fp_token:
         try:
@@ -675,33 +656,6 @@ def check_remembered_login():
                 st.error("❌ 指紋憑證與資料庫紀錄不符或已失效，請重新以帳密登入。")
         except Exception:
             pass
-
-    components.html("""
-    <script>
-        const token = window.parent.localStorage.getItem('okx_remember_token');
-        if (token && !window.parent.location.search.includes('remember_token') && !window.parent.location.search.includes('fp_token')) {
-            const url = new URL(window.parent.location.href);
-            url.searchParams.set('remember_token', token);
-            window.parent.location.href = url.toString();
-        }
-    </script>
-    """, height=0)
-
-    token = st.query_params.get("remember_token")
-    if not token:
-        return False
-    try:
-        with _acct_engine().connect() as conn:
-            row = conn.execute(
-                text("SELECT username, settings_json FROM app_users WHERE remember_token = :t"),
-                {"t": token},
-            ).first()
-        if row:
-            st.session_state.auth_user = row[0]
-            st.session_state.auth_settings = _load_settings(row[1])
-            return True
-    except Exception:
-        pass
     return False
 
 
@@ -1038,7 +992,6 @@ def render_auth_gate():
         with st.form("login_form"):
             l_user = st.text_input("系統帳號", key="login_user")
             l_pw = st.text_input("系統密碼", type="password", key="login_pw")
-            l_remember = st.checkbox("保持登入", value=True, key="login_remember")
             
             c_btn1, c_btn2 = st.columns(2)
             submitted = c_btn1.form_submit_button("登入", use_container_width=True)
@@ -1056,7 +1009,7 @@ def render_auth_gate():
                         if (android && typeof android.requestFingerprintAuth === 'function') {
                             android.requestFingerprintAuth();
                         } else {
-                            const savedToken = window.parent.localStorage.getItem('okx_remember_token');
+                            const savedToken = window.parent.localStorage.getItem('okx_fingerprint_token');
                             if (savedToken) {
                                 window.parent.onFingerprintLoginSuccess(savedToken);
                             } else {
@@ -1078,7 +1031,7 @@ def render_auth_gate():
                 """, height=55)
 
             if submitted:
-                u, settings, err = login_user(l_user, l_pw, remember=l_remember)
+                u, settings, err = login_user(l_user, l_pw)
                 if err:
                     st.error(err)
                 else:
@@ -1096,7 +1049,7 @@ def render_auth_gate():
                 if err:
                     st.error(err)
                 else:
-                    u_logged, settings_logged, _ = login_user(r_user, r_pw, remember=True)
+                    u_logged, settings_logged, _ = login_user(r_user, r_pw)
                     st.session_state.auth_user = u_logged
                     st.session_state.auth_settings = settings_logged
                     st.rerun()
@@ -1122,29 +1075,19 @@ def render_settings_popover(user):
         st.markdown("#### 👆 指紋 / 生物辨識登入設定")
         st.caption("綁定後，下次開啟 App 可直接使用手機指紋快速驗證登入。")
         
-        # 使用 Streamlit 原生按鈕，手機點擊反應最靈敏
         if st.button("綁定當前裝置指紋快速登入", use_container_width=True, key="bind_fp_btn"):
-            components.html("""
+            fp_val = secrets.token_hex(32)
+            components.html(f"""
             <script>
-                const token = window.parent.localStorage.getItem('okx_remember_token') || '';
-                if (token) {
-                    const android = window.AndroidInterface || window.parent.AndroidInterface;
-                    if (android && typeof android.saveFingerprintToken === 'function') {
-                        android.saveFingerprintToken(token);
-                    }
+                window.parent.localStorage.setItem('okx_fingerprint_token', '{fp_val}');
+                const android = window.AndroidInterface || window.parent.AndroidInterface;
+                if (android && typeof android.saveFingerprintToken === 'function') {
+                    android.saveFingerprintToken('{fp_val}');
                 }
             </script>
             """, height=0)
             
             try:
-                with _acct_engine().connect() as conn:
-                    rem_row = conn.execute(
-                        text("SELECT remember_token FROM app_users WHERE username = :u"),
-                        {"u": user}
-                    ).first()
-                
-                fp_val = rem_row[0] if (rem_row and rem_row[0]) else secrets.token_hex(32)
-                
                 with _acct_engine().begin() as conn:
                     conn.execute(
                         text("UPDATE app_users SET fingerprint_token = :t, updated_at = now() WHERE username = :u"),
@@ -1230,7 +1173,7 @@ def render_settings_popover(user):
         if st.button("登出系統", key="logout_btn", use_container_width=True):
             components.html("""
             <script>
-                window.parent.localStorage.removeItem('okx_remember_token');
+                window.parent.localStorage.removeItem('okx_fingerprint_token');
             </script>
             """, height=0)
             st.session_state.auth_user = None
@@ -1239,7 +1182,7 @@ def render_settings_popover(user):
             st.rerun()
 
 
-if not check_remembered_login():
+if not check_fingerprint_login() and not st.session_state.get("auth_user"):
     render_auth_gate()
     st.stop()
 
@@ -2117,6 +2060,10 @@ def render_live_kline_chart(table, symbol, pair, tf):
 
 
 if __name__ == "__main__":
+    if not check_fingerprint_login() and not st.session_state.get("auth_user"):
+        render_auth_gate()
+        st.stop()
+
     if st.session_state.is_searched:
         query = st.session_state.search_query.upper()
         table_name, symbol_name, pair_name = ("eth_contract_klines", "ETH", "ETH-USDT-SWAP") if "ETH" in query else ("btc_contract_klines", "BTC", "BTC-USDT-SWAP")
