@@ -1664,8 +1664,6 @@ def load_historical_data(table_name, symbol_name, tf=None, days=95):
     try:
         engine = get_db_engine()
         cols = "timeframe, open_time, open_price, high_price, low_price, close_price, volume"
-        cutoff_dt = datetime.now(timezone.utc) - timedelta(days=int(days))
-        cutoff_ms = int(cutoff_dt.timestamp() * 1000)
         tfs = [tf] if tf else ["5m", "15m", "1h", "4h"]
         dfs = []
         with engine.connect() as conn:
@@ -1674,19 +1672,10 @@ def load_historical_data(table_name, symbol_name, tf=None, days=95):
                 sql = text(f"""
                     SELECT {cols} FROM {table_name}
                     WHERE timeframe = :tf
-                      AND (
-                          (pg_typeof(open_time)::text IN ('bigint', 'integer', 'numeric', 'double precision') AND open_time::bigint >= :cutoff_ms)
-                          OR
-                          (pg_typeof(open_time)::text NOT IN ('bigint', 'integer', 'numeric', 'double precision') AND open_time::timestamptz >= :cutoff_dt)
-                      )
                     ORDER BY open_time DESC
                     LIMIT :lim
                 """)
-                try:
-                    part = pd.read_sql(sql, con=conn, params={"tf": t_item, "cutoff_ms": cutoff_ms, "cutoff_dt": cutoff_dt, "lim": limit_rows})
-                except Exception:
-                    fallback_sql = text(f"SELECT {cols} FROM {table_name} WHERE timeframe = :tf ORDER BY open_time DESC LIMIT :lim")
-                    part = pd.read_sql(fallback_sql, con=conn, params={"tf": t_item, "lim": limit_rows})
+                part = pd.read_sql(sql, con=conn, params={"tf": t_item, "lim": limit_rows})
                 if not part.empty:
                     dfs.append(part)
         if not dfs:
