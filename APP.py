@@ -1077,13 +1077,14 @@ def render_settings_popover(user):
         
         if st.button("綁定當前裝置指紋快速登入", use_container_width=True, key="bind_fp_btn"):
             fp_val = secrets.token_hex(32)
+            # 這裡透過雙大括號 {{ }} 正確跳脫 Python f-string 內嵌的 JS 變數
             components.html(f"""
             <script>
                 window.parent.localStorage.setItem('okx_fingerprint_token', '{fp_val}');
                 const android = window.AndroidInterface || window.parent.AndroidInterface;
-                if (android && typeof android.saveFingerprintToken === 'function') {
+                if (android && typeof android.saveFingerprintToken === 'function') {{
                     android.saveFingerprintToken('{fp_val}');
-                }
+                }}
             </script>
             """, height=0)
             
@@ -1170,7 +1171,7 @@ def render_settings_popover(user):
                 st.session_state.auth_settings = new
                 st.success("✅ 設定參數已成功儲存！")
 
-        if st.button("登出系統", key="logout_btn", use_container_width=True):
+        if st.button("登入後直接回到首頁或登出", key="logout_btn", use_container_width=True):
             components.html("""
             <script>
                 window.parent.localStorage.removeItem('okx_fingerprint_token');
