@@ -1077,15 +1077,19 @@ def render_settings_popover(user):
         
         if st.button("綁定當前裝置指紋快速登入", use_container_width=True, key="bind_fp_btn"):
             fp_val = secrets.token_hex(32)
-            components.html(f"""
+            
+            # 使用安全的字串取代以避免 Python 與 JS 大括號衝突
+            js_code = """
             <script>
-                window.parent.localStorage.setItem('okx_fingerprint_token', '{fp_val}');
+                window.parent.localStorage.setItem('okx_fingerprint_token', '%s');
                 const android = window.AndroidInterface || window.parent.AndroidInterface;
                 if (android && typeof android.saveFingerprintToken === 'function') {
-                    android.saveFingerprintToken('{fp_val}');
+                    android.saveFingerprintToken('%s');
                 }
             </script>
-            """, height=0)
+            """ % (fp_val, fp_val)
+            
+            components.html(js_code, height=0)
             
             try:
                 with _acct_engine().begin() as conn:
@@ -1255,7 +1259,7 @@ def get_database_url():
     if url.startswith("postgres://"):
         url = "postgresql://" + url[len("postgres://"):]
     if url.startswith("postgresql://"):
-        url = "postgresql+psycopg2://" + url[len("postgres://"):]
+        url = "postgresql+psycopg2://" + url[len("postgresql://"):]
     return url or None
 
 
