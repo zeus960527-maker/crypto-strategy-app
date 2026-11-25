@@ -1757,7 +1757,6 @@ def build_candidate_signals(df, tf, higher_tf_dfs=None):
                 htf_df = htf_df.copy()
                 htf_df["HTF_EMA21"] = htf_df["close_price"].ewm(span=21, adjust=False).mean()
                 htf_df["HTF_EMA50"] = htf_df["close_price"].ewm(span=50, adjust=False).mean()
-                # 確保排序與去除重複，防止 merge_asof 報錯
                 htf_df = htf_df.sort_values("open_time").drop_duplicates(subset=["open_time"])
                 
                 merged_htf = pd.merge_asof(
@@ -1765,7 +1764,7 @@ def build_candidate_signals(df, tf, higher_tf_dfs=None):
                     htf_df[["open_time", "close_price", "HTF_EMA21", "HTF_EMA50"]],
                     on="open_time",
                     direction="backward"
-                ).sort_index() # 恢復原本順序
+                ).sort_index()
                 
                 l_ok = (merged_htf["close_price"] >= merged_htf["HTF_EMA50"] * 0.995) & (merged_htf["HTF_EMA21"] >= merged_htf["HTF_EMA50"])
                 s_ok = (merged_htf["close_price"] <= merged_htf["HTF_EMA50"] * 1.005) & (merged_htf["HTF_EMA21"] <= merged_htf["HTF_EMA50"])
