@@ -1182,7 +1182,7 @@ def render_auth_gate():
             submitted = c_btn1.form_submit_button("登入", width="stretch")
             
             with c_btn2:
-                components.html("""
+                st.iframe("""
                 <div style="margin-top: 2px;">
                     <button type="button" onclick="requestFingerprintLogin()" style="width:100%; height:46px; background:linear-gradient(135deg, #ffd35a, #f0b90b); color:#1a1400; font-weight:bold; border:none; border-radius:10px; cursor:pointer; box-shadow: 0 4px 14px rgba(240,185,11,.35); font-size:14px;">
                         👆 指紋快速登入
@@ -1272,7 +1272,7 @@ def render_settings_popover(user):
         
         if st.button("綁定當前裝置指紋快速登入", width="stretch", key="bind_fp_btn"):
             fp_val = secrets.token_hex(32)
-            components.html(f"""
+            st.iframe(f"""
             <script>
                 window.parent.localStorage.setItem('okx_fingerprint_token', '{fp_val}');
                 const android = window.AndroidInterface || window.parent.AndroidInterface;
@@ -1404,7 +1404,7 @@ def render_settings_popover(user):
                 st.success("✅ 設定參數已成功儲存！")
 
         if st.button("登入後直接回到首頁或登出", key="logout_btn", width="stretch"):
-            components.html("""
+            st.iframe("""
             <script>
                 window.parent.localStorage.removeItem('okx_fingerprint_token');
             </script>
