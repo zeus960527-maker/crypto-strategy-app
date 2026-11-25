@@ -1228,7 +1228,7 @@ def render_auth_gate():
             submitted = c_btn1.form_submit_button("登入", width="stretch")
             
             with c_btn2:
-                st.iframe("""
+                components.html("""
                 <div style="margin-top: 2px;">
                     <button type="button" onclick="requestFingerprintLogin()" style="width:100%; height:46px; background:linear-gradient(135deg, #ffd35a, #f0b90b); color:#1a1400; font-weight:bold; border:none; border-radius:10px; cursor:pointer; box-shadow: 0 4px 14px rgba(240,185,11,.35); font-size:14px;">
                         👆 指紋快速登入
@@ -1318,7 +1318,7 @@ def render_settings_popover(user):
         
         if st.button("綁定當前裝置指紋快速登入", width="stretch", key="bind_fp_btn"):
             fp_val = secrets.token_hex(32)
-            st.iframe(f"""
+            components.html(f"""
             <script>
                 window.parent.localStorage.setItem('okx_fingerprint_token', '{fp_val}');
                 const android = window.AndroidInterface || window.parent.AndroidInterface;
@@ -1326,7 +1326,7 @@ def render_settings_popover(user):
                     android.saveFingerprintToken('{fp_val}');
                 }}
             </script>
-            """, height=0)
+            """, height=1)
             
             try:
                 with _acct_engine().begin() as conn:
@@ -1450,11 +1450,11 @@ def render_settings_popover(user):
                 st.success("✅ 設定參數已成功儲存！")
 
         if st.button("登入後直接回到首頁或登出", key="logout_btn", width="stretch"):
-            st.iframe("""
+            components.html("""
             <script>
                 window.parent.localStorage.removeItem('okx_fingerprint_token');
             </script>
-            """, height=0)
+            """, height=1)
             st.session_state.auth_user = None
             st.session_state.auth_settings = {}
             st.query_params.clear()
@@ -2162,22 +2162,26 @@ def _build_chart_bundle(df_all_tf, symbol, pair, tf, user_thresh=45, trade_style
         increasing_line_color="#0ECB81", increasing_fillcolor="#0ECB81",
         decreasing_line_color="#F6465D", decreasing_fillcolor="#F6465D",
         hoverinfo="none",
+        xaxis="x", yaxis="y",
     ), row=1, col=1)
 
     for ema, color, width in [("EMA_21", "#2962FF", 1.5), ("EMA_50", "#FFFFFF", 1.5), ("EMA_100", "#FF5252", 1.8)]:
         fig.add_trace(go.Scatter(
             x=view_df["open_time"], y=view_df[ema], mode="lines", name=ema.replace("_", ""),
             line=dict(color=color, width=width), hoverinfo="none",
+            xaxis="x", yaxis="y",
         ), row=1, col=1)
 
     fig.add_trace(go.Scatter(
         x=view_df["open_time"], y=view_df["Trend_Resistance"], mode="lines", name="壓力趨勢線",
         line=dict(color="rgba(246,70,93,.7)", width=1.5, dash="dash"), hoverinfo="none",
+        xaxis="x", yaxis="y",
     ), row=1, col=1)
 
     fig.add_trace(go.Scatter(
         x=view_df["open_time"], y=view_df["Trend_Support"], mode="lines", name="支撐趨勢線",
         line=dict(color="rgba(14,203,129,.7)", width=1.5, dash="dash"), hoverinfo="none",
+        xaxis="x", yaxis="y",
     ), row=1, col=1)
 
     long_df = view_df[view_df["Long_Signal"]].copy()
@@ -2187,12 +2191,13 @@ def _build_chart_bundle(df_all_tf, symbol, pair, tf, user_thresh=45, trade_style
         for t, low_p, ly in zip(long_df["open_time"], long_df["low_price"], long_y):
             _lx += [t, t, None]
             _ly += [low_p, ly, None]
-        fig.add_trace(go.Scatter(x=_lx, y=_ly, mode="lines", line=dict(color="#848e9c", width=1, dash="dot"), showlegend=False, hoverinfo="none"), row=1, col=1)
+        fig.add_trace(go.Scatter(x=_lx, y=_ly, mode="lines", line=dict(color="#848e9c", width=1, dash="dot"), showlegend=False, hoverinfo="none", xaxis="x", yaxis="y"), row=1, col=1)
         fig.add_trace(go.Scatter(
             x=long_df["open_time"], y=long_y, mode="markers+text", name="LONG 多單進場",
             marker=dict(symbol="triangle-up", size=13, color="rgba(11, 14, 17, 0.95)", line=dict(width=2, color="#00E676")),
             text=[f"LONG<br>{(sp if pd.notna(sp) else cp):,.2f}" for sp, cp in zip(long_df["Sig_Price"], long_df["close_price"])],
             textposition="bottom center", textfont=dict(color="#00E676", size=10, family="Arial Black"), hoverinfo="none",
+            xaxis="x", yaxis="y",
         ), row=1, col=1)
 
     short_df = view_df[view_df["Short_Signal"]].copy()
@@ -2202,16 +2207,17 @@ def _build_chart_bundle(df_all_tf, symbol, pair, tf, user_thresh=45, trade_style
         for t, high_p, sy in zip(short_df["open_time"], short_df["high_price"], short_y):
             _sx += [t, t, None]
             _sy += [high_p, sy, None]
-        fig.add_trace(go.Scatter(x=_sx, y=_sy, mode="lines", line=dict(color="#848e9c", width=1, dash="dot"), showlegend=False, hoverinfo="none"), row=1, col=1)
+        fig.add_trace(go.Scatter(x=_sx, y=_sy, mode="lines", line=dict(color="#848e9c", width=1, dash="dot"), showlegend=False, hoverinfo="none", xaxis="x", yaxis="y"), row=1, col=1)
         fig.add_trace(go.Scatter(
             x=short_df["open_time"], y=short_y, mode="markers+text", name="SHORT 空單進場",
             marker=dict(symbol="triangle-down", size=13, color="rgba(11, 14, 17, 0.95)", line=dict(width=2, color="#FF1744")),
             text=[f"SHORT<br>{(sp if pd.notna(sp) else cp):,.2f}" for sp, cp in zip(short_df["Sig_Price"], short_df["close_price"])],
             textposition="top center", textfont=dict(color="#FF1744", size=10, family="Arial Black"), hoverinfo="none",
+            xaxis="x", yaxis="y",
         ), row=1, col=1)
 
     volume_colors = ["rgba(14,203,129,.7)" if close >= open_ else "rgba(246,70,93,.7)" for close, open_ in zip(view_df["close_price"], view_df["open_price"])]
-    fig.add_trace(go.Bar(x=view_df["open_time"], y=view_df["volume"], name="VOL", marker_color=volume_colors, hoverinfo="none"), row=2, col=1)
+    fig.add_trace(go.Bar(x=view_df["open_time"], y=view_df["volume"], name="VOL", marker_color=volume_colors, hoverinfo="none", xaxis="x2", yaxis="y2"), row=2, col=1)
 
     fig.add_hline(
         y=latest_close, line_dash="dot", line_width=1, line_color=status_color,
@@ -2231,7 +2237,7 @@ def _build_chart_bundle(df_all_tf, symbol, pair, tf, user_thresh=45, trade_style
 
     fig.update_layout(
         template="plotly_dark", paper_bgcolor="rgba(11,14,17,.6)", plot_bgcolor="rgba(11,14,17,.6)",
-        hovermode="x", hoverdistance=100, spikedistance=1000, xaxis_rangeslider_visible=False,
+        hovermode="x unified", hoverdistance=100, spikedistance=1000, xaxis_rangeslider_visible=False,
         dragmode="pan", height=860, bargap=0.08, showlegend=True,
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0, font=dict(size=10)),
         margin=dict(l=10, r=85, t=65, b=30), uirevision=f"{symbol}_{tf}_{user_thresh}_{trade_style}",
@@ -2309,7 +2315,7 @@ def render_backtest_analytics(view_df):
         xaxis=dict(title="交易序號", gridcolor="#1e2329"),
         yaxis=dict(title="資金淨值", gridcolor="#1e2329", tickformat=",.1f")
     )
-    st.plotly_chart(fig_eq, width="stretch")
+    st.plotly_chart(fig_eq, width="stretch", config={"staticPlot": False, "responsive": True})
 
 
 def render_live_kline_chart(table, symbol, pair, tf):
@@ -2353,7 +2359,17 @@ def render_live_kline_chart(table, symbol, pair, tf):
 
     chart_col, panel_col = st.columns([3.6, 1.2])
     with chart_col:
-        st.plotly_chart(fig, width="stretch", config={"scrollZoom": True, "displayModeBar": True, "displaylogo": False}, key=f"{symbol.lower()}_{tf}_chart")
+        st.plotly_chart(
+            fig, 
+            width="stretch", 
+            config={
+                "scrollZoom": True, 
+                "displayModeBar": True, 
+                "displaylogo": False,
+                "toImageButtonOptions": {"format": "png", "filename": "chart"}
+            }, 
+            key=f"{symbol.lower()}_{tf}_chart"
+        )
 
     with panel_col:
         st.markdown("### 🎯 AI 即時操作建議")
