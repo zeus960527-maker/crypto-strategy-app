@@ -731,8 +731,10 @@ def _build_chart_bundle(df_all_tf, tf, user_thresh=45, trade_style="平衡", bt_
 
     mobile = is_mobile_client()
     display_len = 40 if mobile else 85
-    # 手機：只把最近 300 根送到瀏覽器（指標、訊號、回測仍用完整 view_df 計算）；桌機維持完整資料
-    plot_df = view_df.iloc[-300:] if mobile else view_df
+    
+    # 修正點：不論手機或桌機，繪圖都使用完整的 view_df，確保歷史進場點位完整繪製
+    plot_df = view_df
+
     if len(view_df) > display_len:
         start_time = view_df["open_time"].iloc[-display_len]
         end_time = view_df["open_time"].iloc[-1] + pd.Timedelta(minutes=75 if tf in ['5m', '15m'] else 300)
