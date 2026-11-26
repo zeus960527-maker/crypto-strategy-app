@@ -1,13 +1,17 @@
-import time
+# eth_fetcher.py
+import os
 import ccxt
 import psycopg2
+import time
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import streamlit as st
-from datetime import datetime
+from flask import Flask, jsonify
 
-st.set_page_config(page_title="ETH 數據自動同步系統", layout="centered")
-
-st.title("ETH 數據自動同步系統")
-st.write("狀態：透過 UptimeRobot 定期觸發同步中 🚀")
+# 1. 設定 Streamlit 頁面（保持簡潔，不顯示多餘網頁畫面）
+st.set_page_config(page_title="ETH Background Worker", layout="centered")
+st.title("🔄 ETH 數據同步背景服務運行中")
+st.write("此服務正在背景 24/7 自動回補與抓取 OKX ETH K 棒數據並寫入 Supabase。")
 
 SUPABASE_DB_URL = "postgresql://postgres.ygzeqvcyqtvhvjrxhzdv:%4010233960527Ken@aws-0-ap-northeast-1.pooler.supabase.com:6543/postgres"
 
@@ -18,12 +22,8 @@ def get_db_connection():
         options="-c statement_timeout=15000"
     )
 
-def fetch_and_fill_timeframe(tf, is_backfill=False):
-    """
-    抓取並寫入資料。
-    若 is_backfill 為 True，會從資料庫最後一筆時間開始向後抓取補齊；
-    若為 False，則抓取最新資料進行即時同步。
-    """
+# 💡 歷史資料回補
+def catch_up_historical_data(tf):
     exchange = ccxt.okx({'enableRateLimit': True})
     symbol = 'ETH/USDT:USDT'
     
@@ -37,25 +37,95 @@ def fetch_and_fill_timeframe(tf, is_backfill=False):
             result = cursor.fetchone()
             last_open_time = result[0] if result and result[0] is not None else None
 
-            params = {'symbol': symbol, 'timeframe': tf}
-            
-            if is_backfill:
-                params['limit'] = 100
-                if last_open_time:
-                    # 從資料庫中最後一筆的時間戳記（毫秒）開始抓取，補齊中間落後的資料
-                    params['since'] = int(last_open_time.timestamp() * 1000)
-            else:
-                # 即時同步抓取最近 10 筆確保涵蓋最新未收盤或剛收盤的 K 棒
-                params['limit'] = 10
+            all_data_to_insert = []
+            current_since = last_open_time
+
+            print(f" -> [ETH-{tf}] 開始檢查歷史斷點回補，起始時間點: {current_since}")
+
+            while True:
+                params = {'symbol': symbol, 'timeframe': tf, 'limit': 300}
+                if current_since:
+                    params['since'] = current_since
+                
+                try:
+                    ohlcv = exchange.fetch_ohlcv(**params)
+                except Exception as e:
+                    print(f"[ETH-{tf}] 歷史回補 API 抓取錯誤: {e}")
+                    break
+
+                if not ohlcv:
+                    break
+
+                batch_data = [
+                    (tf, candle[0], candle[1], candle[2], candle[3], candle[4], candle[5])
+                    for candle in ohlcv
+                ]
+
+                if current_since and all_data_to_insert and batch_data[0][1] == all_data_to_insert[-1][1]:
+                    batch_data = batch_data[1:]
+
+                if not batch_data:
+                    break
+
+                all_data_to_insert.extend(batch_data)
+                
+                if len(ohlcv) < params['limit']:
+                    break
+                
+                next_since = ohlcv[-1][0] + 1
+                if current_since and next_since <= current_since:
+                    break
+                current_since = next_since
+                
+                time.sleep(0.2)
+
+            if all_data_to_insert:
+                sql = """
+                    INSERT INTO eth_contract_klines 
+                    (timeframe, open_time, open_price, high_price, low_price, close_price, volume)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (timeframe, open_time) DO UPDATE SET 
+                    high_price = GREATEST(eth_contract_klines.high_price, EXCLUDED.high_price),
+                    low_price = LEAST(eth_contract_klines.low_price, EXCLUDED.low_price),
+                    close_price = EXCLUDED.close_price,
+                    volume = EXCLUDED.volume;
+                """
+                cursor.executemany(sql, all_data_to_insert)
+                connection.commit()
+                print(f" ✅ [ETH-{tf}] 歷史斷點補齊完成！共補入 {len(all_data_to_insert)} 筆資料。")
+
+    except Exception as e:
+        connection.rollback()
+        print(f" ❌ [ETH-{tf}] 歷史回補資料庫錯誤: {e}")
+    finally:
+        connection.close()
+
+# 💡 即時高頻抓取最新 10 根 K 棒
+def fetch_single_timeframe_realtime(tf):
+    exchange = ccxt.okx({'enableRateLimit': True})
+    symbol = 'ETH/USDT:USDT'
+    
+    connection = get_db_connection()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT MAX(open_time) FROM eth_contract_klines WHERE timeframe = %s",
+                (tf,)
+            )
+            result = cursor.fetchone()
+            last_open_time = result[0] if result and result[0] is not None else None
+
+            params = {'symbol': symbol, 'timeframe': tf, 'limit': 10}
+            if last_open_time:
+                params['since'] = last_open_time
 
             try:
                 ohlcv = exchange.fetch_ohlcv(**params)
             except Exception as e:
-                print(f"[ETH-{tf}] OKX API 抓取失敗: {e}")
-                return False
+                return
 
             if not ohlcv:
-                return False
+                return
 
             batch_data = [
                 (tf, candle[0], candle[1], candle[2], candle[3], candle[4], candle[5])
@@ -75,50 +145,67 @@ def fetch_and_fill_timeframe(tf, is_backfill=False):
                 """
                 cursor.executemany(sql, batch_data)
                 connection.commit()
-                mode_str = "歷史斷層補齊" if is_backfill else "即時同步"
-                print(f" -> [ETH-{tf}] {mode_str}成功")
-                return True
+                latest_close = batch_data[-1][4]
+                print(f" -> [ETH-{tf}] 即時同步成功 | 最新收盤價: {latest_close:,.2f}")
 
     except Exception as e:
-        try:
-            connection.rollback()
-        except Exception:
-            pass
-        print(f" -> [ETH-{tf}] 資料庫寫入錯誤: {e}")
+        connection.rollback()
     finally:
-        try:
-            connection.close()
-        except Exception:
-            pass
-    return False
+        connection.close()
 
-# 1. 確保每次應用程式被觸發時，優先從上一次最後的資料處補齊到最新
-@st.cache_resource
-def run_initial_backfill():
+def run_sync_task(task_func):
     timeframes = ['5m', '15m', '1h', '4h']
-    print("=== 開始執行從上次最後記錄到最新的補齊作業 ===")
-    try:
-        for tf in timeframes:
-            fetch_and_fill_timeframe(tf, is_backfill=True)
-            time.sleep(0.2)
-        print("=== 歷史斷層補齊完成 ===")
-    except Exception as e:
-        print(f"初始化補齊資料錯誤: {e}")
-    return True
+    with ThreadPoolExecutor(max_workers=len(timeframes)) as executor:
+        futures = [executor.submit(task_func, tf) for tf in timeframes]
+        for future in as_completed(futures):
+            try:
+                future.result()
+            except Exception as e:
+                pass
 
-# 執行初始化補齊
-run_initial_backfill()
+def background_worker():
+    print("==========================================")
+    print(" ETH 雲端高頻即時數據同步背景執行緒已啟動")
+    print("==========================================")
+    
+    print("🔄 正在檢查並補齊自上次關閉以來遺漏的歷史 K 棒...")
+    run_sync_task(catch_up_historical_data)
+    print("🚀 歷史回補完畢，正式進入即時高頻監控迴圈！")
 
-# 2. 顯示最後更新時間與狀態提示
-status_placeholder = st.empty()
-timeframes = ['5m', '15m', '1h', '4h']
+    while True:
+        try:
+            start_time = time.time()
+            run_sync_task(fetch_single_timeframe_realtime)
+            elapsed = time.time() - start_time
+            sleep_time = max(1.0, 3.0 - elapsed)
+            time.sleep(sleep_time)
+        except Exception as e:
+            print(f"背景迴圈錯誤: {e}")
+            time.sleep(5)
 
-# 執行即時同步
-status_placeholder.info(f"🔄 正在與交易所同步最新 K 線資料... ({datetime.now().strftime('%Y-%m-%d %H:%M:%S')})")
-try:
-    for tf in timeframes:
-        fetch_and_fill_timeframe(tf, is_backfill=False)
-        time.sleep(0.2)
-    status_placeholder.success(f"✅ 同步完成！等待 UptimeRobot 下一次觸發中... ({datetime.now().strftime('%Y-%m-%d %H:%M:%S')})")
-except Exception as e:
-    status_placeholder.error(f"❌ 同步發生錯誤: {e}")
+# 2. 建立輕量 Flask 伺服器專門給 UptimeRobot Ping 用
+flask_app = Flask(__name__)
+
+@flask_app.route("/health", methods=["GET"])
+def health_check():
+    return jsonify({"status": "healthy", "service": "ETH Fetcher is running 24/7"}), 200
+
+def run_flask():
+    port = int(os.environ.get("PORT", 8080))
+    flask_app.run(host="0.0.0.0", port=port, use_reloader=False)
+
+# 3. 利用 Streamlit 的 cache_resource 同時啟動「爬蟲執行緒」與「Flask 監聽執行緒」
+@st.cache_resource
+def start_services():
+    # 啟動爬蟲背景執行緒
+    t_worker = threading.Thread(target=background_worker, daemon=True)
+    t_worker.start()
+    
+    # 啟動 Flask 健康檢查伺服器執行緒（給 UptimeRobot 訪問）
+    t_flask = threading.Thread(target=run_flask, daemon=True)
+    t_flask.start()
+    
+    return "Started"
+
+start_services()
+[cite: 3]
