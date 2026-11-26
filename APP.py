@@ -1127,11 +1127,12 @@ def _start_background_trade_worker():
 
                     for sym, mod in COIN_MODULES.items():
                         try:
-                            ck = (sym, user_thresh, trade_style, bt_days)
+                            write_outbox = (user == btc_chart.OUTBOX_WRITER_USER)  # 只有指定帳號才寫入訊號資料表
+                            ck = (sym, user_thresh, trade_style, bt_days, write_outbox)
                             if ck not in sig_cache:
-                                # save_outbox=True：有訊號就寫入 strategy_signal_outbox
+                                # save_outbox：只有指定帳號 (zeus) 才會把訊號寫入 strategy_signal_outbox
                                 sig_cache[ck] = mod.compute_signals(
-                                    TF, user_thresh, trade_style, days=bt_days, save_outbox=True
+                                    TF, user_thresh, trade_style, days=bt_days, save_outbox=write_outbox
                                 )
                             df_tf = sig_cache[ck]
                             if df_tf is None or df_tf.empty:
@@ -1578,6 +1579,8 @@ _shown_coin = None
 if st.session_state.get("is_searched"):
     _shown_coin = "ETH" if "ETH" in st.session_state.search_query.upper() else "BTC"
 
-for _sym in COIN_MODULES:
-    if _sym != _shown_coin:
-        _scan_coin_signals(_sym)
+# 只有指定帳號 (zeus) 需要這個背景掃描；其他使用者不寫入訊號，所以不必執行
+if st.session_state.get("auth_user") == btc_chart.OUTBOX_WRITER_USER:
+    for _sym in COIN_MODULES:
+        if _sym != _shown_coin:
+            _scan_coin_signals(_sym)
