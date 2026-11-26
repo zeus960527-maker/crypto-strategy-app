@@ -35,6 +35,8 @@ TABLE = "eth_contract_klines"
 TAIWAN_TZ = ZoneInfo("Asia/Taipei")
 TF_STEP = {"5m": "5min", "15m": "15min", "1h": "1h", "4h": "4h"}
 OUTBOX_TABLE = "strategy_signal_outbox"
+# 只有這個帳號會把訊號寫入資料表；其他使用者只讀取、不寫入
+OUTBOX_WRITER_USER = "zeus"
 FEATURE_COLS = ["RSI", "vol_ratio", "body_ratio", "atr_ratio", "ema_diff", "macro_trend_bias", "macro_sentiment"]
 
 
@@ -728,7 +730,8 @@ def _build_chart_bundle(df_all_tf, tf, user_thresh=45, trade_style="平衡", bt_
         return None
 
     # 有訊號 → 寫入 Supabase strategy_signal_outbox
-    save_all_signals_to_outbox(tf, view_df)
+    if st.session_state.get("auth_user") == OUTBOX_WRITER_USER:
+        save_all_signals_to_outbox(tf, view_df)
     view_df = remember_and_apply_signals(view_df, tf)
     view_df = fill_missing_tp_sl(view_df)
     view_df = filter_single_signal_per_wave(view_df)
