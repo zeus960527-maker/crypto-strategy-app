@@ -1,17 +1,3 @@
-"""ETH K 線圖獨立模組（與 btc_chart.py 結構相同，只有 SYMBOL / PAIR / TABLE 不同）。
-
-主程式只需要：
-    import eth_chart
-    eth_chart.render(selected_tf, trade_panel=render_exchange_trade_panel)
-
-背景自動下單執行緒取得 5m 訊號：
-    df = eth_chart.compute_signals("5m", user_thresh, trade_style, days=backtest_days)
-
-本模組內含 ETH 專屬的全部功能：
-  讀取 K 線 → 指標 → 候選訊號 → AI(LightGBM) 過濾 → 止損/止盈 → 畫圖
-  → 只要有訊號就寫入 Supabase (crypto_db) 的 strategy_signal_outbox 資料表
-  → 績效回測報表、最近訊號面板
-"""
 import os
 import time
 from datetime import datetime, timedelta
@@ -26,7 +12,7 @@ import lightgbm as lgb
 from sqlalchemy import create_engine, text
 
 # ============================================================
-# 幣種設定（ETH 版只改這三行）
+# 幣種設定（ETH 版）
 # ============================================================
 SYMBOL = "ETH"
 PAIR = "ETH-USDT-SWAP"
