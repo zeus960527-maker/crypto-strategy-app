@@ -1120,14 +1120,18 @@ def _start_background_trade_worker():
 
                     user_thresh = s.get("ai_confidence_thresh", 45)
                     trade_style = s.get("trade_style", "平衡")
+                    try:
+                        bt_days = int(s.get("backtest_days", 30))
+                    except Exception:
+                        bt_days = 30
 
                     for sym, mod in COIN_MODULES.items():
                         try:
-                            ck = (sym, user_thresh, trade_style)
+                            ck = (sym, user_thresh, trade_style, bt_days)
                             if ck not in sig_cache:
                                 # save_outbox=True：有訊號就寫入 strategy_signal_outbox
                                 sig_cache[ck] = mod.compute_signals(
-                                    TF, user_thresh, trade_style, days=14, save_outbox=True
+                                    TF, user_thresh, trade_style, days=bt_days, save_outbox=True
                                 )
                             df_tf = sig_cache[ck]
                             if df_tf is None or df_tf.empty:
