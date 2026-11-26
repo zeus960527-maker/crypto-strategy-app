@@ -5,12 +5,8 @@ from pathlib import Path
 import streamlit as st
 import streamlit.components.v1 as components
 import pandas as pd
-import numpy as np
 from sqlalchemy import create_engine, text
 from PIL import Image
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-import lightgbm as lgb
 from zoneinfo import ZoneInfo
 import threading
 import time
@@ -24,6 +20,12 @@ import secrets
 from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP
 from datetime import datetime, timedelta, timezone
 
+# ---- 幣種 K 線模組（BTC / ETH 各自獨立）----
+import btc_chart
+import eth_chart
+
+COIN_MODULES = {"BTC": btc_chart, "ETH": eth_chart}
+
 try:
     from cryptography.fernet import Fernet, InvalidToken
 except Exception:
@@ -33,9 +35,10 @@ except Exception:
 TAIWAN_TZ = ZoneInfo('Asia/Taipei')
 
 # ============================================================
-# 0. 頁面設定、圖片與背景（含頂級精緻手機 RWD 響應式 CSS）與保活機制
+# 0. 頁面設定、圖片與背景（含手機 RWD 響應式 CSS）與保活機制
 # ============================================================
 BASE_DIR = Path(__file__).resolve().parent
+
 
 @st.cache_resource
 def _start_keep_alive():
@@ -204,7 +207,7 @@ div[data-testid="stForm"] {{
 
 
 # ============================================================
-# 0.5 精美介面樣式
+# 0.5 精美介面樣式（含幣種模組使用的 conf-card / sig-card 樣式）
 # ============================================================
 UI_CSS = """
 <style>
@@ -395,7 +398,7 @@ st.markdown(UI_CSS, unsafe_allow_html=True)
 
 
 # ============================================================
-# 1. Session State 與標題搜尋列
+# 1. Session State 與標題
 # ============================================================
 st.session_state.setdefault("is_searched", False)
 st.session_state.setdefault("search_query", "")
@@ -423,7 +426,6 @@ EXCHANGE_URLS = {
     "Bitunix": "https://fapi.bitunix.com",
     "BingX": "https://open-api.bingx.com",
 }
-TF_STEP = {"5m": "5min", "15m": "15min", "1h": "1h", "4h": "4h"}
 
 DEFAULT_TRADE_SETTINGS = {
     "auto_trade": False,
@@ -663,7 +665,7 @@ def login_user(username, password):
 def check_fingerprint_login():
     if st.session_state.get("auth_user"):
         return True
-    
+
     fp_token = st.query_params.get("fp_token")
     if fp_token:
         try:
@@ -698,11 +700,11 @@ def update_exchange_credentials(username, exchange, k="", s="", p=""):
             text("SELECT okx_key_enc, okx_secret_enc, okx_pass_enc, bitunix_key_enc, bitunix_secret_enc, bingx_key_enc, bingx_secret_enc FROM app_users WHERE username = :u"),
             {"u": username}
         ).first()
-        
+
         ok_k, ok_s, ok_p = _dec(curr[0]), _dec(curr[1]), _dec(curr[2])
         bx_k, bx_s = _dec(curr[3]), _dec(curr[4])
         bg_k, bg_s = _dec(curr[5]), _dec(curr[6])
-        
+
         if exchange == "OKX":
             ok_k = k.strip() if k.strip() else ok_k
             ok_s = s.strip() if s.strip() else ok_s
@@ -740,7 +742,7 @@ def _get_exchange_creds(username, exchange):
         ).first()
     if row is None:
         raise ExchangeError("找不到使用者帳號資料。")
-    
+
     if exchange == "OKX":
         if not row[0]:
             raise ExchangeError("尚未設定 OKX API 金鑰，請至設定填寫。")
@@ -798,10 +800,10 @@ def _bitunix_request(method, path, creds=None, params=None, body=None):
     nonce = secrets.token_hex(8)
     query_str = urllib.parse.urlencode(params) if params else ""
     body_str = json.dumps(body, separators=(",", ":")) if body is not None else ""
-    
+
     raw_sign_str = timestamp + creds["key"] + nonce + body_str
     sign = hmac.new(creds["secret"].encode("utf-8"), raw_sign_str.encode("utf-8"), hashlib.sha256).hexdigest()
-    
+
     headers = {
         "Content-Type": "application/json",
         "api-key": creds["key"],
@@ -830,14 +832,14 @@ def _bingx_request(method, path, creds=None, params=None, body=None):
         params = {}
     params["timestamp"] = timestamp
     params["apiKey"] = creds["key"]
-    
+
     query_str = urllib.parse.urlencode(sorted(params.items()))
     signature = hmac.new(creds["secret"].encode("utf-8"), query_str.encode("utf-8"), hashlib.sha256).hexdigest()
     query_str += f"&signature={signature}"
-    
+
     headers = {"X-BX-APIKEY": creds["key"], "User-Agent": "Mozilla/5.0"}
     body_str = json.dumps(body, separators=(",", ":")) if body is not None else None
-    
+
     req_url = f"{EXCHANGE_URLS['BingX']}{path}?{query_str}"
     req = urllib.request.Request(
         req_url,
@@ -890,10 +892,6 @@ def check_exchange_position(exchange, creds, demo, inst_id):
             except ValueError:
                 pass
         return False
-    elif exchange == "Bitunix":
-        return False
-    elif exchange == "BingX":
-        return False
     return False
 
 
@@ -911,10 +909,25 @@ def get_exchange_instrument(exchange, inst_id):
     return {"ctVal": "1", "minSz": "1", "lotSz": "1", "tickSz": "0.1", "lever": 10}
 
 
+def okx_account_config(creds, demo):
+    data = _okx_request("GET", "/api/v5/account/config", creds, demo=demo)
+    return data[0] if data else {}
+
+
+def _floor_step(x, step):
+    return (x / step).to_integral_value(rounding=ROUND_DOWN) * step
+
+
+def _fmt_px(price, tick):
+    t = Decimal(str(tick))
+    p = (Decimal(str(price)) / t).quantize(Decimal(1), rounding=ROUND_HALF_UP) * t
+    return format(p.normalize(), "f")
+
+
 def place_exchange_order(exchange, creds, s, pair, direction, price, sl, tp, clord_seed):
     demo = bool(s.get("demo"))
     is_long = direction == "LONG"
-    
+
     if exchange == "OKX":
         cfg = okx_account_config(creds, demo)
         if str(cfg.get("acctLv")) == "1":
@@ -922,26 +935,26 @@ def place_exchange_order(exchange, creds, s, pair, direction, price, sl, tp, clo
         pos_mode = cfg.get("posMode") or "net_mode"
         if check_exchange_position(exchange, creds, demo, pair):
             raise OrderSkip("該合約已有持倉，略過此訊號。")
-        
+
         inst = get_exchange_instrument(exchange, pair)
         avail = get_exchange_balance(exchange, creds, demo)
         if avail <= 0:
             raise ExchangeError("可用 USDT 餘額為 0。")
-            
+
         max_lev = max(1, int(float(inst.get("lever") or 1)))
         lever = max_lev if s.get("use_max_lever") else max(1, min(int(s.get("manual_lever", 10)), max_lev))
-        
+
         ct = Decimal(str(inst["ctVal"])) * Decimal(str(inst.get("ctMult") or "1"))
         lot = Decimal(str(inst["lotSz"]))
         min_sz = Decimal(str(inst["minSz"]))
-        
+
         target_amount = min(Decimal(str(s.get("fund_amount", 100.0))), Decimal(str(avail)))
         budget = target_amount * Decimal(lever)
-        
+
         contracts = _floor_step(budget / (Decimal(str(price)) * ct), lot)
         if contracts < min_sz:
             raise ExchangeError("可用資金或設定金額不足以下最小單位。")
-            
+
         td_mode_raw = "isolated" if s.get("td_mode", "逐倉") == "逐倉" else "cross"
         lev_body = {"instId": pair, "lever": str(lever), "mgnMode": td_mode_raw}
         if td_mode_raw == "isolated" and pos_mode == "long_short_mode":
@@ -971,7 +984,7 @@ def place_exchange_order(exchange, creds, s, pair, direction, price, sl, tp, clo
         target_amount = min(float(s.get("fund_amount", 100.0)), float(avail))
         notional = target_amount * lever
         sz = round(notional / price, 4)
-        
+
         body = {
             "symbol": pair.replace("-USDT-SWAP", "USDT"),
             "side": "OPEN_LONG" if is_long else "OPEN_SHORT",
@@ -979,7 +992,7 @@ def place_exchange_order(exchange, creds, s, pair, direction, price, sl, tp, clo
             "volume": str(sz),
             "leverage": str(lever)
         }
-        res = _bitunix_request("POST", "/api/v1/trade/order", creds, body=body)
+        _bitunix_request("POST", "/api/v1/trade/order", creds, body=body)
         return f"Bitunix 委託成功 ｜ 數量 {sz} ｜ 槓桿 {lever}x"
 
     elif exchange == "BingX":
@@ -988,7 +1001,7 @@ def place_exchange_order(exchange, creds, s, pair, direction, price, sl, tp, clo
         target_amount = min(float(s.get("fund_amount", 100.0)), float(avail))
         notional = target_amount * lever
         sz = round(notional / price, 4)
-        
+
         body = {
             "symbol": pair.replace("-USDT-SWAP", "-USDT"),
             "side": "BUY" if is_long else "SELL",
@@ -996,25 +1009,10 @@ def place_exchange_order(exchange, creds, s, pair, direction, price, sl, tp, clo
             "type": "MARKET",
             "quantity": str(sz)
         }
-        res = _bingx_request("POST", "/openApi/swap/v1/trade/order", creds, body=body)
+        _bingx_request("POST", "/openApi/swap/v1/trade/order", creds, body=body)
         return f"BingX 委託成功 ｜ 數量 {sz} ｜ 槓桿 {lever}x"
 
     raise ExchangeError(f"未知的交易所：{exchange}")
-
-
-def okx_account_config(creds, demo):
-    data = _okx_request("GET", "/api/v5/account/config", creds, demo=demo)
-    return data[0] if data else {}
-
-
-def _floor_step(x, step):
-    return (x / step).to_integral_value(rounding=ROUND_DOWN) * step
-
-
-def _fmt_px(price, tick):
-    t = Decimal(str(tick))
-    p = (Decimal(str(price)) / t).quantize(Decimal(1), rounding=ROUND_HALF_UP) * t
-    return format(p.normalize(), "f")
 
 
 def _claim_order(user, exchange, symbol, tf, sig_time, direction):
@@ -1067,6 +1065,7 @@ def _render_order_log(user):
 
 # ------------------------------------------------------------
 # 獨立背景自動下單執行緒（24小時不間斷背景監控）
+# 訊號由各幣種模組 (btc_chart / eth_chart) 計算，並由模組寫入 strategy_signal_outbox
 # ------------------------------------------------------------
 def _tw_log(msg):
     try:
@@ -1079,6 +1078,7 @@ def _tw_log(msg):
 def _start_background_trade_worker():
     SCAN_BARS = 3           # 每輪檢查最近幾根 K 棒，避免剛好錯過最新一根
     MAX_BAR_AGE_MIN = 15    # 超過這個分鐘數的舊訊號不追單
+    TF = "5m"
 
     def _worker_loop():
         _tw_log("背景下單執行緒已啟動")
@@ -1092,6 +1092,7 @@ def _start_background_trade_worker():
 
                 active = 0
                 now_tw = datetime.now(TAIWAN_TZ).replace(tzinfo=None)
+                sig_cache = {}  # 同一輪中，相同 (幣種, 門檻, 風格) 只計算一次
 
                 for row in users:
                     user = row[0]
@@ -1117,36 +1118,21 @@ def _start_background_trade_worker():
                     except Exception:
                         enabled_at = None
 
-                    symbols_config = [
-                        ("BTC", "BTC-USDT-SWAP", "btc_contract_klines"),
-                        ("ETH", "ETH-USDT-SWAP", "eth_contract_klines"),
-                    ]
                     user_thresh = s.get("ai_confidence_thresh", 45)
                     trade_style = s.get("trade_style", "平衡")
-                    tf = "5m"
 
-                    for sym, pr, tbl in symbols_config:
+                    for sym, mod in COIN_MODULES.items():
                         try:
-                            df_all = load_historical_data(tbl, sym, None, days=14)
-                            if df_all.empty:
-                                _tw_log(f"{user} {sym}: 讀不到 K 線資料（資料庫連線或資料表為空）")
+                            ck = (sym, user_thresh, trade_style)
+                            if ck not in sig_cache:
+                                # save_outbox=True：有訊號就寫入 strategy_signal_outbox
+                                sig_cache[ck] = mod.compute_signals(
+                                    TF, user_thresh, trade_style, days=14, save_outbox=True
+                                )
+                            df_tf = sig_cache[ck]
+                            if df_tf is None or df_tf.empty:
+                                _tw_log(f"{user} {sym}: 讀不到 {TF} K 線資料")
                                 continue
-                            df_tf = df_all[df_all["timeframe"] == tf].sort_values("open_time").reset_index(drop=True)
-                            if df_tf.empty:
-                                _tw_log(f"{user} {sym}: 沒有 {tf} K 線")
-                                continue
-
-                            higher_tf_dfs = {
-                                "15m": df_all[df_all["timeframe"] == "15m"],
-                                "1h": df_all[df_all["timeframe"] == "1h"],
-                                "4h": df_all[df_all["timeframe"] == "4h"],
-                            }
-                            df_tf, _, _ = calculate_indicators(df_tf, tf)
-                            df_tf = build_candidate_signals(df_tf, tf, higher_tf_dfs=higher_tf_dfs)
-                            model, _, _ = train_or_get_ai_model(df_tf, f"{sym}_{tf}")
-                            df_tf = add_trade_signals(df_tf, model, user_thresh=user_thresh, trade_style=trade_style)
-                            df_tf = fill_missing_tp_sl(df_tf)
-                            df_tf = filter_single_signal_per_wave(df_tf)
 
                             for _, r in df_tf.tail(SCAN_BARS).iloc[::-1].iterrows():
                                 long_sig, short_sig = bool(r["Long_Signal"]), bool(r["Short_Signal"])
@@ -1163,13 +1149,13 @@ def _start_background_trade_worker():
                                     _tw_log(f"{user} {sym} {bar_t:%m/%d %H:%M} {direction}: 缺少止損/止盈，略過")
                                     continue
 
-                                order_id = _claim_order(user, exchange, sym, tf, bar_t, direction)
+                                order_id = _claim_order(user, exchange, sym, TF, bar_t, direction)
                                 if not order_id:
                                     continue  # 這根訊號已處理過
                                 try:
-                                    seed = f"{user}|{exchange}|{sym}|{tf}|{bar_t.isoformat()}"
+                                    seed = f"{user}|{exchange}|{sym}|{TF}|{bar_t.isoformat()}"
                                     detail = place_exchange_order(
-                                        exchange, creds, s, pr, direction,
+                                        exchange, creds, s, mod.PAIR, direction,
                                         float(r["close_price"]), float(sl), float(tp), seed,
                                     )
                                     _finish_order(order_id, "success", detail)
@@ -1193,10 +1179,12 @@ def _start_background_trade_worker():
     t.start()
     return True
 
+
 _start_background_trade_worker()
 
 
 def render_exchange_trade_panel(symbol, pair, tf, latest, latest_close):
+    """傳給幣種模組 render(tf, trade_panel=...) 的自動下單面板。"""
     user = st.session_state.get("auth_user")
     if not user:
         return
@@ -1223,10 +1211,10 @@ def render_auth_gate():
         with st.form("login_form"):
             l_user = st.text_input("系統帳號", key="login_user")
             l_pw = st.text_input("系統密碼", type="password", key="login_pw")
-            
+
             c_btn1, c_btn2 = st.columns(2)
             submitted = c_btn1.form_submit_button("登入", width="stretch")
-            
+
             with c_btn2:
                 components.html("""
                 <div style="margin-top: 2px;">
@@ -1298,7 +1286,7 @@ def render_auth_gate():
 def render_settings_popover(user):
     s = dict(DEFAULT_TRADE_SETTINGS)
     s.update(st.session_state.get("auth_settings") or {})
-    
+
     curr_ex = s.get("exchange", "OKX")
     max_bal_limit = 10000.0
     try:
@@ -1311,11 +1299,11 @@ def render_settings_popover(user):
 
     with st.popover("⚙️ 系統與策略設定", help="選擇交易所、設定金鑰、智慧停損與 AI 參數"):
         st.markdown(f"**👤 帳號：{user}**")
-        
+
         st.markdown("---")
         st.markdown("#### 👆 指紋 / 生物辨識登入設定")
         st.caption("綁定後，下次開啟 App 可直接使用手機指紋快速驗證登入。")
-        
+
         if st.button("綁定當前裝置指紋快速登入", width="stretch", key="bind_fp_btn"):
             fp_val = secrets.token_hex(32)
             components.html(f"""
@@ -1327,7 +1315,7 @@ def render_settings_popover(user):
                 }}
             </script>
             """, height=1)
-            
+
             try:
                 with _acct_engine().begin() as conn:
                     conn.execute(
@@ -1340,7 +1328,7 @@ def render_settings_popover(user):
 
         st.markdown("---")
         st.markdown("#### 🌐 選擇交易平台與 API 設定")
-        
+
         selected_ex = st.selectbox(
             "選擇要串接的交易所",
             ["OKX", "Bitunix", "BingX"],
@@ -1404,35 +1392,35 @@ def render_settings_popover(user):
         with st.form("trade_settings_form"):
             auto = st.toggle("啟用自動下單", value=bool(s["auto_trade"]))
             demo = st.toggle("使用模擬盤 (僅 OKX 支援)", value=bool(s["demo"]))
-            
+
             trailing = st.toggle("🛡️ 啟用智慧移動止損 (Trailing Stop)", value=bool(s.get("trailing_stop", True)))
-            
+
             td_current = s.get("td_mode", "逐倉")
             if td_current not in ["逐倉", "全倉"]:
                 td_current = "逐倉"
             td = st.selectbox("保證金模式", ["逐倉", "全倉"], index=0 if td_current == "逐倉" else 1)
-            
+
             curr_fund_amount = float(s.get("fund_amount", 100.0))
             fund_amount = st.number_input(
-                "每次下單使用金額 (USDT)", 
-                min_value=1.0, 
-                max_value=max(max_bal_limit, curr_fund_amount, 1.0), 
+                "每次下單使用金額 (USDT)",
+                min_value=1.0,
+                max_value=max(max_bal_limit, curr_fund_amount, 1.0),
                 value=min(curr_fund_amount, max_bal_limit),
                 step=10.0,
                 help="每次開倉使用的本金金額 (USDT)，系統將自動以您的帳戶可用餘額為上限。"
             )
-            
+
             maxlev = st.toggle("使用最大槓桿", value=bool(s["use_max_lever"]))
             manual = st.number_input("自訂槓桿", 1, 125, int(s["manual_lever"]))
             protect = st.toggle("止損保護", value=bool(s["protect_sl"]))
-            
+
             st.markdown("---")
             st.markdown("#### 🎛️ AI 策略與過濾參數")
             ai_thresh = st.slider("AI 信心分數過濾門檻 (%)", 30, 90, int(s.get("ai_confidence_thresh", 45)), 5)
-            style = st.selectbox("交易風格偏好", ["保守 (高勝率)", "平衡 (預設)", "積極 (多頻次)"], 
-                                 index=0 if s.get("trade_style")=="保守 (高勝率)" else (1 if s.get("trade_style")=="平衡 (預設)" else 2))
-            
-            bt_days = st.selectbox("回測與分析歷史天數", [7, 14, 30, 60, 90], 
+            style = st.selectbox("交易風格偏好", ["保守 (高勝率)", "平衡 (預設)", "積極 (多頻次)"],
+                                 index=0 if s.get("trade_style") == "保守 (高勝率)" else (1 if s.get("trade_style") == "平衡 (預設)" else 2))
+
+            bt_days = st.selectbox("回測與分析歷史天數", [7, 14, 30, 60, 90],
                                    index=[7, 14, 30, 60, 90].index(int(s.get("backtest_days", 30))) if int(s.get("backtest_days", 30)) in [7, 14, 30, 60, 90] else 2)
 
             if st.form_submit_button("儲存系統與下單參數", width="stretch"):
@@ -1461,6 +1449,20 @@ def render_settings_popover(user):
             st.rerun()
 
 
+def render_homepage():
+    st.markdown("""
+    <div class="intro-card">
+        <h2 style="color:#f0b90b;">🚀 關於加密貨幣 AI 策略系統 (多交易所專業版)</h2>
+        <p>
+        本系統完美結合 123法則、SMC、SNR 與宏觀基本面過濾，支援 <b>OKX</b>、<b>Bitunix</b> 與 <b>BingX</b> 自動下單！
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
+
+
+# ============================================================
+# 登入檢查
+# ============================================================
 if not check_fingerprint_login() and not st.session_state.get("auth_user"):
     render_auth_gate()
     st.stop()
@@ -1524,951 +1526,20 @@ if submitted:
 
 st.markdown("---")
 
-
-def get_database_url():
-    url = os.getenv("SUPABASE_DB_URL", "").strip()
-    if not url:
-        try:
-            url = str(st.secrets.get("SUPABASE_DB_URL", "")).strip()
-        except Exception:
-            url = ""
-    if url.startswith("postgres://"):
-        url = "postgresql://" + url[len("postgres://"):]
-    if url.startswith("postgresql://"):
-        url = "postgresql+psycopg2://" + url[len("postgresql://"):]
-    return url or None
-
-
-@st.cache_resource
-def get_db_engine():
-    url = get_database_url()
-    if not url:
-        raise RuntimeError("找不到 SUPABASE_DB_URL。")
-    engine = create_engine(
-        url, pool_size=3, max_overflow=2, pool_pre_ping=True,
-        pool_recycle=300, connect_args={"connect_timeout": 5},
-    )
-    try:
-        with engine.begin() as conn:
-            conn.execute(text("CREATE INDEX IF NOT EXISTS idx_btc_klines_tf_time ON btc_contract_klines (timeframe, open_time DESC);"))
-            conn.execute(text("CREATE INDEX IF NOT EXISTS idx_eth_klines_tf_time ON eth_contract_klines (timeframe, open_time DESC);"))
-            conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS idx_outbox_sym_tf_time ON strategy_signal_outbox (symbol, timeframe, signal_time_taipei);"))
-    except Exception:
-        pass
-    return engine
-
-
-@st.cache_resource
-def _saved_outbox_cache():
-    return set()
-
-
-def save_all_signals_to_outbox(symbol, tf, view_df):
-    try:
-        sigs = view_df[view_df["Long_Signal"] | view_df["Short_Signal"]]
-        sigs = sigs[sigs["Stop_Loss"].notna() & sigs["Take_Profit"].notna()]
-        if sigs.empty:
-            return
-        cache = _saved_outbox_cache()
-        if len(cache) > 10000:
-            cache.clear()
-        rows = []
-        sym_u = str(symbol).upper()
-        tf_l = str(tf).lower()
-        for _, r in sigs.iterrows():
-            t0 = pd.Timestamp(r["open_time"])
-            cache_key = (sym_u, tf_l, t0)
-            if cache_key in cache:
-                continue
-            price = r["Sig_Price"] if pd.notna(r.get("Sig_Price")) else r["close_price"]
-            rows.append({
-                "sym": sym_u, "tf": tf_l,
-                "t0": t0.to_pydatetime().replace(tzinfo=TAIWAN_TZ),
-                "d": "LONG" if bool(r["Long_Signal"]) else "SHORT",
-                "e": float(price), "sl": float(r["Stop_Loss"]), "tp": float(r["Take_Profit"]),
-            })
-            cache.add(cache_key)
-        if not rows:
-            return
-        engine = get_db_engine()
-        with engine.begin() as conn:
-            conn.execute(
-                text("""
-                    INSERT INTO strategy_signal_outbox
-                        (symbol, timeframe, signal_time_taipei, direction, entry_price, stop_loss, take_profit)
-                    VALUES (:sym, :tf, :t0, :d, :e, :sl, :tp)
-                    ON CONFLICT DO NOTHING
-                """),
-                rows,
-            )
-    except Exception:
-        pass
-
-
-@st.cache_data(ttl=10, show_spinner=False)
-def outbox_stamp(symbol, tf):
-    try:
-        engine = get_db_engine()
-        with engine.connect() as conn:
-            r = conn.execute(
-                text("SELECT COUNT(*), MAX(id) FROM strategy_signal_outbox "
-                     "WHERE UPPER(symbol) LIKE :sym AND LOWER(timeframe) = :tf"),
-                {"sym": str(symbol).upper() + "%", "tf": str(tf).lower()},
-            ).fetchone()
-        return (int(r[0]), str(r[1]))
-    except Exception:
-        return None
-
-
-@st.cache_data(ttl=15, show_spinner=False)
-def load_outbox_signals(symbol, tf, since_time):
-    try:
-        engine = get_db_engine()
-        with engine.connect() as conn:
-            df = pd.read_sql(
-                text("""
-                    SELECT signal_time_taipei, direction, entry_price, stop_loss, take_profit
-                    FROM strategy_signal_outbox
-                    WHERE UPPER(symbol) LIKE :sym AND LOWER(timeframe) = :tf
-                    ORDER BY id DESC LIMIT 500
-                """),
-                con=conn, params={"sym": str(symbol).upper() + "%", "tf": str(tf).lower()},
-            )
-        if df.empty:
-            return {}
-        t = pd.to_datetime(df["signal_time_taipei"], errors="coerce")
-        if getattr(t.dt, "tz", None) is not None:
-            t = t.dt.tz_convert("Asia/Taipei").dt.tz_localize(None)
-        ep = pd.to_numeric(df["entry_price"], errors="coerce")
-        sl = pd.to_numeric(df["stop_loss"], errors="coerce")
-        tp = pd.to_numeric(df["take_profit"], errors="coerce")
-        since = pd.Timestamp(since_time)
-        out = {}
-        for ts, d, e, l, p_ in zip(t, df["direction"].astype(str).str.strip().str.upper(), ep, sl, tp):
-            if pd.isna(ts) or ts < since:
-                continue
-            if "LONG" in d or "BUY" in d or "多" in d:
-                out[ts] = ("LONG", e, l, p_)
-            elif "SHORT" in d or "SELL" in d or "空" in d:
-                out[ts] = ("SHORT", e, l, p_)
-        return out
-    except Exception:
-        return {}
-
-
-def load_historical_data(table_name, symbol_name, tf=None, days=95):
-    allowed_tables = {"btc_contract_klines", "eth_contract_klines"}
-    if table_name not in allowed_tables:
-        return pd.DataFrame()
-    try:
-        engine = get_db_engine()
-        cols = "timeframe, open_time, open_price, high_price, low_price, close_price, volume"
-        tfs = [tf] if tf else ["5m", "15m", "1h", "4h"]
-        dfs = []
-        with engine.connect() as conn:
-            for t_item in tfs:
-                limit_rows = 30000 if t_item == "5m" else (10000 if t_item == "15m" else 3000)
-                sql = text(f"""
-                    SELECT {cols} FROM {table_name}
-                    WHERE timeframe = :tf
-                    ORDER BY open_time DESC
-                    LIMIT :lim
-                """)
-                part = pd.read_sql(sql, con=conn, params={"tf": t_item, "lim": limit_rows})
-                if not part.empty:
-                    dfs.append(part)
-        if not dfs:
-            return pd.DataFrame()
-        raw = pd.concat(dfs, ignore_index=True)
-        df = raw.drop_duplicates(subset=["timeframe", "open_time"], keep="last").sort_values("open_time").reset_index(drop=True)
-    except Exception:
-        return pd.DataFrame()
-
-    df["symbol"] = symbol_name
-    if pd.api.types.is_numeric_dtype(df["open_time"]):
-        sample_value = df["open_time"].iloc[0] if not df["open_time"].empty else 0
-        unit = "ms" if sample_value > 10_000_000_000 else "s"
-        df["open_time"] = pd.to_datetime(df["open_time"], unit=unit, errors="coerce", utc=True)
-    else:
-        df["open_time"] = pd.to_datetime(df["open_time"], errors="coerce", utc=True)
-    df["open_time"] = df["open_time"].dt.tz_convert("Asia/Taipei").dt.tz_localize(None)
-    for col in ["open_price", "high_price", "low_price", "close_price", "volume"]:
-        df[col] = pd.to_numeric(df[col], errors="coerce")
-    return df.dropna(subset=["open_time", "open_price", "high_price", "low_price", "close_price", "volume"])
-
-
-def calculate_trendline_channel(df, window=30, num_dev=1.8):
-    df = df.copy()
-    close = df["close_price"].astype(float).values
-    n = len(close)
-    mid = np.full(n, np.nan)
-    upper = np.full(n, np.nan)
-    lower = np.full(n, np.nan)
-    if n >= window:
-        x = np.arange(window, dtype=float)
-        xc = x - x.mean()
-        sxx = float((xc ** 2).sum())
-        wins = np.lib.stride_tricks.sliding_window_view(close, window)
-        ym = wins.mean(axis=1)
-        yc = wins - ym[:, None]
-        slope = (yc @ xc) / sxx
-        intercept = ym - slope * x.mean()
-        center = slope * (window - 1) + intercept
-        resid = yc - slope[:, None] * xc[None, :]
-        std = resid.std(axis=1)
-        mid[window - 1:] = center
-        upper[window - 1:] = center + num_dev * std
-        lower[window - 1:] = center - num_dev * std
-    df["Trend_Mid"] = mid
-    df["Trend_Resistance"] = upper
-    df["Trend_Support"] = lower
-    return df
-
-
-def calculate_indicators(df, tf):
-    df = df.copy()
-    df["EMA_21"] = df["close_price"].ewm(span=21, adjust=False).mean()
-    df["EMA_50"] = df["close_price"].ewm(span=50, adjust=False).mean()
-    df["EMA_100"] = df["close_price"].ewm(span=100, adjust=False).mean()
-
-    win = 20 if tf in ["5m", "15m"] else 40
-    dev = 1.5 if tf in ["5m", "15m"] else 2.0
-    df = calculate_trendline_channel(df, win, dev)
-
-    delta = df["close_price"].diff()
-    gain = delta.where(delta > 0, 0).rolling(14).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
-    rs = gain / loss.replace(0, np.nan)
-    df["RSI"] = (100 - 100 / (1 + rs)).fillna(50)
-
-    high_low = df["high_price"] - df["low_price"]
-    high_close = (df["high_price"] - df["close_price"].shift()).abs()
-    low_close = (df["low_price"] - df["low_price"].shift()).abs()
-    tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
-    df["ATR"] = tr.rolling(14).mean()
-    df["Vol_SMA20"] = df["volume"].rolling(20).mean()
-
-    body = (df["close_price"] - df["open_price"]).abs()
-    candle_range = df["high_price"] - df["low_price"]
-    df["Body_Ratio"] = (body / candle_range.replace(0, np.nan)).fillna(0)
-
-    df["price_sma50"] = df["close_price"].rolling(50).mean()
-    df["macro_trend_bias"] = (df["close_price"] - df["price_sma50"]) / df["price_sma50"].replace(0, np.nan)
-    df["volume_liquidity_score"] = df["volume"] / df["volume"].rolling(50).mean().replace(0, np.nan)
-    df["macro_sentiment"] = np.where(df["macro_trend_bias"] > 0, 1.0, -1.0) * df["volume_liquidity_score"].fillna(1.0)
-    return df, win, dev
-
-
-def calculate_dynamic_tp_sl(row, is_long):
-    atr = row.get('ATR', 0)
-    vol_r = row.get('vol_ratio', 1.0)
-    body_r = row.get('body_ratio', 0.5)
-    rsi = row.get('RSI', 50)
-    atr_ratio = row.get('atr_ratio', 0.01)
-    
-    if pd.isna(atr) or atr <= 0:
-        return 1.5, 2.5
-    
-    if atr_ratio < 0.003:
-        stop_mult, rr_ratio = 1.2, 2.2
-    elif atr_ratio > 0.015:
-        stop_mult, rr_ratio = 2.0, 3.2
-    else:
-        stop_mult, rr_ratio = 1.5, 2.5
-        
-    if vol_r > 1.8 and body_r > 0.5:
-        stop_mult += 0.2
-        rr_ratio += 0.5
-    elif vol_r < 0.9:
-        stop_mult = max(1.0, stop_mult - 0.2)
-        
-    if is_long and rsi > 78:
-        rr_ratio = max(1.8, rr_ratio - 0.5)
-    elif not is_long and rsi < 22:
-        rr_ratio = max(1.8, rr_ratio - 0.5)
-        
-    return stop_mult, rr_ratio
-
-
-def judge_tp_sl(direction, sl, tp, high_arr, low_arr, start):
-    h = high_arr[start:]
-    l = low_arr[start:]
-    if len(h) == 0:
-        return "觀察中"
-    if direction == "LONG":
-        hit_sl, hit_tp = l <= sl, h >= tp
-    else:
-        hit_sl, hit_tp = h >= sl, l <= tp
-    sl_pos = np.flatnonzero(hit_sl)
-    tp_pos = np.flatnonzero(hit_tp)
-    if sl_pos.size == 0 and tp_pos.size == 0:
-        return "觀察中"
-    if tp_pos.size == 0:
-        return "未達標"
-    if sl_pos.size == 0:
-        return "成功"
-    return "成功" if tp_pos[0] < sl_pos[0] else "未達標"
-
-
-def build_candidate_signals(df, tf, higher_tf_dfs=None):
-    df = df.copy()
-    rolling_high = df["high_price"].rolling(20).max()
-    rolling_low = df["low_price"].rolling(20).min()
-    df["SNR_Resistance"] = rolling_high
-    df["SNR_Support"] = rolling_low
-
-    macro_long_filter = df["macro_trend_bias"] > -0.005
-    macro_short_filter = df["macro_trend_bias"] < 0.005
-    
-    ema_long_ok = (df["EMA_21"] >= df["EMA_50"]) & (df["close_price"] > df["EMA_21"] * 0.998)
-    ema_short_ok = (df["EMA_21"] <= df["EMA_50"]) & (df["close_price"] < df["EMA_21"] * 1.002)
-
-    candle_rng = (df["high_price"] - df["low_price"]).replace(0, np.nan)
-    close_pos = (df["close_price"] - df["low_price"]) / candle_rng
-    close_strong_long = close_pos >= 0.72
-    close_strong_short = close_pos <= 0.28
-
-    not_chasing_long = (df["close_price"] - df["Trend_Resistance"]) <= df["ATR"] * 0.8
-    not_chasing_short = (df["Trend_Support"] - df["close_price"]) <= df["ATR"] * 0.8
-
-    htf_long_ok = pd.Series(True, index=df.index)
-    htf_short_ok = pd.Series(True, index=df.index)
-    if higher_tf_dfs:
-        for htf_name, htf_df in higher_tf_dfs.items():
-            if htf_df is not None and not htf_df.empty:
-                htf_df = htf_df.copy()
-                htf_df["HTF_EMA21"] = htf_df["close_price"].ewm(span=21, adjust=False).mean()
-                htf_df["HTF_EMA50"] = htf_df["close_price"].ewm(span=50, adjust=False).mean()
-                htf_df = htf_df.sort_values("open_time").drop_duplicates(subset=["open_time"])
-                
-                merged_htf = pd.merge_asof(
-                    df[["open_time"]].sort_values("open_time"),
-                    htf_df[["open_time", "close_price", "HTF_EMA21", "HTF_EMA50"]],
-                    on="open_time",
-                    direction="backward"
-                ).sort_index()
-                
-                l_ok = (merged_htf["close_price"] >= merged_htf["HTF_EMA50"] * 0.995) & (merged_htf["HTF_EMA21"] >= merged_htf["HTF_EMA50"])
-                s_ok = (merged_htf["close_price"] <= merged_htf["HTF_EMA50"] * 1.005) & (merged_htf["HTF_EMA21"] <= merged_htf["HTF_EMA50"])
-                htf_long_ok = htf_long_ok & l_ok.fillna(True).values
-                htf_short_ok = htf_short_ok & s_ok.fillna(True).values
-
-    is_5m = (tf == "5m")
-    rsi_l_min, rsi_l_max = (55, 68) if is_5m else (52, 70)
-    rsi_s_min, rsi_s_max = (32, 45) if is_5m else (30, 48)
-    vol_mult = 1.4 if is_5m else 1.3
-    body_min = 0.55 if is_5m else 0.50
-
-    df["atr_ratio"] = df["ATR"] / df["close_price"].replace(0, np.nan)
-    df["vol_ratio"] = df["volume"] / df["Vol_SMA20"].replace(0, np.nan)
-    df["body_ratio"] = df["Body_Ratio"]
-    df["ema_diff"] = (df["EMA_21"] - df["EMA_50"]) / df["close_price"].replace(0, np.nan)
-
-    df["Rule1_Long_Break"] = (df["close_price"] > df["Trend_Resistance"] * 0.998) & (df["close_price"] > df["open_price"])
-    df["Base_Long"] = (
-        (df["Rule1_Long_Break"] | (df["close_price"] > df["EMA_21"])) & (df["Body_Ratio"] > body_min)
-        & df["RSI"].between(rsi_l_min, rsi_l_max) & (df["volume"] > df["Vol_SMA20"] * vol_mult)
-        & macro_long_filter & ema_long_ok & htf_long_ok & close_strong_long & not_chasing_long
-    )
-
-    df["Rule1_Short_Break"] = (df["close_price"] < df["Trend_Support"] * 1.002) & (df["close_price"] < df["open_price"])
-    df["Base_Short"] = (
-        (df["Rule1_Short_Break"] | (df["close_price"] < df["EMA_21"])) & (df["Body_Ratio"] > body_min)
-        & df["RSI"].between(rsi_s_min, rsi_s_max) & (df["volume"] > df["Vol_SMA20"] * vol_mult)
-        & macro_short_filter & ema_short_ok & htf_short_ok & close_strong_short & not_chasing_short
-    )
-
-    trade_results, stop_losses, take_profits = [], [], []
-    close_arr = df["close_price"].values
-    high_arr = df["high_price"].values
-    low_arr = df["low_price"].values
-    atr_arr = df["ATR"].values
-    swing_low_arr = df["low_price"].rolling(10).min().values
-    swing_high_arr = df["high_price"].rolling(10).max().values
-    base_long_arr = df["Base_Long"].values
-    base_short_arr = df["Base_Short"].values
-
-    for i in range(len(df)):
-        is_l, is_s = base_long_arr[i], base_short_arr[i]
-        if not (is_l or is_s):
-            trade_results.append("非訊號")
-            stop_losses.append(np.nan)
-            take_profits.append(np.nan)
-            continue
-        entry = close_arr[i]
-        atr = atr_arr[i]
-        if pd.isna(atr) or atr <= 0 or entry <= 0:
-            trade_results.append("觀察中")
-            stop_losses.append(np.nan)
-            take_profits.append(np.nan)
-            continue
-
-        dyn_stop_mult, dyn_rr = calculate_dynamic_tp_sl(df.iloc[i], is_l)
-        sw_low, sw_high = swing_low_arr[i], swing_high_arr[i]
-        if is_l:
-            struct_sl = (sw_low - atr * 0.15) if pd.notna(sw_low) else entry - atr * dyn_stop_mult
-            risk = min(max(entry - struct_sl, atr * 0.8), atr * 3.5)
-            sl, tp, direction = entry - risk, entry + risk * dyn_rr, 'LONG'
-        else:
-            struct_sl = (sw_high + atr * 0.15) if pd.notna(sw_high) else entry + atr * dyn_stop_mult
-            risk = min(max(struct_sl - entry, atr * 0.8), atr * 3.5)
-            sl, tp, direction = entry + risk, entry - risk * dyn_rr, 'SHORT'
-
-        stop_losses.append(sl)
-        take_profits.append(tp)
-        trade_results.append(judge_tp_sl(direction, sl, tp, high_arr, low_arr, i + 1))
-
-    df["Trade_Result"] = trade_results
-    df["Stop_Loss"] = stop_losses
-    df["Take_Profit"] = take_profits
-    return df
-
-
-def fill_missing_tp_sl(df):
-    df = df.copy()
-    if "Long_Signal" not in df.columns or "Short_Signal" not in df.columns:
-        return df
-    need = (df["Long_Signal"] | df["Short_Signal"]) & (df["Stop_Loss"].isna() | df["Take_Profit"].isna())
-    if not need.any():
-        return df
-    close_arr = df["close_price"].values
-    high_arr = df["high_price"].values
-    low_arr = df["low_price"].values
-    atr_arr = df["ATR"].values
-    swing_low_arr = df["low_price"].rolling(10).min().values
-    swing_high_arr = df["high_price"].rolling(10).max().values
-    ci = df.columns.get_loc
-
-    for i in np.flatnonzero(need.values):
-        is_l = bool(df["Long_Signal"].iloc[i])
-        sp = df["Sig_Price"].iloc[i] if "Sig_Price" in df.columns else np.nan
-        entry = float(sp) if pd.notna(sp) else float(close_arr[i])
-        atr = atr_arr[i]
-        if pd.isna(atr) or atr <= 0 or entry <= 0:
-            continue
-        dyn_stop_mult, dyn_rr = calculate_dynamic_tp_sl(df.iloc[i], is_l)
-        if is_l:
-            sw = swing_low_arr[i]
-            struct_sl = (sw - atr * 0.15) if pd.notna(sw) else entry - atr * dyn_stop_mult
-            risk = min(max(entry - struct_sl, atr * 0.8), atr * 3.5)
-            sl, tp, direction = entry - risk, entry + risk * dyn_rr, "LONG"
-        else:
-            sw = swing_high_arr[i]
-            struct_sl = (sw + atr * 0.15) if pd.notna(sw) else entry + atr * dyn_stop_mult
-            risk = min(max(struct_sl - entry, atr * 0.8), atr * 3.5)
-            sl, tp, direction = entry + risk, entry - risk * dyn_rr, "SHORT"
-        df.iloc[i, ci("Stop_Loss")] = sl
-        df.iloc[i, ci("Take_Profit")] = tp
-        df.iloc[i, ci("Trade_Result")] = judge_tp_sl(direction, sl, tp, high_arr, low_arr, i + 1)
-    return df
-
-
-def train_or_get_ai_model(df, key):
-    if "Long_Signal" not in df.columns:
-        df["Long_Signal"] = False
-    if "Short_Signal" not in df.columns:
-        df["Short_Signal"] = False
-
-    feature_cols = ["RSI", "vol_ratio", "body_ratio", "atr_ratio", "ema_diff", "macro_trend_bias", "macro_sentiment"]
-    candidates = df[df["Long_Signal"] | df["Short_Signal"]].copy()
-    train_df = candidates[candidates["Trade_Result"].isin(["成功", "未達標"])].copy()
-    if len(train_df) < 8 or train_df["Trade_Result"].nunique() < 2:
-        return None, len(train_df), int((train_df["Trade_Result"] == "成功").sum())
-    train_df["target"] = (train_df["Trade_Result"] == "成功").astype(int)
-    try:
-        model = lgb.LGBMClassifier(
-            n_estimators=100, learning_rate=0.025, max_depth=5, num_leaves=15,
-            subsample=0.85, colsample_bytree=0.85, class_weight="balanced",
-            random_state=42, verbose=-1
-        )
-        model.fit(train_df[feature_cols], train_df["target"])
-        return model, len(train_df), int((train_df["Trade_Result"] == "成功").sum())
-    except Exception:
-        return None, len(train_df), int((train_df["Trade_Result"] == "成功").sum())
-
-
-def add_trade_signals(df, model, user_thresh=45, trade_style="平衡"):
-    df = df.copy()
-    feature_cols = ["RSI", "vol_ratio", "body_ratio", "atr_ratio", "ema_diff", "macro_trend_bias", "macro_sentiment"]
-    
-    style_offset = 5.0
-    if "保守" in trade_style:
-        style_offset = 12.0
-    elif "積極" in trade_style:
-        style_offset = -4.0
-    
-    effective_thresh = max(20, min(90, user_thresh + style_offset)) / 100.0
-
-    if model is not None and len(df) > 0:
-        try:
-            sub = df[feature_cols].fillna(0)
-            probs = model.predict_proba(sub)[:, 1]
-            df["AI_Prob"] = 0.75 + probs * 0.20
-            prob_mask = (probs >= max(effective_thresh, 0.50))
-            df["Long_Signal"] = df["Base_Long"] & prob_mask
-            df["Short_Signal"] = df["Base_Short"] & prob_mask
-            return df
-        except Exception:
-            pass
-            
-    df["AI_Prob"] = np.random.uniform(0.90, 0.98, len(df))
-    df["Long_Signal"] = df["Base_Long"]
-    df["Short_Signal"] = df["Base_Short"]
-    return df
-
-
-def filter_single_signal_per_wave(df):
-    if df is None or df.empty:
-        return df
-    df = df.copy()
-    if "Long_Signal" not in df.columns or "Short_Signal" not in df.columns:
-        return df
-
-    long_signals = []
-    short_signals = []
-    current_wave_dir = None
-
-    for _, row in df.iterrows():
-        is_l = bool(row.get("Long_Signal", False))
-        is_s = bool(row.get("Short_Signal", False))
-
-        if current_wave_dir == "LONG" and is_s:
-            current_wave_dir = None
-        elif current_wave_dir == "SHORT" and is_l:
-            current_wave_dir = None
-
-        valid_l = False
-        valid_s = False
-
-        if is_l and current_wave_dir != "LONG":
-            valid_l = True
-            current_wave_dir = "LONG"
-
-        if is_s and current_wave_dir != "SHORT":
-            valid_s = True
-            current_wave_dir = "SHORT"
-
-        long_signals.append(valid_l)
-        short_signals.append(valid_s)
-
-    df["Long_Signal"] = long_signals
-    df["Short_Signal"] = short_signals
-    return df
-
-
-def render_homepage():
-    st.markdown("""
-    <div class="intro-card">
-        <h2 style="color:#f0b90b;">🚀 關於加密貨幣 AI 策略系統 (多交易所專業版)</h2>
-        <p>
-        本系統完美結合 123法則、SMC、SNR 與宏觀基本面過濾，支援 <b>OKX</b>、<b>Bitunix</b> 與 <b>BingX</b> 自動下單！
-        </p>
-    </div>
-    """, unsafe_allow_html=True)
-
-
-@st.cache_resource
-def _fired_signals():
-    return {}
-
-
-def remember_and_apply_signals(view_df, symbol, tf):
-    view_df = view_df.copy()
-    if "Long_Signal" not in view_df.columns:
-        view_df["Long_Signal"] = False
-    if "Short_Signal" not in view_df.columns:
-        view_df["Short_Signal"] = False
-    if "Sig_Price" not in view_df.columns:
-        view_df["Sig_Price"] = np.nan
-    if "Stop_Loss" not in view_df.columns:
-        view_df["Stop_Loss"] = np.nan
-    if "Take_Profit" not in view_df.columns:
-        view_df["Take_Profit"] = np.nan
-
-    since_time = view_df["open_time"].iloc[0] if not view_df.empty else datetime.now() - timedelta(days=30)
-    db_sigs = load_outbox_signals(symbol, tf, since_time)
-    
-    if not db_sigs:
-        return view_df
-
-    step = pd.Timedelta(TF_STEP.get(tf, "5min"))
-    times = view_df["open_time"].values
-    high_arr = view_df["high_price"].values
-    low_arr = view_df["low_price"].values
-    ci = view_df.columns.get_loc
-
-    for t, (direction, e_price, sl, tp) in db_sigs.items():
-        idx = int(np.searchsorted(times, np.datetime64(t), side="right")) - 1
-        if idx < 0 or idx >= len(view_df):
-            continue
-        bar_t = view_df["open_time"].iloc[idx]
-        if not (bar_t <= t < bar_t + step):
-            continue
-            
-        view_df.iloc[idx, ci("Long_Signal")] = (direction == "LONG")
-        view_df.iloc[idx, ci("Short_Signal")] = (direction == "SHORT")
-        if pd.notna(e_price):
-            view_df.iloc[idx, ci("Sig_Price")] = e_price
-        if pd.notna(sl):
-            view_df.iloc[idx, ci("Stop_Loss")] = sl
-        if pd.notna(tp):
-            view_df.iloc[idx, ci("Take_Profit")] = tp
-            
-        sl_v = view_df.iloc[idx, ci("Stop_Loss")]
-        tp_v = view_df.iloc[idx, ci("Take_Profit")]
-        if pd.notna(sl_v) and pd.notna(tp_v) and ((sl_v < tp_v) == (direction == "LONG")):
-            view_df.iloc[idx, ci("Trade_Result")] = judge_tp_sl(direction, sl_v, tp_v, high_arr, low_arr, idx + 1)
-        elif view_df.iloc[idx, ci("Trade_Result")] == "非訊號":
-            view_df.iloc[idx, ci("Trade_Result")] = "觀察中"
-            
-    return view_df
-
-
-def is_mobile_client():
-    try:
-        ua = str(st.context.headers.get("User-Agent", "")).lower()
-    except Exception:
-        return False
-    return any(k in ua for k in ("iphone", "android", "mobile", "ipad"))
-
-
-def _build_chart_bundle(df_all_tf, symbol, pair, tf, user_thresh=45, trade_style="平衡", bt_days=30):
-    df_tf = df_all_tf.get(tf, pd.DataFrame()).copy()
-    if df_tf.empty:
-        return None
-
-    if not df_tf.empty and bt_days:
-        max_t = df_tf["open_time"].max()
-        min_allowed_t = max_t - pd.Timedelta(days=bt_days)
-        df_tf = df_tf[df_tf["open_time"] >= min_allowed_t].reset_index(drop=True)
-
-    higher_tf_dfs = {
-        "15m": df_all_tf.get("15m", pd.DataFrame()),
-        "1h": df_all_tf.get("1h", pd.DataFrame()),
-        "4h": df_all_tf.get("4h", pd.DataFrame())
-    }
-
-    df_tf, win, dev = calculate_indicators(df_tf, tf)
-    df_tf = build_candidate_signals(df_tf, tf, higher_tf_dfs=higher_tf_dfs)
-    
-    model, training_count, winning_count = train_or_get_ai_model(df_tf, f"{symbol}_{tf}")
-    df_tf = add_trade_signals(df_tf, model, user_thresh=user_thresh, trade_style=trade_style)
-    view_df = df_tf.copy()
-
-    if view_df.empty:
-        return None
-
-    save_all_signals_to_outbox(symbol, tf, view_df)
-    view_df = remember_and_apply_signals(view_df, symbol, tf)
-    view_df = fill_missing_tp_sl(view_df)
-    view_df = filter_single_signal_per_wave(view_df)
-
-    latest = view_df.iloc[-1]
-    latest_close = float(latest["close_price"])
-    ai_score = float(latest["AI_Prob"]) * 100 if pd.notna(latest["AI_Prob"]) else 0.0
-
-    full_view_df = view_df
-
-    mobile = is_mobile_client()
-    display_len = 40 if mobile else 85
-    if len(view_df) > display_len:
-        start_time = view_df["open_time"].iloc[-display_len]
-        end_time = view_df["open_time"].iloc[-1] + pd.Timedelta(minutes=75 if tf in ['5m','15m'] else 300)
-    else:
-        start_time = view_df["open_time"].iloc[0]
-        end_time = view_df["open_time"].iloc[-1] + pd.Timedelta(minutes=75 if tf in ['5m','15m'] else 300)
-
-    visible_df = view_df[(view_df["open_time"] >= start_time) & (view_df["open_time"] <= end_time)]
-    if visible_df.empty:
-        visible_df = view_df
-
-    low, high = visible_df["low_price"].min(), visible_df["high_price"].max()
-    span = max(high - low, abs(high) * 0.001, 1e-8)
-    center_y = (float(latest["high_price"]) + float(latest["low_price"])) / 2
-    half = max(high - center_y, center_y - low, span * 0.05) * 0.55
-    y_range = [center_y - half, center_y + half]
-    change_pct = ((latest_close - latest["open_price"]) / latest["open_price"] * 100) if latest["open_price"] else 0
-    status_color = "#0ECB81" if latest["close_price"] >= latest["open_price"] else "#F6465D"
-    latest_rsi = float(latest["RSI"]) if pd.notna(latest["RSI"]) else 50.0
-
-    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.015, row_heights=[0.80, 0.20])
-
-    fig.add_trace(go.Candlestick(
-        x=view_df["open_time"], open=view_df["open_price"], high=view_df["high_price"],
-        low=view_df["low_price"], close=view_df["close_price"], name=symbol,
-        line=dict(width=2.2 if mobile else 1.3),
-        increasing_line_color="#0ECB81", increasing_fillcolor="#0ECB81",
-        decreasing_line_color="#F6465D", decreasing_fillcolor="#F6465D",
-        hoverinfo="none",
-        xaxis="x", yaxis="y",
-    ), row=1, col=1)
-
-    for ema, color, width in [("EMA_21", "#2962FF", 1.5), ("EMA_50", "#FFFFFF", 1.5), ("EMA_100", "#FF5252", 1.8)]:
-        fig.add_trace(go.Scatter(
-            x=view_df["open_time"], y=view_df[ema], mode="lines", name=ema.replace("_", ""),
-            line=dict(color=color, width=width), hoverinfo="none",
-            xaxis="x", yaxis="y",
-        ), row=1, col=1)
-
-    fig.add_trace(go.Scatter(
-        x=view_df["open_time"], y=view_df["Trend_Resistance"], mode="lines", name="壓力趨勢線",
-        line=dict(color="rgba(246,70,93,.7)", width=1.5, dash="dash"), hoverinfo="none",
-        xaxis="x", yaxis="y",
-    ), row=1, col=1)
-
-    fig.add_trace(go.Scatter(
-        x=view_df["open_time"], y=view_df["Trend_Support"], mode="lines", name="支撐趨勢線",
-        line=dict(color="rgba(14,203,129,.7)", width=1.5, dash="dash"), hoverinfo="none",
-        xaxis="x", yaxis="y",
-    ), row=1, col=1)
-
-    long_df = view_df[view_df["Long_Signal"]].copy()
-    if not long_df.empty:
-        long_y = long_df["low_price"] - span * 0.08
-        _lx, _ly = [], []
-        for t, low_p, ly in zip(long_df["open_time"], long_df["low_price"], long_y):
-            _lx += [t, t, None]
-            _ly += [low_p, ly, None]
-        fig.add_trace(go.Scatter(x=_lx, y=_ly, mode="lines", line=dict(color="#848e9c", width=1, dash="dot"), showlegend=False, hoverinfo="none", xaxis="x", yaxis="y"), row=1, col=1)
-        fig.add_trace(go.Scatter(
-            x=long_df["open_time"], y=long_y, mode="markers+text", name="LONG 多單進場",
-            marker=dict(symbol="triangle-up", size=13, color="rgba(11, 14, 17, 0.95)", line=dict(width=2, color="#00E676")),
-            text=[f"LONG<br>{(sp if pd.notna(sp) else cp):,.2f}" for sp, cp in zip(long_df["Sig_Price"], long_df["close_price"])],
-            textposition="bottom center", textfont=dict(color="#00E676", size=10, family="Arial Black"), hoverinfo="none",
-            xaxis="x", yaxis="y",
-        ), row=1, col=1)
-
-    short_df = view_df[view_df["Short_Signal"]].copy()
-    if not short_df.empty:
-        short_y = short_df["high_price"] + span * 0.08
-        _sx, _sy = [], []
-        for t, high_p, sy in zip(short_df["open_time"], short_df["high_price"], short_y):
-            _sx += [t, t, None]
-            _sy += [high_p, sy, None]
-        fig.add_trace(go.Scatter(x=_sx, y=_sy, mode="lines", line=dict(color="#848e9c", width=1, dash="dot"), showlegend=False, hoverinfo="none", xaxis="x", yaxis="y"), row=1, col=1)
-        fig.add_trace(go.Scatter(
-            x=short_df["open_time"], y=short_y, mode="markers+text", name="SHORT 空單進場",
-            marker=dict(symbol="triangle-down", size=13, color="rgba(11, 14, 17, 0.95)", line=dict(width=2, color="#FF1744")),
-            text=[f"SHORT<br>{(sp if pd.notna(sp) else cp):,.2f}" for sp, cp in zip(short_df["Sig_Price"], short_df["close_price"])],
-            textposition="top center", textfont=dict(color="#FF1744", size=10, family="Arial Black"), hoverinfo="none",
-            xaxis="x", yaxis="y",
-        ), row=1, col=1)
-
-    volume_colors = ["rgba(14,203,129,.7)" if close >= open_ else "rgba(246,70,93,.7)" for close, open_ in zip(view_df["close_price"], view_df["open_price"])]
-    fig.add_trace(go.Bar(x=view_df["open_time"], y=view_df["volume"], name="VOL", marker_color=volume_colors, hoverinfo="none", xaxis="x2", yaxis="y2"), row=2, col=1)
-
-    fig.add_hline(
-        y=latest_close, line_dash="dot", line_width=1, line_color=status_color,
-        annotation_text=f" {latest_close:,.2f} ", annotation_position="right",
-        annotation_font=dict(color="white", size=11, family="Arial Black"),
-        annotation_bgcolor=status_color, annotation_bordercolor=status_color,
-        annotation_borderwidth=1, annotation_borderpad=3, row=1, col=1,
-    )
-
-    mode = "🎯 5m 精準進場 (多週期共振)" if tf == "5m" else f"🌊 {tf} 週期分析"
-    annotation = (
-        f"<b>{pair} · {tf} ({mode}) [風格: {trade_style} | 閾值: {user_thresh}%]</b><br>"
-        f"<b>RSI：</b>{latest_rsi:.1f} | <b>AI 信心指數：</b><span style='color:#f0b90b'>{ai_score:.1f}%</span> | "
-        f"收盤：<span style='color:{status_color}'>{latest_close:,.2f} ({change_pct:+.2f}%)</span>"
-    )
-    fig.add_annotation(text=annotation, xref="paper", yref="paper", x=0.01, y=0.99, xanchor="left", yanchor="top", showarrow=False, align="left", font=dict(size=11, color="#c2c8d0"))
-
-    fig.update_layout(
-        template="plotly_dark", paper_bgcolor="rgba(11,14,17,.6)", plot_bgcolor="rgba(11,14,17,.6)",
-        hovermode="x unified", hoverdistance=100, spikedistance=1000, xaxis_rangeslider_visible=False,
-        dragmode="pan", height=860, bargap=0.08, showlegend=True,
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0, font=dict(size=10)),
-        margin=dict(l=10, r=85, t=65, b=30), uirevision=f"{symbol}_{tf}_{user_thresh}_{trade_style}",
-        hoverlabel=dict(bgcolor="rgba(30,35,41,.95)", font_size=12, font_color="white", bordercolor="#f0b90b"),
-    )
-    fig.update_layout(xaxis=dict(range=[start_time, end_time], autorange=False))
-    fig.update_xaxes(showline=True, linewidth=2, linecolor="#434c5e", mirror=True, row=2, col=1, fixedrange=False)
-    fig.update_yaxes(side="right", gridcolor="#1e2329", zeroline=False, linecolor="#2b313a", tickformat=",.2f", showspikes=True, spikemode="across+toaxis", spikesnap="cursor", spikethickness=1, spikedash="dash", spikecolor="#a0a6b2", showline=True, row=1, col=1, range=y_range, fixedrange=False)
-    fig.update_yaxes(side="right", gridcolor="#1e2329", zeroline=False, linecolor="#2b313a", tickformat=",.2f", showspikes=True, spikemode="across", spikesnap="cursor", spikethickness=1, spikedash="dash", spikecolor="#a0a6b2", row=2, col=1, range=[0, float(visible_df["volume"].max()) * 1.05], fixedrange=False)
-
-    return {
-        "view_df": full_view_df, "fig": fig, "latest": latest, "x_range": [start_time, end_time],
-        "y_range": list(y_range), "latest_close": latest_close, "ai_score": ai_score,
-        "training_count": training_count, "winning_count": winning_count,
-    }
-
-
-def render_backtest_analytics(view_df):
-    st.markdown("---")
-    st.markdown("### 📊 功能 3：進階策略績效與風險回測分析報表")
-    closed_trades = view_df[view_df["Trade_Result"].isin(["成功", "未達標"])].copy()
-    if closed_trades.empty:
-        st.info("目前尚無足夠的已結算歷史交易訊號可供回測分析。")
-        return
-
-    cum_pnl, equity_curve, trade_returns = 0.0, [100.0], []
-    wins, losses, total_win_pnl, total_loss_pnl = 0, 0, 0.0, 0.0
-
-    for _, row in closed_trades.iterrows():
-        entry = row["Sig_Price"] if pd.notna(row.get("Sig_Price")) else row["close_price"]
-        sl, tp, result = row["Stop_Loss"], row["Take_Profit"], row["Trade_Result"]
-        if pd.isna(sl) or pd.isna(tp) or entry <= 0:
-            continue
-        if result == "成功":
-            pct = abs(tp - entry) / entry * 100
-            wins += 1
-            total_win_pnl += pct
-        else:
-            pct = -abs(entry - sl) / entry * 100
-            losses += 1
-            total_loss_pnl += abs(pct)
-        cum_pnl += pct
-        equity_curve.append(100.0 + cum_pnl)
-        trade_returns.append(pct)
-
-    total_trades = wins + losses
-    win_rate = (wins / total_trades * 100) if total_trades > 0 else 0.0
-    profit_factor = (total_win_pnl / total_loss_pnl) if total_loss_pnl > 0 else (99.0 if total_win_pnl > 0 else 0.0)
-    
-    eq_arr = np.array(equity_curve)
-    peak = np.maximum.accumulate(eq_arr)
-    max_dd = float(np.min((eq_arr - peak) / peak * 100)) if len(eq_arr) > 0 else 0.0
-
-    ret_arr = np.array(trade_returns)
-    sharpe = float(np.mean(ret_arr) / (np.std(ret_arr) + 1e-6) * np.sqrt(365)) if len(ret_arr) > 1 else 0.0
-
-    m1, m2, m3, m4, m5, m6 = st.columns(6)
-    m1.metric("總已結算交易", f"{total_trades} 筆")
-    m2.metric("策略勝率", f"{win_rate:.1f}%", f"{wins}勝/{losses}敗")
-    m3.metric("獲利因子", f"{profit_factor:.2f}")
-    m4.metric("夏普比率", f"{sharpe:.2f}")
-    m5.metric("總報酬率", f"{cum_pnl:+.2f}%")
-    m6.metric("最大回撤 (MDD)", f"{max_dd:.2f}%", delta_color="inverse")
-
-    fig_eq = go.Figure()
-    fig_eq.add_trace(go.Scatter(
-        y=equity_curve, mode="lines+markers", name="策略淨值曲線",
-        line=dict(color="#f0b90b", width=2.5),
-        marker=dict(size=4)
-    ))
-    fig_eq.update_layout(
-        template="plotly_dark", paper_bgcolor="rgba(11,14,17,.6)", plot_bgcolor="rgba(11,14,17,.6)",
-        height=280, margin=dict(l=10, r=10, t=30, b=10),
-        title="📈 累積資金淨值成長曲線 (初始 100%)",
-        xaxis=dict(title="交易序號", gridcolor="#1e2329"),
-        yaxis=dict(title="資金淨值", gridcolor="#1e2329", tickformat=",.1f")
-    )
-    st.plotly_chart(fig_eq, width="stretch", config={"staticPlot": False, "responsive": True})
-
-
-def render_live_kline_chart(table, symbol, pair, tf):
-    s_dict = dict(DEFAULT_TRADE_SETTINGS)
-    s_dict.update(st.session_state.get("auth_settings") or {})
-    
-    user_thresh = s_dict.get("ai_confidence_thresh", 45)
-    trade_style = s_dict.get("trade_style", "平衡")
-    bt_days = s_dict.get("backtest_days", 30)
-
-    df = load_historical_data(table, symbol, None, days=max(int(bt_days) + 5, 14))
-    if df.empty:
-        st.warning("目前無法取得歷史 K 線資料。")
-        return
-
-    df_all_tf = {t_val: df[df["timeframe"] == t_val].sort_values("open_time").copy().reset_index(drop=True) for t_val in ["5m", "15m", "1h", "4h"]}
-    df_tf = df_all_tf.get(tf, pd.DataFrame())
-    if df_tf.empty:
-        st.warning(f"目前無 {tf} 週期的 K 線資料。")
-        return
-
-    last_row = df_tf.iloc[-1]
-    sig = (len(df_tf), df_tf["open_time"].iloc[0], df_tf["open_time"].iloc[-1], float(last_row["close_price"]), outbox_stamp(symbol, tf), user_thresh, trade_style, bt_days)
-    bundle_key = f"_bundle_{table}_{tf}_{user_thresh}_{trade_style}_{bt_days}"
-    cached_bundle = st.session_state.get(bundle_key)
-    if cached_bundle is not None and cached_bundle["sig"] == sig:
-        bundle = cached_bundle["bundle"]
-    else:
-        bundle = _build_chart_bundle(df_all_tf, symbol, pair, tf, user_thresh=user_thresh, trade_style=trade_style, bt_days=bt_days)
-        if bundle is None:
-            st.warning("資料不足，無法產生圖表與策略分析。")
-            return
-        st.session_state[bundle_key] = {"sig": sig, "bundle": bundle}
-
-    view_df, fig, latest, latest_close, ai_score, training_count, winning_count = (
-        bundle["view_df"], bundle["fig"], bundle["latest"], bundle["latest_close"],
-        bundle["ai_score"], bundle["training_count"], bundle["winning_count"]
-    )
-
-    fig.update_layout(xaxis=dict(range=list(bundle["x_range"]), autorange=False), yaxis=dict(range=list(bundle["y_range"])))
-
-    chart_col, panel_col = st.columns([3.6, 1.2])
-    with chart_col:
-        st.plotly_chart(
-            fig, 
-            width="stretch", 
-            config={
-                "scrollZoom": True, 
-                "displayModeBar": True, 
-                "displaylogo": False,
-                "toImageButtonOptions": {"format": "png", "filename": "chart"}
-            }, 
-            key=f"{symbol.lower()}_{tf}_chart"
-        )
-
-    with panel_col:
-        st.markdown("### 🎯 AI 即時操作建議")
-        st.markdown(f"""
-        <div class="conf-card">
-            <div class="conf-label">當前 AI 信心分數 (門檻: {user_thresh}%)</div>
-            <div class="conf-value">{ai_score:.1f}%</div>
-            <div class="conf-bar"><span style="width:{min(max(ai_score, 0), 100):.1f}%;"></span></div>
-            <div class="conf-foot"><span>模式：{trade_style}</span><b>多週期共振 🟢</b></div>
-        </div>
-        """, unsafe_allow_html=True)
-
-        if bool(latest["Long_Signal"]):
-            st.success("🟢 LONG 多單進場訊號")
-            st.metric("參考進場價格", f"{latest_close:,.2f}")
-        elif bool(latest["Short_Signal"]):
-            st.error("🔴 SHORT 空單進場訊號")
-            st.metric("參考進場價格", f"{latest_close:,.2f}")
-        else:
-            st.warning("⏳ WAIT 目前沒有進場訊号")
-
-        render_exchange_trade_panel(symbol, pair, tf, latest, latest_close)
-        
-        st.markdown("---")
-        st.markdown("#### 📌 最近進場訊號")
-        recent_signals = view_df[view_df["Long_Signal"] | view_df["Short_Signal"]].copy()
-        if not recent_signals.empty:
-            with st.container(height=420):
-                for _, signal in recent_signals.iloc[::-1].iterrows():
-                    signal_time = signal["open_time"].strftime("%m/%d %H:%M")
-                    signal_price = float(signal["Sig_Price"]) if pd.notna(signal["Sig_Price"]) else float(signal["close_price"])
-                    is_long_sig = bool(signal["Long_Signal"])
-                    st.markdown(
-                        f'<div class="sig-card {"long" if is_long_sig else "short"}">'
-                        f'<div><div class="sig-dir">{"🟢 LONG" if is_long_sig else "🔴 SHORT"}</div>'
-                        f'<div class="sig-time">{signal_time}</div></div>'
-                        f'<div><div class="sig-price">{signal_price:,.2f}</div></div>'
-                        f'</div>', unsafe_allow_html=True,
-                    )
-
-    render_backtest_analytics(view_df)
-
-
-if __name__ == "__main__":
-    if not check_fingerprint_login() and not st.session_state.get("auth_user"):
-        render_auth_gate()
-        st.stop()
-
-    if st.session_state.is_searched:
-        query = st.session_state.search_query.upper()
-        table_name, symbol_name, pair_name = ("eth_contract_klines", "ETH", "ETH-USDT-SWAP") if "ETH" in query else ("btc_contract_klines", "BTC", "BTC-USDT-SWAP")
-
-        selected_tf = st.radio("時間軸週期", ["5m", "15m", "1h", "4h"], horizontal=True, key="timeframe_select")
-
-        @st.fragment(run_every=15)
-        def render_live_kline_fragment(tbl, sym, pair, tf):
-            render_live_kline_chart(tbl, sym, pair, tf)
-
-        render_live_kline_fragment(table_name, symbol_name, pair_name, selected_tf)
-    elif st.session_state.search_query:
-        st.warning(f"找不到與「{st.session_state.search_query}」相關的圖表。")
-        render_homepage()
-    else:
-        render_homepage()
+# ============================================================
+# 內容區：需要顯示幣種資料時，呼叫該幣種的模組
+# ============================================================
+if st.session_state.is_searched:
+    query = st.session_state.search_query.upper()
+    coin_module = eth_chart if "ETH" in query else btc_chart
+
+    selected_tf = st.radio("時間軸週期", ["5m", "15m", "1h", "4h"], horizontal=True, key="timeframe_select")
+
+    # 模組內部已含 15 秒自動更新；trade_panel 為主程式的自動下單面板
+    coin_module.render(selected_tf, trade_panel=render_exchange_trade_panel)
+
+elif st.session_state.search_query:
+    st.warning(f"找不到與「{st.session_state.search_query}」相關的圖表。")
+    render_homepage()
+else:
+    render_homepage()
