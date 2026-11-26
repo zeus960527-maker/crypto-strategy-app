@@ -18,6 +18,9 @@ SYMBOL = "ETH"
 PAIR = "ETH-USDT-SWAP"
 TABLE = "eth_contract_klines"
 
+# K 棒高度調整：數值越大 → Y 軸顯示範圍越寬 → K 棒越矮（原本 0.55；想更矮就調大，例如 1.2）
+CANDLE_Y_SCALE = 1.0
+
 TAIWAN_TZ = ZoneInfo("Asia/Taipei")
 TF_STEP = {"5m": "5min", "15m": "15min", "1h": "1h", "4h": "4h"}
 OUTBOX_TABLE = "strategy_signal_outbox"
@@ -753,7 +756,7 @@ def _build_chart_bundle(df_all_tf, tf, user_thresh=45, trade_style="平衡", bt_
     low, high = visible_df["low_price"].min(), visible_df["high_price"].max()
     span = max(high - low, abs(high) * 0.001, 1e-8)
     center_y = (float(latest["high_price"]) + float(latest["low_price"])) / 2
-    half = max(high - center_y, center_y - low, span * 0.05) * 0.55
+    half = max(high - center_y, center_y - low, span * 0.05) * CANDLE_Y_SCALE
     y_range = [center_y - half, center_y + half]
     change_pct = ((latest_close - latest["open_price"]) / latest["open_price"] * 100) if latest["open_price"] else 0
     status_color = "#0ECB81" if latest["close_price"] >= latest["open_price"] else "#F6465D"
