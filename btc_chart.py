@@ -5,7 +5,7 @@
     btc_chart.render(selected_tf, trade_panel=render_exchange_trade_panel)
 
 背景自動下單執行緒取得 5m 訊號：
-    df = btc_chart.compute_signals("5m", user_thresh, trade_style, days=14)
+    df = btc_chart.compute_signals("5m", user_thresh, trade_style, days=backtest_days)
 
 本模組內含 BTC 專屬的全部功能：
   讀取 K 線 → 指標 → 候選訊號 → AI(LightGBM) 過濾 → 止損/止盈 → 畫圖
@@ -652,16 +652,28 @@ def remember_and_apply_signals(view_df, tf):
 
 
 # ============================================================
-# 5. 給背景自動下單執行緒使用的訊號計算（流程與原本背景執行緒完全相同）
+# 5. 給背景自動下單執行緒使用的訊號計算（流程與圖表完全相同）
 # ============================================================
-def compute_signals(tf="5m", user_thresh=45, trade_style="平衡", days=14, save_outbox=False):
-    """回傳已含 Long_Signal / Short_Signal / Stop_Loss / Take_Profit 的 DataFrame；讀不到資料回傳空表。"""
-    df_all = load_historical_data(None, days=days)
+def compute_signals(tf="5m", user_thresh=45, trade_style="平衡", days=30, save_outbox=False,
+                    apply_outbox_memory=True):
+    """回傳已含 Long_Signal / Short_Signal / Stop_Loss / Take_Profit 的 DataFrame；讀不到資料回傳空表。
+
+    流程與圖表 (_build_chart_bundle) 完全一致，確保「下單訊號 = 圖上看到的訊號」：
+      載入 days+5 天資料 → 只保留最近 days 天的 tf K 線 → 指標 → 候選訊號 → AI 過濾
+      → (save_outbox) 寫入 outbox → (apply_outbox_memory) 套用 outbox 已記住的訊號
+      → 補止損/止盈 → 每波只留一個訊號
+    days 請傳使用者設定的「回測與分析歷史天數」。
+    """
+    days = int(days)
+    df_all = load_historical_data(None, days=max(days + 5, 14))
     if df_all.empty:
         return pd.DataFrame()
     df_tf = df_all[df_all["timeframe"] == tf].sort_values("open_time").reset_index(drop=True)
     if df_tf.empty:
         return pd.DataFrame()
+    if days:
+        max_t = df_tf["open_time"].max()
+        df_tf = df_tf[df_tf["open_time"] >= max_t - pd.Timedelta(days=days)].reset_index(drop=True)
     higher_tf_dfs = {
         "15m": df_all[df_all["timeframe"] == "15m"],
         "1h": df_all[df_all["timeframe"] == "1h"],
@@ -671,10 +683,12 @@ def compute_signals(tf="5m", user_thresh=45, trade_style="平衡", days=14, save
     df_tf = build_candidate_signals(df_tf, tf, higher_tf_dfs=higher_tf_dfs)
     model, _, _ = train_or_get_ai_model(df_tf, f"{SYMBOL}_{tf}")
     df_tf = add_trade_signals(df_tf, model, user_thresh=user_thresh, trade_style=trade_style)
-    df_tf = fill_missing_tp_sl(df_tf)
-    df_tf = filter_single_signal_per_wave(df_tf)
     if save_outbox:
         save_all_signals_to_outbox(tf, df_tf)
+    if apply_outbox_memory:
+        df_tf = remember_and_apply_signals(df_tf, tf)
+    df_tf = fill_missing_tp_sl(df_tf)
+    df_tf = filter_single_signal_per_wave(df_tf)
     return df_tf
 
 
