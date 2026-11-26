@@ -35,31 +35,9 @@ except Exception:
 TAIWAN_TZ = ZoneInfo('Asia/Taipei')
 
 # ============================================================
-# 0. 頁面設定、圖片與背景（含手機 RWD 響應式 CSS）與保活機制
+# 0. 頁面設定、圖片與背景（含手機 RWD 響應式 CSS）
 # ============================================================
 BASE_DIR = Path(__file__).resolve().parent
-
-
-@st.cache_resource
-def _start_keep_alive():
-    base = (os.getenv("RENDER_EXTERNAL_URL") or os.getenv("APP_PUBLIC_URL") or "").rstrip("/")
-    if not base:
-        return False
-
-    def _loop():
-        url = base + "/_stcore/health"
-        while True:
-            time.sleep(600)
-            try:
-                urllib.request.urlopen(url, timeout=15).read()
-            except Exception as e:
-                print(f"keep-alive ping 失敗: {e}")
-
-    threading.Thread(target=_loop, daemon=True, name="keep-alive").start()
-    return True
-
-
-_start_keep_alive()
 
 
 def load_image_safe(filename):
@@ -1130,7 +1108,6 @@ def _start_background_trade_worker():
                             write_outbox = (user == btc_chart.OUTBOX_WRITER_USER)  # 只有指定帳號才寫入訊號資料表
                             ck = (sym, user_thresh, trade_style, bt_days, write_outbox)
                             if ck not in sig_cache:
-                                # save_outbox：只有指定帳號 (zeus) 才會把訊號寫入 strategy_signal_outbox
                                 sig_cache[ck] = mod.compute_signals(
                                     TF, user_thresh, trade_style, days=bt_days, save_outbox=write_outbox
                                 )
@@ -1540,7 +1517,6 @@ if st.session_state.is_searched:
 
     selected_tf = st.radio("時間軸週期", ["5m", "15m", "1h", "4h"], horizontal=True, key="timeframe_select")
 
-    # 模組內部已含自動更新；trade_panel 為主程式的自動下單面板
     coin_module.render(selected_tf, trade_panel=render_exchange_trade_panel)
 
 elif st.session_state.search_query:
@@ -1552,8 +1528,6 @@ else:
 
 # ============================================================
 # 未顯示的幣種也要執行：背景掃描訊號並寫入 strategy_signal_outbox
-# （畫面上只顯示搜尋的幣種；另一個幣種不畫圖，但仍然每次執行 APP 都會呼叫並記錄訊號，
-#   之後搜尋該幣種時，圖上就會標示出這些訊號）
 # ============================================================
 @st.fragment(run_every=30)
 def _scan_coin_signals(sym):
@@ -1579,7 +1553,6 @@ _shown_coin = None
 if st.session_state.get("is_searched"):
     _shown_coin = "ETH" if "ETH" in st.session_state.search_query.upper() else "BTC"
 
-# 只有指定帳號 (zeus) 需要這個背景掃描；其他使用者不寫入訊號，所以不必執行
 if st.session_state.get("auth_user") == btc_chart.OUTBOX_WRITER_USER:
     for _sym in COIN_MODULES:
         if _sym != _shown_coin:
