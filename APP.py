@@ -1491,7 +1491,7 @@ with c_left:
         submitted = st.form_submit_button("送出查詢", width="stretch")
 
 with c_right:
-    @st.fragment(run_every=15)
+    @st.fragment(run_every=(30 if btc_chart.is_mobile_client() else 15))
     def render_live_account_header():
         curr_ex = s_dict.get("exchange", "OKX")
         balance_str = f"未設定 {curr_ex} API"
