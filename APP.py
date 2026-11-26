@@ -2077,34 +2077,43 @@ def _fired_signals():
 
 
 def remember_and_apply_signals(view_df, symbol, tf):
-    store = _fired_signals().setdefault((symbol, tf), {})
-    last = view_df.iloc[-1]
-    if bool(last["Long_Signal"]):
-        store[last["open_time"]] = "LONG"
-    elif bool(last["Short_Signal"]):
-        store[last["open_time"]] = "SHORT"
-
-    db_sigs = load_outbox_signals(symbol, tf, view_df["open_time"].iloc[0])
-    nan = float("nan")
-    merged = {t: (d, nan, nan, nan) for t, d in store.items()}
-    merged.update(db_sigs)
-
-    step = pd.Timedelta(TF_STEP.get(tf, "5min"))
+    """
+    已修正：直接從 strategy_signal_outbox 撈取完整訊號記錄，
+    並強制覆蓋與對齊圖表 DataFrame，確保網頁標記與資料庫 100% 同步。
+    """
     view_df = view_df.copy()
+    if "Long_Signal" not in view_df.columns:
+        view_df["Long_Signal"] = False
+    if "Short_Signal" not in view_df.columns:
+        view_df["Short_Signal"] = False
     if "Sig_Price" not in view_df.columns:
         view_df["Sig_Price"] = np.nan
+    if "Stop_Loss" not in view_df.columns:
+        view_df["Stop_Loss"] = np.nan
+    if "Take_Profit" not in view_df.columns:
+        view_df["Take_Profit"] = np.nan
+
+    # 從資料庫中載入該幣種與週期自系統啟動以來的所有歷史訊號
+    since_time = view_df["open_time"].iloc[0] if not view_df.empty else datetime.now() - timedelta(days=30)
+    db_sigs = load_outbox_signals(symbol, tf, since_time)
+    
+    if not db_sigs:
+        return view_df
+
+    step = pd.Timedelta(TF_STEP.get(tf, "5min"))
     times = view_df["open_time"].values
     high_arr = view_df["high_price"].values
     low_arr = view_df["low_price"].values
     ci = view_df.columns.get_loc
 
-    for t, (direction, e_price, sl, tp) in merged.items():
+    for t, (direction, e_price, sl, tp) in db_sigs.items():
         idx = int(np.searchsorted(times, np.datetime64(t), side="right")) - 1
-        if idx < 0:
+        if idx < 0 or idx >= len(view_df):
             continue
         bar_t = view_df["open_time"].iloc[idx]
         if not (bar_t <= t < bar_t + step):
             continue
+            
         view_df.iloc[idx, ci("Long_Signal")] = (direction == "LONG")
         view_df.iloc[idx, ci("Short_Signal")] = (direction == "SHORT")
         if pd.notna(e_price):
@@ -2113,12 +2122,14 @@ def remember_and_apply_signals(view_df, symbol, tf):
             view_df.iloc[idx, ci("Stop_Loss")] = sl
         if pd.notna(tp):
             view_df.iloc[idx, ci("Take_Profit")] = tp
+            
         sl_v = view_df.iloc[idx, ci("Stop_Loss")]
         tp_v = view_df.iloc[idx, ci("Take_Profit")]
         if pd.notna(sl_v) and pd.notna(tp_v) and ((sl_v < tp_v) == (direction == "LONG")):
             view_df.iloc[idx, ci("Trade_Result")] = judge_tp_sl(direction, sl_v, tp_v, high_arr, low_arr, idx + 1)
         elif view_df.iloc[idx, ci("Trade_Result")] == "非訊號":
             view_df.iloc[idx, ci("Trade_Result")] = "觀察中"
+            
     return view_df
 
 
@@ -2156,6 +2167,10 @@ def _build_chart_bundle(df_all_tf, symbol, pair, tf, user_thresh=45, trade_style
     if view_df.empty:
         return None
 
+    # 先將當前算出的訊號寫入資料庫
+    save_all_signals_to_outbox(symbol, tf, view_df)
+    
+    # 從資料庫撈出最新完整訊號並強制覆蓋圖表 DataFrame，確保網頁與資料庫 100% 一致
     view_df = remember_and_apply_signals(view_df, symbol, tf)
     view_df = fill_missing_tp_sl(view_df)
     view_df = filter_single_signal_per_wave(view_df)
@@ -2163,8 +2178,6 @@ def _build_chart_bundle(df_all_tf, symbol, pair, tf, user_thresh=45, trade_style
     latest = view_df.iloc[-1]
     latest_close = float(latest["close_price"])
     ai_score = float(latest["AI_Prob"]) * 100 if pd.notna(latest["AI_Prob"]) else 0.0
-
-    save_all_signals_to_outbox(symbol, tf, view_df)
 
     full_view_df = view_df
 
