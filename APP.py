@@ -1460,27 +1460,28 @@ c_left, c_right = st.columns([1.2, 2.8])
 
 with c_left:
     with st.form("search_form"):
+        # 既可以手動打字，也能透過下方快速按鈕點擊帶入
         input_val = st.text_input(
-            "🔍 請輸入加密貨幣名稱（例如 BTC 或 ETH）：",
+            "🔍 請輸入或選擇加密貨幣名稱：",
             value=st.session_state.search_query,
-            placeholder="請輸入 BTC 或 ETH",
+            placeholder="例如 BTC 或 ETH",
         )
-        st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+        st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
         submitted = st.form_submit_button("送出查詢", width="stretch")
-
-    # 快捷點擊選單按鈕（不需送出表單，點擊即可一鍵帶入查詢）
-    q_col1, q_col2, q_col3 = st.columns(3)
-    with q_col1:
-        if st.button("🔥 查詢 BTC", use_container_width=True):
+        
+    # 在表單下方提供熱門幣種快速點擊按鈕（點擊即可選，不用手動打字）
+    qc1, qc2, qc3 = st.columns(3)
+    with qc1:
+        if st.button("🔥 帶入 BTC", use_container_width=True):
             st.session_state.search_query = "BTC"
             st.session_state.is_searched = True
             st.rerun()
-    with q_col2:
-        if st.button("⚡ 查詢 ETH", use_container_width=True):
+    with qc2:
+        if st.button("⚡ 帶入 ETH", use_container_width=True):
             st.session_state.search_query = "ETH"
             st.session_state.is_searched = True
             st.rerun()
-    with q_col3:
+    with qc3:
         if st.button("🔄 清空重設", use_container_width=True):
             st.session_state.search_query = ""
             st.session_state.is_searched = False
