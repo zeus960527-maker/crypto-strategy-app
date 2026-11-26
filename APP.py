@@ -793,23 +793,38 @@ def _okx_request(method, path, creds=None, params=None, body=None, demo=False):
     return data
 
 
+def _http_json(req):
+    """送出請求並解析 JSON；HTTP 錯誤時把交易所回傳的內容一併帶出，方便除錯。"""
+    try:
+        with urllib.request.urlopen(req, timeout=12) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        try:
+            detail = e.read().decode("utf-8")[:300]
+        except Exception:
+            detail = ""
+        raise ExchangeError(f"HTTP {e.code} {detail}")
+
+
 def _bitunix_request(method, path, creds=None, params=None, body=None):
-    timestamp = str(int(time.time() * 1000))
-    nonce = secrets.token_hex(8)
-    query_str = urllib.parse.urlencode(params) if params else ""
+    """Bitunix Futures API：簽章為雙重 SHA256
+    digest = sha256(nonce + timestamp + apiKey + queryParams + body)
+    sign   = sha256(digest + secretKey)
+    queryParams 依 key 排序後以 key+value 直接串接。creds=None 時為公開端點（不簽章）。
+    """
+    params = {k: str(v) for k, v in (params or {}).items()}
     body_str = json.dumps(body, separators=(",", ":")) if body is not None else ""
-
-    raw_sign_str = timestamp + creds["key"] + nonce + body_str
-    sign = hmac.new(creds["secret"].encode("utf-8"), raw_sign_str.encode("utf-8"), hashlib.sha256).hexdigest()
-
-    headers = {
-        "Content-Type": "application/json",
-        "api-key": creds["key"],
-        "timestamp": timestamp,
-        "nonce": nonce,
-        "sign": sign,
-        "User-Agent": "Mozilla/5.0"
-    }
+    headers = {"Content-Type": "application/json", "User-Agent": "Mozilla/5.0", "language": "en-US"}
+    if creds:
+        timestamp = str(int(time.time() * 1000))
+        nonce = secrets.token_hex(16)
+        query_for_sign = "".join(k + params[k] for k in sorted(params))
+        digest = hashlib.sha256(
+            (nonce + timestamp + creds["key"] + query_for_sign + body_str).encode("utf-8")
+        ).hexdigest()
+        sign = hashlib.sha256((digest + creds["secret"]).encode("utf-8")).hexdigest()
+        headers.update({"api-key": creds["key"], "timestamp": timestamp, "nonce": nonce, "sign": sign})
+    query_str = urllib.parse.urlencode(params)
     req_url = f"{EXCHANGE_URLS['Bitunix']}{path}" + (f"?{query_str}" if query_str else "")
     req = urllib.request.Request(
         req_url,
@@ -817,43 +832,53 @@ def _bitunix_request(method, path, creds=None, params=None, body=None):
         headers=headers,
         method=method.upper(),
     )
-    with urllib.request.urlopen(req, timeout=12) as resp:
-        payload = json.loads(resp.read().decode("utf-8"))
+    payload = _http_json(req)
     if str(payload.get("code")) not in ("0", "200", "SUCCESS"):
-        raise ExchangeError(f"Bitunix Error: {payload.get('msg') or payload}")
-    return payload.get("data") or {}
+        raise ExchangeError(f"Bitunix Error {payload.get('code')}: {payload.get('msg') or payload}")
+    data = payload.get("data")
+    return data if data is not None else {}
 
 
 def _bingx_request(method, path, creds=None, params=None, body=None):
-    timestamp = str(int(time.time() * 1000))
-    if params is None:
-        params = {}
-    params["timestamp"] = timestamp
-    params["apiKey"] = creds["key"]
-
-    query_str = urllib.parse.urlencode(sorted(params.items()))
-    signature = hmac.new(creds["secret"].encode("utf-8"), query_str.encode("utf-8"), hashlib.sha256).hexdigest()
-    query_str += f"&signature={signature}"
-
-    headers = {"X-BX-APIKEY": creds["key"], "User-Agent": "Mozilla/5.0"}
-    body_str = json.dumps(body, separators=(",", ":")) if body is not None else None
-
-    req_url = f"{EXCHANGE_URLS['BingX']}{path}?{query_str}"
+    """BingX Swap API：所有參數（含 POST 的下單參數）都放在 query string，簽章對原始字串做 HMAC-SHA256。
+    body 參數會被合併進 query（BingX 不吃 JSON body）。creds=None 時為公開端點（不簽章）。
+    """
+    p = {k: str(v) for k, v in (params or {}).items()}
+    if body:
+        p.update({k: str(v) for k, v in body.items()})
+    p["timestamp"] = str(int(time.time() * 1000))
+    items = sorted(p.items())
+    raw = "&".join(f"{k}={v}" for k, v in items)
+    enc = "&".join(f"{k}={urllib.parse.quote(v, safe='')}" for k, v in items)
+    headers = {"User-Agent": "Mozilla/5.0"}
+    if creds:
+        sig = hmac.new(creds["secret"].encode("utf-8"), raw.encode("utf-8"), hashlib.sha256).hexdigest()
+        enc += f"&signature={sig}"
+        headers["X-BX-APIKEY"] = creds["key"]
+    method = method.upper()
     req = urllib.request.Request(
-        req_url,
-        data=body_str.encode("utf-8") if body_str else None,
+        f"{EXCHANGE_URLS['BingX']}{path}?{enc}",
+        data=b"" if method == "POST" else None,
         headers=headers,
-        method=method.upper(),
+        method=method,
     )
-    with urllib.request.urlopen(req, timeout=12) as resp:
-        payload = json.loads(resp.read().decode("utf-8"))
-    code = int(payload.get("code", -1))
-    if code != 0:
-        raise ExchangeError(f"BingX Error {code}: {payload.get('msg')}")
-    return payload.get("data") or {}
+    payload = _http_json(req)
+    if int(payload.get("code", -1)) != 0:
+        raise ExchangeError(f"BingX Error {payload.get('code')}: {payload.get('msg')}")
+    data = payload.get("data")
+    return data if data is not None else {}
+
+
+def _bitunix_symbol(pair):
+    return pair.replace("-USDT-SWAP", "USDT")
+
+
+def _bingx_symbol(pair):
+    return pair.replace("-USDT-SWAP", "-USDT")
 
 
 def get_exchange_balance(exchange, creds, demo):
+    """回傳可用 USDT。查不到時一律丟錯，不再用假餘額，避免超額下單。"""
     if exchange == "OKX":
         data = _okx_request("GET", "/api/v5/account/balance", creds, params={"ccy": "USDT"}, demo=demo)
         details = (data[0].get("details") or []) if data else []
@@ -865,22 +890,27 @@ def get_exchange_balance(exchange, creds, demo):
                     pass
         return 0.0
     elif exchange == "Bitunix":
-        data = _bitunix_request("GET", "/api/v1/account/balance", creds)
+        data = _bitunix_request("GET", "/api/v1/futures/account", creds, params={"marginCoin": "USDT"})
+        if isinstance(data, list):
+            data = next((x for x in data if x.get("marginCoin") == "USDT"), data[0] if data else {})
         try:
-            return float(data.get("usdt_available") or data.get("available") or 1000.0)
-        except Exception:
-            return 1000.0
+            return max(float(data.get("available")), 0.0)
+        except (TypeError, ValueError):
+            raise ExchangeError(f"Bitunix 無法取得可用餘額：{data}")
     elif exchange == "BingX":
-        data = _bingx_request("GET", "/openApi/swap/v1/user/balance", creds)
+        data = _bingx_request("GET", "/openApi/swap/v2/user/balance", creds)
+        bal = data.get("balance", {}) if isinstance(data, dict) else {}
+        if isinstance(bal, list):
+            bal = next((x for x in bal if x.get("asset") == "USDT"), bal[0] if bal else {})
         try:
-            balance = data.get("balance", {})
-            return float(balance.get("balance") or balance.get("equity") or 1000.0)
-        except Exception:
-            return 1000.0
+            return max(float(bal.get("availableMargin") if bal.get("availableMargin") not in (None, "") else bal.get("balance")), 0.0)
+        except (TypeError, ValueError):
+            raise ExchangeError(f"BingX 無法取得可用餘額：{data}")
     return 0.0
 
 
 def check_exchange_position(exchange, creds, demo, inst_id):
+    """該合約是否已有持倉（三間交易所都檢查）。"""
     if exchange == "OKX":
         data = _okx_request("GET", "/api/v5/account/positions", creds, params={"instType": "SWAP", "instId": inst_id}, demo=demo)
         for p in data:
@@ -890,21 +920,68 @@ def check_exchange_position(exchange, creds, demo, inst_id):
             except ValueError:
                 pass
         return False
+    elif exchange == "Bitunix":
+        data = _bitunix_request("GET", "/api/v1/futures/position/get_pending_positions", creds,
+                                params={"symbol": _bitunix_symbol(inst_id)})
+        if isinstance(data, dict):
+            data = data.get("positionList") or data.get("list") or ([data] if data else [])
+        for p in data or []:
+            try:
+                if abs(float(p.get("qty") or 0)) > 0:
+                    return True
+            except (TypeError, ValueError):
+                pass
+        return False
+    elif exchange == "BingX":
+        data = _bingx_request("GET", "/openApi/swap/v2/user/positions", creds,
+                              params={"symbol": _bingx_symbol(inst_id)})
+        if isinstance(data, dict):
+            data = data.get("positions") or []
+        for p in data or []:
+            try:
+                if abs(float(p.get("positionAmt") or 0)) > 0:
+                    return True
+            except (TypeError, ValueError):
+                pass
+        return False
     return False
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_exchange_instrument(exchange, inst_id):
+    """統一回傳 ctVal / ctMult / minSz / lotSz / tickSz / lever，方便共用下單數量計算。"""
     if exchange == "OKX":
         data = _okx_request("GET", "/api/v5/public/instruments", params={"instType": "SWAP", "instId": inst_id})
         if not data:
             raise ExchangeError(f"找不到合約規格：{inst_id}")
         return dict(data[0])
     elif exchange == "Bitunix":
-        return {"ctVal": "1", "minSz": "0.001", "lotSz": "0.001", "tickSz": "0.1", "lever": 20}
+        sym = _bitunix_symbol(inst_id)
+        data = _bitunix_request("GET", "/api/v1/futures/market/trading_pairs", params={"symbols": sym})
+        row = next((x for x in (data or []) if x.get("symbol") == sym), None)
+        if not row:
+            raise ExchangeError(f"Bitunix 找不到合約規格：{sym}")
+        return {
+            "ctVal": "1", "ctMult": "1",
+            "minSz": str(row.get("minTradeVolume") or "0.001"),
+            "lotSz": format(Decimal(1).scaleb(-int(row.get("basePrecision") or 3)), "f"),
+            "tickSz": format(Decimal(1).scaleb(-int(row.get("quotePrecision") or 1)), "f"),
+            "lever": int(float(row.get("maxLeverage") or 20)),
+        }
     elif exchange == "BingX":
-        return {"ctVal": "1", "minSz": "0.001", "lotSz": "0.001", "tickSz": "0.1", "lever": 20}
-    return {"ctVal": "1", "minSz": "1", "lotSz": "1", "tickSz": "0.1", "lever": 10}
+        sym = _bingx_symbol(inst_id)
+        data = _bingx_request("GET", "/openApi/swap/v2/quote/contracts")
+        row = next((x for x in (data or []) if x.get("symbol") == sym), None)
+        if not row:
+            raise ExchangeError(f"BingX 找不到合約規格：{sym}")
+        return {
+            "ctVal": "1", "ctMult": "1",
+            "minSz": str(row.get("tradeMinQuantity") or "0.001"),
+            "lotSz": format(Decimal(1).scaleb(-int(row.get("quantityPrecision") or 3)), "f"),
+            "tickSz": format(Decimal(1).scaleb(-int(row.get("pricePrecision") or 1)), "f"),
+            "lever": 10,  # BingX 合約列表不含最大槓桿，沿用原本「最大槓桿」上限 10x
+        }
+    return {"ctVal": "1", "ctMult": "1", "minSz": "1", "lotSz": "1", "tickSz": "0.1", "lever": 10}
 
 
 def okx_account_config(creds, demo):
@@ -922,9 +999,31 @@ def _fmt_px(price, tick):
     return format(p.normalize(), "f")
 
 
-def place_exchange_order(exchange, creds, s, pair, direction, price, sl, tp, clord_seed):
+def _calc_order(inst, s, avail, price, slots):
+    """三間交易所共用的下單數量計算。
+    slots = 這一批訊號中「包含自己在內」還要下的單數。
+    餘額夠時每張單用設定金額；不夠時把可用餘額平均分給剩下的單，確保每個訊號都能下到。
+    """
+    max_lev = max(1, int(float(inst.get("lever") or 1)))
+    lever = max_lev if s.get("use_max_lever") else max(1, min(int(s.get("manual_lever", 10)), max_lev))
+    ct = Decimal(str(inst.get("ctVal") or "1")) * Decimal(str(inst.get("ctMult") or "1"))
+    lot = Decimal(str(inst["lotSz"]))
+    min_sz = Decimal(str(inst["minSz"]))
+
+    slots = max(int(slots), 1)
+    avail_d = Decimal(str(avail))
+    share = avail_d * Decimal("0.98") / slots if slots > 1 else avail_d
+    amount = min(Decimal(str(s.get("fund_amount", 100.0))), share)
+    qty = _floor_step(amount * Decimal(lever) / (Decimal(str(price)) * ct), lot)
+    if qty < min_sz:
+        raise ExchangeError("可用資金或設定金額不足以下最小單位。")
+    return lever, qty, amount
+
+
+def place_exchange_order(exchange, creds, s, pair, direction, price, sl, tp, clord_seed, slots=1):
     demo = bool(s.get("demo"))
     is_long = direction == "LONG"
+    cl_id = "ai" + hashlib.sha1(clord_seed.encode("utf-8")).hexdigest()[:24]
 
     if exchange == "OKX":
         cfg = okx_account_config(creds, demo)
@@ -938,20 +1037,7 @@ def place_exchange_order(exchange, creds, s, pair, direction, price, sl, tp, clo
         avail = get_exchange_balance(exchange, creds, demo)
         if avail <= 0:
             raise ExchangeError("可用 USDT 餘額為 0。")
-
-        max_lev = max(1, int(float(inst.get("lever") or 1)))
-        lever = max_lev if s.get("use_max_lever") else max(1, min(int(s.get("manual_lever", 10)), max_lev))
-
-        ct = Decimal(str(inst["ctVal"])) * Decimal(str(inst.get("ctMult") or "1"))
-        lot = Decimal(str(inst["lotSz"]))
-        min_sz = Decimal(str(inst["minSz"]))
-
-        target_amount = min(Decimal(str(s.get("fund_amount", 100.0))), Decimal(str(avail)))
-        budget = target_amount * Decimal(lever)
-
-        contracts = _floor_step(budget / (Decimal(str(price)) * ct), lot)
-        if contracts < min_sz:
-            raise ExchangeError("可用資金或設定金額不足以下最小單位。")
+        lever, contracts, _ = _calc_order(inst, s, avail, price, slots)
 
         td_mode_raw = "isolated" if s.get("td_mode", "逐倉") == "逐倉" else "cross"
         lev_body = {"instId": pair, "lever": str(lever), "mgnMode": td_mode_raw}
@@ -964,7 +1050,7 @@ def place_exchange_order(exchange, creds, s, pair, direction, price, sl, tp, clo
         body = {
             "instId": pair, "tdMode": td_mode_raw, "side": "buy" if is_long else "sell",
             "ordType": "market", "sz": format(contracts.normalize(), "f"),
-            "clOrdId": "ai" + hashlib.sha1(clord_seed.encode("utf-8")).hexdigest()[:24],
+            "clOrdId": cl_id,
             "attachAlgoOrds": [{
                 "tpTriggerPx": tp_s, "tpOrdPx": "-1", "tpTriggerPxType": "last",
                 "slTriggerPx": sl_s, "slOrdPx": "-1", "slTriggerPxType": "last",
@@ -977,38 +1063,77 @@ def place_exchange_order(exchange, creds, s, pair, direction, price, sl, tp, clo
         return f"OKX ordId={ord_id} ｜ {contracts} 張 ｜ 槓桿 {lever}x"
 
     elif exchange == "Bitunix":
+        symbol = _bitunix_symbol(pair)
+        if check_exchange_position(exchange, creds, demo, pair):
+            raise OrderSkip("該合約已有持倉，略過此訊號。")
+        inst = get_exchange_instrument(exchange, pair)
         avail = get_exchange_balance(exchange, creds, demo)
-        lever = 10 if s.get("use_max_lever") else int(s.get("manual_lever", 10))
-        target_amount = min(float(s.get("fund_amount", 100.0)), float(avail))
-        notional = target_amount * lever
-        sz = round(notional / price, 4)
+        if avail <= 0:
+            raise ExchangeError("可用 USDT 餘額為 0。")
+        lever, qty, _ = _calc_order(inst, s, avail, price, slots)
 
+        try:  # 保證金模式：已是該模式或有持倉時交易所會回錯，不影響下單
+            _bitunix_request("POST", "/api/v1/futures/account/change_margin_mode", creds, body={
+                "symbol": symbol, "marginCoin": "USDT",
+                "marginMode": "ISOLATION" if s.get("td_mode", "逐倉") == "逐倉" else "CROSS",
+            })
+        except Exception:
+            pass
+        _bitunix_request("POST", "/api/v1/futures/account/change_leverage", creds, body={
+            "symbol": symbol, "marginCoin": "USDT", "leverage": lever,
+        })
+
+        tick = inst.get("tickSz") or "0.1"
         body = {
-            "symbol": pair.replace("-USDT-SWAP", "USDT"),
-            "side": "OPEN_LONG" if is_long else "OPEN_SHORT",
-            "type": "MARKET",
-            "volume": str(sz),
-            "leverage": str(lever)
+            "symbol": symbol,
+            "qty": format(qty.normalize(), "f"),
+            "side": "BUY" if is_long else "SELL",
+            "tradeSide": "OPEN",
+            "orderType": "MARKET",
+            "clientId": cl_id,
+            "tpPrice": _fmt_px(tp, tick), "tpStopType": "LAST_PRICE", "tpOrderType": "MARKET",
+            "slPrice": _fmt_px(sl, tick), "slStopType": "LAST_PRICE", "slOrderType": "MARKET",
         }
-        _bitunix_request("POST", "/api/v1/trade/order", creds, body=body)
-        return f"Bitunix 委託成功 ｜ 數量 {sz} ｜ 槓桿 {lever}x"
+        data = _bitunix_request("POST", "/api/v1/futures/trade/place_order", creds, body=body)
+        oid = data.get("orderId", "") if isinstance(data, dict) else ""
+        return f"Bitunix orderId={oid} ｜ 數量 {body['qty']} ｜ 槓桿 {lever}x"
 
     elif exchange == "BingX":
+        symbol = _bingx_symbol(pair)
+        if check_exchange_position(exchange, creds, demo, pair):
+            raise OrderSkip("該合約已有持倉，略過此訊號。")
+        inst = get_exchange_instrument(exchange, pair)
         avail = get_exchange_balance(exchange, creds, demo)
-        lever = 10 if s.get("use_max_lever") else int(s.get("manual_lever", 10))
-        target_amount = min(float(s.get("fund_amount", 100.0)), float(avail))
-        notional = target_amount * lever
-        sz = round(notional / price, 4)
+        if avail <= 0:
+            raise ExchangeError("可用 USDT 餘額為 0。")
+        lever, qty, _ = _calc_order(inst, s, avail, price, slots)
 
+        try:  # 保證金模式：已是該模式時交易所會回錯，不影響下單
+            _bingx_request("POST", "/openApi/swap/v2/trade/marginType", creds, body={
+                "symbol": symbol,
+                "marginType": "ISOLATED" if s.get("td_mode", "逐倉") == "逐倉" else "CROSSED",
+            })
+        except Exception:
+            pass
+        side_str = "LONG" if is_long else "SHORT"
+        _bingx_request("POST", "/openApi/swap/v2/trade/leverage", creds, body={
+            "symbol": symbol, "side": side_str, "leverage": lever,
+        })
+
+        tick = inst.get("tickSz") or "0.1"
         body = {
-            "symbol": pair.replace("-USDT-SWAP", "-USDT"),
+            "symbol": symbol,
             "side": "BUY" if is_long else "SELL",
-            "positionSide": "LONG" if is_long else "SHORT",
+            "positionSide": side_str,
             "type": "MARKET",
-            "quantity": str(sz)
+            "quantity": format(qty.normalize(), "f"),
+            "clientOrderId": cl_id,
+            "takeProfit": json.dumps({"type": "TAKE_PROFIT_MARKET", "stopPrice": float(_fmt_px(tp, tick)), "workingType": "MARK_PRICE"}, separators=(",", ":")),
+            "stopLoss": json.dumps({"type": "STOP_MARKET", "stopPrice": float(_fmt_px(sl, tick)), "workingType": "MARK_PRICE"}, separators=(",", ":")),
         }
-        _bingx_request("POST", "/openApi/swap/v1/trade/order", creds, body=body)
-        return f"BingX 委託成功 ｜ 數量 {sz} ｜ 槓桿 {lever}x"
+        data = _bingx_request("POST", "/openApi/swap/v2/trade/order", creds, body=body)
+        oid = (data.get("order") or {}).get("orderId", "") if isinstance(data, dict) else ""
+        return f"BingX orderId={oid} ｜ 數量 {body['quantity']} ｜ 槓桿 {lever}x"
 
     raise ExchangeError(f"未知的交易所：{exchange}")
 
@@ -1077,94 +1202,122 @@ def _start_background_trade_worker():
     MAX_BAR_AGE_MIN = 15
     TF = "5m"
 
+    def _collect_signals(user, s, enabled_at, now_tw, sig_cache):
+        """掃描所有幣種，每個幣種只取「最新一根」有效訊號，回傳這一輪出現的訊號清單。"""
+        user_thresh = s.get("ai_confidence_thresh", 45)
+        trade_style = s.get("trade_style", "平衡")
+        try:
+            bt_days = int(s.get("backtest_days", 30))
+        except Exception:
+            bt_days = 30
+
+        found = []
+        for sym, mod in COIN_MODULES.items():
+            try:
+                write_outbox = (user == btc_chart.OUTBOX_WRITER_USER)
+                ck = (sym, user_thresh, trade_style, bt_days, write_outbox)
+                if ck not in sig_cache:
+                    sig_cache[ck] = mod.compute_signals(
+                        TF, user_thresh, trade_style, days=bt_days, save_outbox=write_outbox
+                    )
+                df_tf = sig_cache[ck]
+                if df_tf is None or df_tf.empty:
+                    continue
+
+                for _, r in df_tf.tail(SCAN_BARS).iloc[::-1].iterrows():
+                    long_sig, short_sig = bool(r["Long_Signal"]), bool(r["Short_Signal"])
+                    if long_sig == short_sig:
+                        continue
+                    bar_t = pd.Timestamp(r["open_time"]).to_pydatetime()
+                    if (now_tw - bar_t).total_seconds() > MAX_BAR_AGE_MIN * 60:
+                        continue
+                    if enabled_at and bar_t + timedelta(minutes=5) <= enabled_at:
+                        continue
+                    sl, tp = r.get("Stop_Loss"), r.get("Take_Profit")
+                    if pd.isna(sl) or pd.isna(tp):
+                        continue
+                    found.append({
+                        "sym": sym, "pair": mod.PAIR, "bar_t": bar_t,
+                        "direction": "LONG" if long_sig else "SHORT",
+                        "price": float(r["close_price"]), "sl": float(sl), "tp": float(tp),
+                    })
+                    break  # 只取最新一根，不回頭撿舊訊號
+            except Exception as e:
+                _tw_log(f"{user} {sym}: 掃描訊號失敗：{e}")
+        return found
+
+    def _execute_signals(user, exchange, creds, s, signals):
+        """同一輪出現的所有訊號都下單；不是同時出現的，會在各自出現的那一輪單獨下單。
+        每張單互相獨立：某一幣種失敗/略過不影響其他幣種。
+        """
+        claimed = []
+        for sig in signals:
+            try:
+                oid = _claim_order(user, exchange, sig["sym"], TF, sig["bar_t"], sig["direction"])
+            except Exception as e:
+                _tw_log(f"{user} {sig['sym']}: 登記訂單失敗：{e}")
+                continue
+            if oid:  # 沒拿到代表這個訊號先前已處理過
+                claimed.append((oid, sig))
+
+        total = len(claimed)
+        for idx, (order_id, sig) in enumerate(claimed):
+            slots_left = total - idx  # 含自己，餘額不足時用來平均分配
+            try:
+                seed = f"{user}|{exchange}|{sig['sym']}|{TF}|{sig['bar_t'].isoformat()}"
+                detail = place_exchange_order(
+                    exchange, creds, s, sig["pair"], sig["direction"],
+                    sig["price"], sig["sl"], sig["tp"], seed, slots=slots_left,
+                )
+                _finish_order(order_id, "success", detail)
+                _tw_log(f"{user} {exchange} {sig['sym']} {sig['direction']} 成功：{detail}")
+            except OrderSkip as e:
+                _finish_order(order_id, "skipped", str(e))
+                _tw_log(f"{user} {exchange} {sig['sym']} 略過：{e}")
+            except Exception as e:
+                _finish_order(order_id, "failed", str(e))
+                _tw_log(f"{user} {exchange} {sig['sym']} 失敗：{e}")
+
     def _worker_loop():
         _tw_log("背景下單執行緒已啟動")
-        tick = 0
         while True:
             time.sleep(30)
-            tick += 1
             try:
                 with _acct_engine().connect() as conn:
                     users = conn.execute(text("SELECT username, settings_json FROM app_users")).fetchall()
 
-                active = 0
                 now_tw = datetime.now(TAIWAN_TZ).replace(tzinfo=None)
                 sig_cache = {}
 
                 for row in users:
                     user = row[0]
-                    s = _load_settings(row[1])
-                    if not s.get("auto_trade"):
-                        continue
-                    active += 1
-
-                    exchange = s.get("exchange", "OKX")
                     try:
-                        creds = _get_exchange_creds(user, exchange)
-                        if not creds.get("key") or not creds.get("secret"):
+                        s = _load_settings(row[1])
+                        if not s.get("auto_trade"):
                             continue
-                    except Exception:
-                        continue
 
-                    enabled_at = None
-                    try:
-                        if s.get("enabled_at"):
-                            enabled_at = datetime.fromisoformat(str(s["enabled_at"]))
-                    except Exception:
-                        enabled_at = None
-
-                    user_thresh = s.get("ai_confidence_thresh", 45)
-                    trade_style = s.get("trade_style", "平衡")
-                    try:
-                        bt_days = int(s.get("backtest_days", 30))
-                    except Exception:
-                        bt_days = 30
-
-                    for sym, mod in COIN_MODULES.items():
+                        exchange = s.get("exchange", "OKX")
                         try:
-                            write_outbox = (user == btc_chart.OUTBOX_WRITER_USER)
-                            ck = (sym, user_thresh, trade_style, bt_days, write_outbox)
-                            if ck not in sig_cache:
-                                sig_cache[ck] = mod.compute_signals(
-                                    TF, user_thresh, trade_style, days=bt_days, save_outbox=write_outbox
-                                )
-                            df_tf = sig_cache[ck]
-                            if df_tf is None or df_tf.empty:
+                            creds = _get_exchange_creds(user, exchange)
+                            if not creds.get("key") or not creds.get("secret"):
                                 continue
-
-                            for _, r in df_tf.tail(SCAN_BARS).iloc[::-1].iterrows():
-                                long_sig, short_sig = bool(r["Long_Signal"]), bool(r["Short_Signal"])
-                                if long_sig == short_sig:
-                                    continue
-                                bar_t = pd.Timestamp(r["open_time"]).to_pydatetime()
-                                if (now_tw - bar_t).total_seconds() > MAX_BAR_AGE_MIN * 60:
-                                    continue
-                                if enabled_at and bar_t + timedelta(minutes=5) <= enabled_at:
-                                    continue
-                                direction = "LONG" if long_sig else "SHORT"
-                                sl, tp = r.get("Stop_Loss"), r.get("Take_Profit")
-                                if pd.isna(sl) or pd.isna(tp):
-                                    continue
-
-                                order_id = _claim_order(user, exchange, sym, TF, bar_t, direction)
-                                if not order_id:
-                                    continue
-                                try:
-                                    seed = f"{user}|{exchange}|{sym}|{TF}|{bar_t.isoformat()}"
-                                    detail = place_exchange_order(
-                                        exchange, creds, s, mod.PAIR, direction,
-                                        float(r["close_price"]), float(sl), float(tp), seed,
-                                    )
-                                    _finish_order(order_id, "success", detail)
-                                except OrderSkip as e:
-                                    _finish_order(order_id, "skipped", str(e))
-                                except Exception as e:
-                                    _finish_order(order_id, "failed", str(e))
-                                break
                         except Exception:
-                            pass
-            except Exception:
-                pass
+                            continue
+
+                        enabled_at = None
+                        try:
+                            if s.get("enabled_at"):
+                                enabled_at = datetime.fromisoformat(str(s["enabled_at"]))
+                        except Exception:
+                            enabled_at = None
+
+                        signals = _collect_signals(user, s, enabled_at, now_tw, sig_cache)
+                        if signals:
+                            _execute_signals(user, exchange, creds, s, signals)
+                    except Exception as e:
+                        _tw_log(f"{user}: 處理失敗：{e}")
+            except Exception as e:
+                _tw_log(f"worker 迴圈錯誤：{e}")
 
     t = threading.Thread(target=_worker_loop, daemon=True, name="background-trade-worker")
     t.start()
