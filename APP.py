@@ -1539,7 +1539,7 @@ if st.session_state.is_searched:
 
     selected_tf = st.radio("時間軸週期", ["5m", "15m", "1h", "4h"], horizontal=True, key="timeframe_select")
 
-    # 模組內部已含 15 秒自動更新；trade_panel 為主程式的自動下單面板
+    # 模組內部已含自動更新；trade_panel 為主程式的自動下單面板
     coin_module.render(selected_tf, trade_panel=render_exchange_trade_panel)
 
 elif st.session_state.search_query:
@@ -1547,3 +1547,37 @@ elif st.session_state.search_query:
     render_homepage()
 else:
     render_homepage()
+
+
+# ============================================================
+# 未顯示的幣種也要執行：背景掃描訊號並寫入 strategy_signal_outbox
+# （畫面上只顯示搜尋的幣種；另一個幣種不畫圖，但仍然每次執行 APP 都會呼叫並記錄訊號，
+#   之後搜尋該幣種時，圖上就會標示出這些訊號）
+# ============================================================
+@st.fragment(run_every=30)
+def _scan_coin_signals(sym):
+    mod = COIN_MODULES.get(sym)
+    if mod is None:
+        return
+    s = dict(DEFAULT_TRADE_SETTINGS)
+    s.update(st.session_state.get("auth_settings") or {})
+    try:
+        bt_days = int(s.get("backtest_days", 30))
+    except Exception:
+        bt_days = 30
+    try:
+        mod.compute_signals(
+            "5m", s.get("ai_confidence_thresh", 45), s.get("trade_style", "平衡"),
+            days=bt_days, save_outbox=True, apply_outbox_memory=False,
+        )
+    except Exception as e:
+        _tw_log(f"{sym}: 背景掃描訊號失敗：{e}")
+
+
+_shown_coin = None
+if st.session_state.get("is_searched"):
+    _shown_coin = "ETH" if "ETH" in st.session_state.search_query.upper() else "BTC"
+
+for _sym in COIN_MODULES:
+    if _sym != _shown_coin:
+        _scan_coin_signals(_sym)
