@@ -20,11 +20,31 @@ import secrets
 from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP
 from datetime import datetime, timedelta, timezone
 
-# ---- 幣種 K 線模組（BTC / ETH 各自獨立）----
+# ---- 幣種 K 線模組（BTC / ETH / XAU 各自獨立）----
 import btc_chart
 import eth_chart
 
 COIN_MODULES = {"BTC": btc_chart, "ETH": eth_chart}
+
+# XAU（黃金）模組：需要 xau_chart.py（介面與 eth_chart.py 相同）
+try:
+    import xau_chart
+    COIN_MODULES["XAU"] = xau_chart
+except Exception:
+    xau_chart = None
+
+# 搜尋別名 -> 幣種代碼
+COIN_ALIASES = {"BTC": "BTC", "ETH": "ETH", "XAU": "XAU", "GOLD": "XAU", "黃金": "XAU", "黄金": "XAU"}
+COIN_OPTIONS = list(COIN_MODULES.keys())
+
+
+def resolve_coin(query):
+    """把使用者輸入（BTC / ETH / XAU / GOLD / 黃金）對應成 COIN_MODULES 的 key，找不到回傳 None。"""
+    q = (query or "").strip().upper()
+    for alias, sym in COIN_ALIASES.items():
+        if alias.upper() in q and sym in COIN_MODULES:
+            return sym
+    return None
 
 try:
     from cryptography.fernet import Fernet, InvalidToken
@@ -387,7 +407,7 @@ st.title("加密貨幣 AI 策略系統")
 st.markdown("""
 <div class="hero-sub">
     <span class="chip live">LIVE 即時監控</span>
-    <span class="chip">BTC / ETH 永續合約</span>
+    <span class="chip">BTC / ETH / XAU 永續合約</span>
     <span class="chip">5m 進場 + 15m/1h/4h 高勝率共振</span>
     <span class="chip">OKX / Bitunix / BingX 多交易所自動下單</span>
 </div>
@@ -1449,12 +1469,11 @@ c_left, c_right = st.columns([1.2, 2.8])
 with c_left:
     with st.form("search_form"):
         # 支援下拉選單與自訂打字的欄位 (預設為空/None)
-        current_val = st.session_state.search_query if st.session_state.search_query in ["BTC", "ETH"] else None
         input_val = st.selectbox(
-            "🔍 請選擇或輸入加密貨幣名稱：",
-            options=["BTC", "ETH"],
+            "🔍 請選擇或輸入商品名稱：",
+            options=COIN_OPTIONS,
             index=None,
-            placeholder="請選擇或輸入 BTC、ETH...",
+            placeholder="請選擇或輸入 " + "、".join(COIN_OPTIONS) + "...",
         )
         
         # 若使用者直接用打字或選單填寫，同步對應
@@ -1497,7 +1516,7 @@ with c_right:
 if submitted:
     q = (input_val or "").strip().upper()
     st.session_state.search_query = q
-    st.session_state.is_searched = ("BTC" in q or "ETH" in q)
+    st.session_state.is_searched = resolve_coin(q) is not None
 
 st.markdown("---")
 
@@ -1505,8 +1524,7 @@ st.markdown("---")
 # 內容區：需要顯示幣種資料時，呼叫該幣種的模組
 # ============================================================
 if st.session_state.is_searched:
-    query = st.session_state.search_query.upper()
-    coin_module = eth_chart if "ETH" in query else btc_chart
+    coin_module = COIN_MODULES[resolve_coin(st.session_state.search_query)]
 
     selected_tf = st.radio("時間軸週期", ["5m", "15m", "1h", "4h"], horizontal=True, key="timeframe_select")
 
@@ -1544,7 +1562,7 @@ def _scan_coin_signals(sym):
 
 _shown_coin = None
 if st.session_state.get("is_searched"):
-    _shown_coin = "ETH" if "ETH" in st.session_state.search_query.upper() else "BTC"
+    _shown_coin = resolve_coin(st.session_state.search_query)
 
 if st.session_state.get("auth_user") == btc_chart.OUTBOX_WRITER_USER:
     for _sym in COIN_MODULES:
