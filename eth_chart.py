@@ -742,6 +742,8 @@ def _build_chart_bundle(df_all_tf, tf, user_thresh=45, trade_style="平衡", bt_
 
     mobile = is_mobile_client()
     display_len = 40 if mobile else 85
+    # 手機：只把最近 300 根送到瀏覽器（指標、訊號、回測仍用完整 view_df 計算）；桌機維持完整資料
+    plot_df = view_df.iloc[-300:] if mobile else view_df
     if len(view_df) > display_len:
         start_time = view_df["open_time"].iloc[-display_len]
         end_time = view_df["open_time"].iloc[-1] + pd.Timedelta(minutes=75 if tf in ['5m', '15m'] else 300)
@@ -765,8 +767,8 @@ def _build_chart_bundle(df_all_tf, tf, user_thresh=45, trade_style="平衡", bt_
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.015, row_heights=[0.80, 0.20])
 
     fig.add_trace(go.Candlestick(
-        x=view_df["open_time"], open=view_df["open_price"], high=view_df["high_price"],
-        low=view_df["low_price"], close=view_df["close_price"], name=symbol,
+        x=plot_df["open_time"], open=plot_df["open_price"], high=plot_df["high_price"],
+        low=plot_df["low_price"], close=plot_df["close_price"], name=symbol,
         line=dict(width=2.2 if mobile else 1.3),
         increasing_line_color="#0ECB81", increasing_fillcolor="#0ECB81",
         decreasing_line_color="#F6465D", decreasing_fillcolor="#F6465D",
@@ -776,24 +778,24 @@ def _build_chart_bundle(df_all_tf, tf, user_thresh=45, trade_style="平衡", bt_
 
     for ema, color, width in [("EMA_21", "#2962FF", 1.5), ("EMA_50", "#FFFFFF", 1.5), ("EMA_100", "#FF5252", 1.8)]:
         fig.add_trace(go.Scatter(
-            x=view_df["open_time"], y=view_df[ema], mode="lines", name=ema.replace("_", ""),
+            x=plot_df["open_time"], y=plot_df[ema], mode="lines", name=ema.replace("_", ""),
             line=dict(color=color, width=width), hoverinfo="none",
             xaxis="x", yaxis="y",
         ), row=1, col=1)
 
     fig.add_trace(go.Scatter(
-        x=view_df["open_time"], y=view_df["Trend_Resistance"], mode="lines", name="壓力趨勢線",
+        x=plot_df["open_time"], y=plot_df["Trend_Resistance"], mode="lines", name="壓力趨勢線",
         line=dict(color="rgba(246,70,93,.7)", width=1.5, dash="dash"), hoverinfo="none",
         xaxis="x", yaxis="y",
     ), row=1, col=1)
 
     fig.add_trace(go.Scatter(
-        x=view_df["open_time"], y=view_df["Trend_Support"], mode="lines", name="支撐趨勢線",
+        x=plot_df["open_time"], y=plot_df["Trend_Support"], mode="lines", name="支撐趨勢線",
         line=dict(color="rgba(14,203,129,.7)", width=1.5, dash="dash"), hoverinfo="none",
         xaxis="x", yaxis="y",
     ), row=1, col=1)
 
-    long_df = view_df[view_df["Long_Signal"]].copy()
+    long_df = plot_df[plot_df["Long_Signal"]].copy()
     if not long_df.empty:
         long_y = long_df["low_price"] - span * 0.08
         _lx, _ly = [], []
@@ -809,7 +811,7 @@ def _build_chart_bundle(df_all_tf, tf, user_thresh=45, trade_style="平衡", bt_
             xaxis="x", yaxis="y",
         ), row=1, col=1)
 
-    short_df = view_df[view_df["Short_Signal"]].copy()
+    short_df = plot_df[plot_df["Short_Signal"]].copy()
     if not short_df.empty:
         short_y = short_df["high_price"] + span * 0.08
         _sx, _sy = [], []
@@ -825,8 +827,8 @@ def _build_chart_bundle(df_all_tf, tf, user_thresh=45, trade_style="平衡", bt_
             xaxis="x", yaxis="y",
         ), row=1, col=1)
 
-    volume_colors = ["rgba(14,203,129,.7)" if close >= open_ else "rgba(246,70,93,.7)" for close, open_ in zip(view_df["close_price"], view_df["open_price"])]
-    fig.add_trace(go.Bar(x=view_df["open_time"], y=view_df["volume"], name="VOL", marker_color=volume_colors, hoverinfo="none", xaxis="x2", yaxis="y2"), row=2, col=1)
+    volume_colors = ["rgba(14,203,129,.7)" if close >= open_ else "rgba(246,70,93,.7)" for close, open_ in zip(plot_df["close_price"], plot_df["open_price"])]
+    fig.add_trace(go.Bar(x=plot_df["open_time"], y=plot_df["volume"], name="VOL", marker_color=volume_colors, hoverinfo="none", xaxis="x2", yaxis="y2"), row=2, col=1)
 
     fig.add_hline(
         y=latest_close, line_dash="dot", line_width=1, line_color=status_color,
@@ -846,16 +848,16 @@ def _build_chart_bundle(df_all_tf, tf, user_thresh=45, trade_style="平衡", bt_
 
     fig.update_layout(
         template="plotly_dark", paper_bgcolor="rgba(11,14,17,.6)", plot_bgcolor="rgba(11,14,17,.6)",
-        hovermode="x unified", hoverdistance=100, spikedistance=1000, xaxis_rangeslider_visible=False,
-        dragmode="pan", height=860, bargap=0.08, showlegend=True,
+        hovermode=(False if mobile else "x unified"), hoverdistance=100, spikedistance=1000, xaxis_rangeslider_visible=False,
+        dragmode="pan", height=(520 if mobile else 860), bargap=0.08, showlegend=True,
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0, font=dict(size=10)),
         margin=dict(l=10, r=85, t=65, b=30), uirevision=f"{symbol}_{tf}_{user_thresh}_{trade_style}",
         hoverlabel=dict(bgcolor="rgba(30,35,41,.95)", font_size=12, font_color="white", bordercolor="#f0b90b"),
     )
     fig.update_layout(xaxis=dict(range=[start_time, end_time], autorange=False))
     fig.update_xaxes(showline=True, linewidth=2, linecolor="#434c5e", mirror=True, row=2, col=1, fixedrange=False)
-    fig.update_yaxes(side="right", gridcolor="#1e2329", zeroline=False, linecolor="#2b313a", tickformat=",.2f", showspikes=True, spikemode="across+toaxis", spikesnap="cursor", spikethickness=1, spikedash="dash", spikecolor="#a0a6b2", showline=True, row=1, col=1, range=y_range, fixedrange=False)
-    fig.update_yaxes(side="right", gridcolor="#1e2329", zeroline=False, linecolor="#2b313a", tickformat=",.2f", showspikes=True, spikemode="across", spikesnap="cursor", spikethickness=1, spikedash="dash", spikecolor="#a0a6b2", row=2, col=1, range=[0, float(visible_df["volume"].max()) * 1.05], fixedrange=False)
+    fig.update_yaxes(side="right", gridcolor="#1e2329", zeroline=False, linecolor="#2b313a", tickformat=",.2f", showspikes=(not mobile), spikemode="across+toaxis", spikesnap="cursor", spikethickness=1, spikedash="dash", spikecolor="#a0a6b2", showline=True, row=1, col=1, range=y_range, fixedrange=False)
+    fig.update_yaxes(side="right", gridcolor="#1e2329", zeroline=False, linecolor="#2b313a", tickformat=",.2f", showspikes=(not mobile), spikemode="across", spikesnap="cursor", spikethickness=1, spikedash="dash", spikecolor="#a0a6b2", row=2, col=1, range=[0, float(visible_df["volume"].max()) * 1.05], fixedrange=False)
 
     return {
         "view_df": full_view_df, "fig": fig, "latest": latest, "x_range": [start_time, end_time],
@@ -1005,30 +1007,48 @@ def _render_live_kline_chart(tf, trade_panel=None):
         st.markdown("#### 📌 最近進場訊號")
         recent_signals = view_df[view_df["Long_Signal"] | view_df["Short_Signal"]].copy()
         if not recent_signals.empty:
+            _mobile_ui = is_mobile_client()
+            if _mobile_ui:
+                st.caption("僅顯示最新 20 筆")
             with st.container(height=420):
-                for _, signal in recent_signals.iloc[::-1].iterrows():
+                cards = []
+                _sig_iter = recent_signals.iloc[::-1]
+                if _mobile_ui:
+                    _sig_iter = _sig_iter.head(20)
+                for _, signal in _sig_iter.iterrows():
                     signal_time = signal["open_time"].strftime("%m/%d %H:%M")
                     signal_price = float(signal["Sig_Price"]) if pd.notna(signal["Sig_Price"]) else float(signal["close_price"])
                     is_long_sig = bool(signal["Long_Signal"])
-                    st.markdown(
+                    cards.append(
                         f'<div class="sig-card {"long" if is_long_sig else "short"}">'
                         f'<div><div class="sig-dir">{"🟢 LONG" if is_long_sig else "🔴 SHORT"}</div>'
                         f'<div class="sig-time">{signal_time}</div></div>'
                         f'<div><div class="sig-price">{signal_price:,.2f}</div></div>'
-                        f'</div>', unsafe_allow_html=True,
+                        f'</div>'
                     )
+                st.markdown("".join(cards), unsafe_allow_html=True)
 
-    render_backtest_analytics(view_df)
+    # 回測報表：桌機直接顯示；手機改為開關（預設關閉，開啟才計算與繪製）
+    if is_mobile_client():
+        if st.toggle("📊 顯示進階策略績效回測報表", value=False, key=f"{SYMBOL.lower()}_show_backtest"):
+            render_backtest_analytics(view_df)
+    else:
+        render_backtest_analytics(view_df)
 
 
-@st.fragment(run_every=15)
 def _live_fragment(tf, trade_panel):
-    _render_live_kline_chart(tf, trade_panel)
+    interval = 30 if is_mobile_client() else 15
+
+    @st.fragment(run_every=interval)
+    def _inner():
+        _render_live_kline_chart(tf, trade_panel)
+
+    _inner()
 
 
 # ============================================================
 # 7. 對外入口（主程式只呼叫這個）
 # ============================================================
 def render(tf, trade_panel=None):
-    """顯示 K 線圖（每 15 秒自動更新）。trade_panel 為主程式的自動下單面板函式 (可省略)。"""
+    """顯示 K 線圖（桌機每 15 秒、手機每 30 秒自動更新）。trade_panel 為主程式的自動下單面板函式 (可省略)。"""
     _live_fragment(tf, trade_panel)
