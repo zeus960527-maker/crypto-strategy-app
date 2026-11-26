@@ -7,7 +7,7 @@ from datetime import datetime
 st.set_page_config(page_title="ETH 數據自動同步系統", layout="centered")
 
 st.title("ETH 數據自動同步系統")
-st.write("狀態：前端即時輪詢與自動同步執行中 🚀")
+st.write("狀態：透過 UptimeRobot 定期觸發同步中 🚀")
 
 SUPABASE_DB_URL = "postgresql://postgres.ygzeqvcyqtvhvjrxhzdv:%4010233960527Ken@aws-0-ap-northeast-1.pooler.supabase.com:6543/postgres"
 
@@ -92,7 +92,7 @@ def fetch_and_fill_timeframe(tf, is_backfill=False):
             pass
     return False
 
-# 1. 確保每次應用程式啟動或重新整理時，優先從上一次最後的資料處補齊到最新
+# 1. 確保每次應用程式被觸發時，優先從上一次最後的資料處補齊到最新
 @st.cache_resource
 def run_initial_backfill():
     timeframes = ['5m', '15m', '1h', '4h']
@@ -111,8 +111,6 @@ run_initial_backfill()
 
 # 2. 顯示最後更新時間與狀態提示
 status_placeholder = st.empty()
-log_placeholder = st.empty()
-
 timeframes = ['5m', '15m', '1h', '4h']
 
 # 執行即時同步
@@ -121,10 +119,6 @@ try:
     for tf in timeframes:
         fetch_and_fill_timeframe(tf, is_backfill=False)
         time.sleep(0.2)
-    status_placeholder.success(f"✅ 同步完成！保持每 60 秒與交易所即時同步中... ({datetime.now().strftime('%Y-%m-%d %H:%M:%S')})")
+    status_placeholder.success(f"✅ 同步完成！等待 UptimeRobot 下一次觸發中... ({datetime.now().strftime('%Y-%m-%d %H:%M:%S')})")
 except Exception as e:
     status_placeholder.error(f"❌ 同步發生錯誤: {e}")
-
-# 3. 自動循環機制：等待 60 秒後自動重新整理畫面並再次執行即時同步
-time.sleep(60)
-st.rerun()
