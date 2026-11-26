@@ -1281,7 +1281,7 @@ def _start_background_trade_worker():
     def _worker_loop():
         _tw_log("背景下單執行緒已啟動")
         while True:
-            time.sleep(30)
+            time.sleep(5)  # <--- 已將輪詢間隔縮短至 5 秒，大幅減少下單延遲
             try:
                 with _acct_engine().connect() as conn:
                     users = conn.execute(text("SELECT username, settings_json FROM app_users")).fetchall()
@@ -1693,7 +1693,7 @@ else:
 # ============================================================
 # 未顯示的幣種也要執行：背景掃描訊號並寫入 strategy_signal_outbox
 # ============================================================
-@st.fragment(run_every=30)
+@st.fragment(run_every=10)  # <--- 已將未顯示幣種背景掃描的頻率縮短至 10 秒
 def _scan_coin_signals(sym):
     mod = COIN_MODULES.get(sym)
     if mod is None:
