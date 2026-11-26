@@ -714,8 +714,11 @@ def compute_signals(tf="5m", user_thresh=45, trade_style="平衡", days=30, save
     df_tf = build_candidate_signals(df_tf, tf, higher_tf_dfs=higher_tf_dfs)
     model, _, _ = train_or_get_ai_model(df_tf, f"{SYMBOL}_{tf}")
     df_tf = add_trade_signals(df_tf, model, user_thresh=user_thresh, trade_style=trade_style)
+    
+    # 【已同步修正】存入資料庫前先執行波段過濾
+    df_tf = filter_single_signal_per_wave(df_tf)
+    
     if save_outbox:
-        df_tf = filter_single_signal_per_wave(df_tf)
         save_all_signals_to_outbox(tf, df_tf)
     if apply_outbox_memory:
         df_tf = remember_and_apply_signals(df_tf, tf)
@@ -756,6 +759,7 @@ def _build_chart_bundle(df_all_tf, tf, user_thresh=45, trade_style="平衡", bt_
     if view_df.empty:
         return None
 
+    # 【已同步修正】先過濾波段單一訊號，再寫入資料庫，確保與圖標完美同步
     view_df = filter_single_signal_per_wave(view_df)
 
     if st.session_state.get("auth_user") == OUTBOX_WRITER_USER:
