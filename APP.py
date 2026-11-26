@@ -1460,13 +1460,40 @@ c_left, c_right = st.columns([1.2, 2.8])
 
 with c_left:
     with st.form("search_form"):
+        st.markdown("🔍 **查詢加密貨幣圖表**")
+        
+        # 1. 點擊快速選取按鈕（可以用選的）
+        col_btn1, col_btn2, col_btn3 = st.columns(3)
+        with col_btn1:
+            quick_btc = st.form_submit_button("⭐ BTC", width="stretch")
+        with col_btn2:
+            quick_eth = st.form_submit_button("⭐ ETH", width="stretch")
+        with col_btn3:
+            quick_clear = st.form_submit_button("清除", width="stretch")
+
+        # 2. 保留手動打字輸入框（可以打字）
         input_val = st.text_input(
-            "🔍 請輸入加密貨幣名稱（例如 BTC 或 ETH）：",
+            "輸入幣種名稱：",
             value=st.session_state.search_query,
-            placeholder="BTC / ETH",
+            placeholder="例如 BTC 或 ETH",
+            label_visibility="collapsed"
         )
         st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
         submitted = st.form_submit_button("送出查詢", width="stretch")
+
+        # 處理點擊快捷按鈕的邏輯
+        if quick_btc:
+            st.session_state.search_query = "BTC"
+            st.session_state.is_searched = True
+            st.rerun()
+        elif quick_eth:
+            st.session_state.search_query = "ETH"
+            st.session_state.is_searched = True
+            st.rerun()
+        elif quick_clear:
+            st.session_state.search_query = ""
+            st.session_state.is_searched = False
+            st.rerun()
 
 with c_right:
     @st.fragment(run_every=(30 if btc_chart.is_mobile_client() else 15))
