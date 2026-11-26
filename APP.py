@@ -1657,10 +1657,6 @@ def load_outbox_signals(symbol, tf, since_time):
 
 
 def load_historical_data(table_name, symbol_name, tf=None, days=95):
-    """
-    修正：移除 @st.cache_data 快取，確保每一次呼叫時都直接從 Supabase 資料庫抓取最新的 K 線資料，
-    避免畫面或圖表上的 K 線與訊號因快取停在舊的時間點。
-    """
     allowed_tables = {"btc_contract_klines", "eth_contract_klines"}
     if table_name not in allowed_tables:
         return pd.DataFrame()
@@ -2022,10 +2018,6 @@ def add_trade_signals(df, model, user_thresh=45, trade_style="平衡"):
 
 
 def filter_single_signal_per_wave(df):
-    """
-    確保同方向的連續波段中，只保留第一個出現的進場訊號 (LONG 或 SHORT)。
-    若想讓波段內允許更多訊號，可在此處調整或放寬過濾邏輯。
-    """
     if df is None or df.empty:
         return df
     df = df.copy()
