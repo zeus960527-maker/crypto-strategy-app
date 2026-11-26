@@ -21,7 +21,8 @@ def get_db_connection():
 def fetch_and_fill_timeframe(tf, is_backfill=False):
     """
     抓取並寫入資料。
-    若 is_backfill為 True，抓取 100 筆（歷史補齊）；否則抓取 10 筆（即時同步）。
+    若 is_backfill 為 True，會從資料庫最後一筆時間開始向後抓取補齊；
+    若為 False，則抓取最新資料進行即時同步。
     """
     exchange = ccxt.okx({'enableRateLimit': True})
     symbol = 'ETH/USDT:USDT'
@@ -36,10 +37,16 @@ def fetch_and_fill_timeframe(tf, is_backfill=False):
             result = cursor.fetchone()
             last_open_time = result[0] if result and result[0] is not None else None
 
-            limit_count = 100 if is_backfill else 10
-            params = {'symbol': symbol, 'timeframe': tf, 'limit': limit_count}
-            if last_open_time:
-                params['since'] = last_open_time
+            params = {'symbol': symbol, 'timeframe': tf}
+            
+            if is_backfill:
+                params['limit'] = 100
+                if last_open_time:
+                    # 從資料庫中最後一筆的時間戳記（毫秒）開始抓取，補齊中間落後的資料
+                    params['since'] = int(last_open_time.timestamp() * 1000)
+            else:
+                # 即時同步抓取最近 10 筆確保涵蓋最新未收盤或剛收盤的 K 棒
+                params['limit'] = 10
 
             try:
                 ohlcv = exchange.fetch_ohlcv(**params)
@@ -68,26 +75,33 @@ def fetch_and_fill_timeframe(tf, is_backfill=False):
                 """
                 cursor.executemany(sql, batch_data)
                 connection.commit()
-                mode_str = "歷史補齊" if is_backfill else "即時同步"
+                mode_str = "歷史斷層補齊" if is_backfill else "即時同步"
                 print(f" -> [ETH-{tf}] {mode_str}成功")
                 return True
 
     except Exception as e:
-        connection.rollback()
+        try:
+            connection.rollback()
+        except Exception:
+            pass
         print(f" -> [ETH-{tf}] 資料庫寫入錯誤: {e}")
     finally:
-        connection.close()
+        try:
+            connection.close()
+        except Exception:
+            pass
     return False
 
-# 1. 確保每次應用程式啟動或重新整理時，一定先執行一次歷史資料補齊
+# 1. 確保每次應用程式啟動或重新整理時，優先從上一次最後的資料處補齊到最新
 @st.cache_resource
 def run_initial_backfill():
     timeframes = ['5m', '15m', '1h', '4h']
-    print("=== 開始執行啟動前的歷史資料補齊 ===")
+    print("=== 開始執行從上次最後記錄到最新的補齊作業 ===")
     try:
         for tf in timeframes:
             fetch_and_fill_timeframe(tf, is_backfill=True)
-        print("=== 歷史資料補齊完成 ===")
+            time.sleep(0.2)
+        print("=== 歷史斷層補齊完成 ===")
     except Exception as e:
         print(f"初始化補齊資料錯誤: {e}")
     return True
@@ -102,14 +116,15 @@ log_placeholder = st.empty()
 timeframes = ['5m', '15m', '1h', '4h']
 
 # 執行即時同步
-status_placeholder.info(f"🔄 正在同步最新 K 線資料... ({datetime.now().strftime('%Y-%m-%d %H:%M:%S')})")
+status_placeholder.info(f"🔄 正在與交易所同步最新 K 線資料... ({datetime.now().strftime('%Y-%m-%d %H:%M:%S')})")
 try:
     for tf in timeframes:
         fetch_and_fill_timeframe(tf, is_backfill=False)
-    status_placeholder.success(f"✅ 同步完成！下次更新倒數中... ({datetime.now().strftime('%Y-%m-%d %H:%M:%S')})")
+        time.sleep(0.2)
+    status_placeholder.success(f"✅ 同步完成！保持每 60 秒與交易所即時同步中... ({datetime.now().strftime('%Y-%m-%d %H:%M:%S')})")
 except Exception as e:
     status_placeholder.error(f"❌ 同步發生錯誤: {e}")
 
-# 3. 自動循環機制：等待 60 秒後自動重新整理畫面並再次執行同步
-time.sleep(0.5)
+# 3. 自動循環機制：等待 60 秒後自動重新整理畫面並再次執行即時同步
+time.sleep(60)
 st.rerun()
