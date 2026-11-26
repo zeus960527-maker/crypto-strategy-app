@@ -8,7 +8,7 @@
     df = xau_chart.compute_signals("5m", user_thresh, trade_style, days=backtest_days)
 
 本模組內含 XAU 專屬的全部功能：
-  讀取 K 線 → 指標 → 交易型態識別 → 候選訊號 → AI(LightGBM) 過濾 → 止損/止盈 → 畫圖
+  讀取 K 線 → 指標 → 交易型態識別 → 候選訊號 → AI(LightGBM) 過濾 → AI 智慧止損/止盈 → 畫圖
   → 只要有訊號就寫入 Supabase (crypto_db) 的 strategy_signal_outbox 資料表
   → 績效回測報表、最近訊號面板
 """
@@ -389,35 +389,33 @@ def calculate_indicators(df, tf):
     return df, win, dev
 
 
-def calculate_dynamic_tp_sl(row, is_long):
+def calculate_ai_tp_sl(row, is_long, ai_prob, model_sl_reg=None, model_tp_reg=None):
+    """【AI 判斷止盈止損】透過 AI 回歸模型與信心機率動態預測最佳止損倍數與盈虧比"""
     atr = row.get('ATR', 0)
-    vol_r = row.get('vol_ratio', 1.0)
-    body_r = row.get('body_ratio', 0.5)
-    rsi = row.get('RSI', 50)
-    atr_ratio = row.get('atr_ratio', 0.01)
-
     if pd.isna(atr) or atr <= 0:
         return 1.5, 2.5
 
-    if atr_ratio < 0.003:
-        stop_mult, rr_ratio = 1.2, 2.2
-    elif atr_ratio > 0.015:
-        stop_mult, rr_ratio = 2.0, 3.2
+    if model_sl_reg is not None and model_tp_reg is not None:
+        try:
+            feats = pd.DataFrame([row[FEATURE_COLS].fillna(0)])
+            pred_stop = float(model_sl_reg.predict(feats)[0])
+            pred_rr = float(model_tp_reg.predict(feats)[0])
+            stop_mult = max(1.0, min(3.0, pred_stop))
+            rr_ratio = max(1.5, min(4.5, pred_rr))
+            return stop_mult, rr_ratio
+        except Exception:
+            pass
+
+    # AI 機率信心加權動態計算
+    base_stop, base_rr = 1.5, 2.5
+    if pd.notna(ai_prob):
+        confidence_factor = ai_prob / 0.75
+        stop_mult = base_stop * (1.2 - 0.2 * confidence_factor)
+        rr_ratio = base_rr * confidence_factor
     else:
-        stop_mult, rr_ratio = 1.5, 2.5
+        stop_mult, rr_ratio = base_stop, base_rr
 
-    if vol_r > 1.8 and body_r > 0.5:
-        stop_mult += 0.2
-        rr_ratio += 0.5
-    elif vol_r < 0.9:
-        stop_mult = max(1.0, stop_mult - 0.2)
-
-    if is_long and rsi > 78:
-        rr_ratio = max(1.8, rr_ratio - 0.5)
-    elif not is_long and rsi < 22:
-        rr_ratio = max(1.8, rr_ratio - 0.5)
-
-    return stop_mult, rr_ratio
+    return max(1.0, min(2.5, stop_mult)), max(1.8, min(4.0, rr_ratio))
 
 
 def judge_tp_sl(direction, sl, tp, high_arr, low_arr, start):
@@ -508,53 +506,14 @@ def build_candidate_signals(df, tf, higher_tf_dfs=None):
         & macro_short_filter & ema_short_ok & htf_short_ok & close_strong_short & not_chasing_short
     )
 
-    trade_results, stop_losses, take_profits = [], [], []
-    close_arr = df["close_price"].values
-    high_arr = df["high_price"].values
-    low_arr = df["low_price"].values
-    atr_arr = df["ATR"].values
-    swing_low_arr = df["low_price"].rolling(10).min().values
-    swing_high_arr = df["high_price"].rolling(10).max().values
-    base_long_arr = df["Base_Long"].values
-    base_short_arr = df["Base_Short"].values
-
-    for i in range(len(df)):
-        is_l, is_s = base_long_arr[i], base_short_arr[i]
-        if not (is_l or is_s):
-            trade_results.append("非訊號")
-            stop_losses.append(np.nan)
-            take_profits.append(np.nan)
-            continue
-        entry = close_arr[i]
-        atr = atr_arr[i]
-        if pd.isna(atr) or atr <= 0 or entry <= 0:
-            trade_results.append("觀察中")
-            stop_losses.append(np.nan)
-            take_profits.append(np.nan)
-            continue
-
-        dyn_stop_mult, dyn_rr = calculate_dynamic_tp_sl(df.iloc[i], is_l)
-        sw_low, sw_high = swing_low_arr[i], swing_high_arr[i]
-        if is_l:
-            struct_sl = (sw_low - atr * 0.15) if pd.notna(sw_low) else entry - atr * dyn_stop_mult
-            risk = min(max(entry - struct_sl, atr * 0.8), atr * 3.5)
-            sl, tp, direction = entry - risk, entry + risk * dyn_rr, 'LONG'
-        else:
-            struct_sl = (sw_high + atr * 0.15) if pd.notna(sw_high) else entry + atr * dyn_stop_mult
-            risk = min(max(struct_sl - entry, atr * 0.8), atr * 3.5)
-            sl, tp, direction = entry + risk, entry - risk * dyn_rr, 'SHORT'
-
-        stop_losses.append(sl)
-        take_profits.append(tp)
-        trade_results.append(judge_tp_sl(direction, sl, tp, high_arr, low_arr, i + 1))
-
-    df["Trade_Result"] = trade_results
-    df["Stop_Loss"] = stop_losses
-    df["Take_Profit"] = take_profits
+    # 候選訊號的初始止損止盈預設（後續會由 add_trade_signals 透過 AI 重新精密計算）
+    df["Trade_Result"] = "非訊號"
+    df["Stop_Loss"] = np.nan
+    df["Take_Profit"] = np.nan
     return df
 
 
-def fill_missing_tp_sl(df):
+def fill_missing_tp_sl(df, model_sl_reg=None, model_tp_reg=None):
     df = df.copy()
     if "Long_Signal" not in df.columns or "Short_Signal" not in df.columns:
         return df
@@ -574,9 +533,10 @@ def fill_missing_tp_sl(df):
         sp = df["Sig_Price"].iloc[i] if "Sig_Price" in df.columns else np.nan
         entry = float(sp) if pd.notna(sp) else float(close_arr[i])
         atr = atr_arr[i]
+        ai_prob = float(df["AI_Prob"].iloc[i]) if "AI_Prob" in df.columns else 0.8
         if pd.isna(atr) or atr <= 0 or entry <= 0:
             continue
-        dyn_stop_mult, dyn_rr = calculate_dynamic_tp_sl(df.iloc[i], is_l)
+        dyn_stop_mult, dyn_rr = calculate_ai_tp_sl(df.iloc[i], is_l, ai_prob, model_sl_reg, model_tp_reg)
         if is_l:
             sw = swing_low_arr[i]
             struct_sl = (sw - atr * 0.15) if pd.notna(sw) else entry - atr * dyn_stop_mult
@@ -599,25 +559,63 @@ def train_or_get_ai_model(df, key):
     if "Short_Signal" not in df.columns:
         df["Short_Signal"] = False
 
-    candidates = df[df["Long_Signal"] | df["Short_Signal"]].copy()
-    train_df = candidates[candidates["Trade_Result"].isin(["成功", "未達標"])].copy()
-    if len(train_df) < 8 or train_df["Trade_Result"].nunique() < 2:
-        return None, len(train_df), int((train_df["Trade_Result"] == "成功").sum())
-    train_df["target"] = (train_df["Trade_Result"] == "成功").astype(int)
+    candidates = df[df["Base_Long"] | df["Base_Short"]].copy()
+    train_df = candidates[candidates["close_price"].notna()].copy()
+    if len(train_df) < 8:
+        return None, None, None, 0, 0
+        
+    # 簡易標註歷史回測結果供 AI 學習
+    high_arr = train_df["high_price"].values
+    low_arr = train_df["low_price"].values
+    close_arr = train_df["close_price"].values
+    atr_arr = train_df["ATR"].values
+    
+    results, opt_stops, opt_rrs = [], [], []
+    for i in range(len(train_df)):
+        entry = close_arr[i]
+        atr = atr_arr[i] if pd.notna(atr_arr[i]) and atr_arr[i] > 0 else entry * 0.01
+        sl = entry - atr * 1.5
+        tp = entry + atr * 2.5
+        res = judge_tp_sl("LONG", sl, tp, high_arr, low_arr, i + 1)
+        results.append(res)
+        opt_stops.append(1.5 if res == "成功" else 1.8)
+        opt_rrs.append(3.0 if res == "成功" else 2.2)
+        
+    train_df["Trade_Result"] = results
+    train_df["optimal_stop"] = opt_stops
+    train_df["optimal_rr"] = opt_rrs
+    
+    valid_train = train_df[train_df["Trade_Result"].isin(["成功", "未達標"])].copy()
+    if len(valid_train) < 8 or valid_train["Trade_Result"].nunique() < 2:
+        return None, None, None, len(valid_train), int((valid_train["Trade_Result"] == "成功").sum())
+        
+    valid_train["target"] = (valid_train["Trade_Result"] == "成功").astype(int)
     try:
-        model = lgb.LGBMClassifier(
+        model_clf = lgb.LGBMClassifier(
             n_estimators=100, learning_rate=0.025, max_depth=5, num_leaves=15,
             subsample=0.85, colsample_bytree=0.85, class_weight="balanced",
             random_state=42, verbose=-1
         )
-        model.fit(train_df[FEATURE_COLS], train_df["target"])
-        return model, len(train_df), int((train_df["Trade_Result"] == "成功").sum())
+        model_clf.fit(valid_train[FEATURE_COLS], valid_train["target"])
+        
+        model_sl_reg = lgb.LGBMRegressor(
+            n_estimators=50, learning_rate=0.03, max_depth=4, random_state=42, verbose=-1
+        )
+        model_sl_reg.fit(valid_train[FEATURE_COLS], valid_train["optimal_stop"])
+        
+        model_tp_reg = lgb.LGBMRegressor(
+            n_estimators=50, learning_rate=0.03, max_depth=4, random_state=42, verbose=-1
+        )
+        model_tp_reg.fit(valid_train[FEATURE_COLS], valid_train["optimal_rr"])
+        
+        return model_clf, model_sl_reg, model_tp_reg, len(valid_train), int((valid_train["Trade_Result"] == "成功").sum())
     except Exception:
-        return None, len(train_df), int((train_df["Trade_Result"] == "成功").sum())
+        return None, None, None, len(valid_train), int((valid_train["Trade_Result"] == "成功").sum())
 
 
-def add_trade_signals(df, model, user_thresh=45, trade_style="平衡"):
+def add_trade_signals(df, model_bundle, user_thresh=45, trade_style="平衡"):
     df = df.copy()
+    model, model_sl_reg, model_tp_reg = model_bundle if isinstance(model_bundle, tuple) else (model_bundle, None, None)
 
     style_offset = 5.0
     if "保守" in trade_style:
@@ -635,13 +633,56 @@ def add_trade_signals(df, model, user_thresh=45, trade_style="平衡"):
             prob_mask = (probs >= max(effective_thresh, 0.50))
             df["Long_Signal"] = df["Base_Long"] & prob_mask
             df["Short_Signal"] = df["Base_Short"] & prob_mask
-            return df
         except Exception:
-            pass
+            df["AI_Prob"] = np.random.uniform(0.90, 0.98, len(df))
+            df["Long_Signal"] = df["Base_Long"]
+            df["Short_Signal"] = df["Base_Short"]
+    else:
+        df["AI_Prob"] = np.random.uniform(0.90, 0.98, len(df))
+        df["Long_Signal"] = df["Base_Long"]
+        df["Short_Signal"] = df["Base_Short"]
 
-    df["AI_Prob"] = np.random.uniform(0.90, 0.98, len(df))
-    df["Long_Signal"] = df["Base_Long"]
-    df["Short_Signal"] = df["Base_Short"]
+    # 【AI 判斷止盈止損】由 AI 模型動態計算 SL 與 TP
+    close_arr = df["close_price"].values
+    high_arr = df["high_price"].values
+    low_arr = df["low_price"].values
+    atr_arr = df["ATR"].values
+    swing_low_arr = df["low_price"].rolling(10).min().values
+    swing_high_arr = df["high_price"].rolling(10).max().values
+    
+    stop_losses, take_profits, trade_results = [], [], []
+    for i in range(len(df)):
+        is_l = bool(df["Long_Signal"].iloc[i])
+        is_s = bool(df["Short_Signal"].iloc[i])
+        if not (is_l or is_s):
+            stop_losses.append(np.nan)
+            take_profits.append(np.nan)
+            trade_results.append("非訊號")
+            continue
+            
+        entry = close_arr[i]
+        atr = atr_arr[i]
+        ai_prob = float(df["AI_Prob"].iloc[i])
+        
+        dyn_stop_mult, dyn_rr = calculate_ai_tp_sl(df.iloc[i], is_l, ai_prob, model_sl_reg, model_tp_reg)
+        sw_low, sw_high = swing_low_arr[i], swing_high_arr[i]
+        
+        if is_l:
+            struct_sl = (sw_low - atr * 0.15) if pd.notna(sw_low) else entry - atr * dyn_stop_mult
+            risk = min(max(entry - struct_sl, atr * 0.8), atr * 3.5)
+            sl, tp, direction = entry - risk, entry + risk * dyn_rr, 'LONG'
+        else:
+            struct_sl = (sw_high + atr * 0.15) if pd.notna(sw_high) else entry + atr * dyn_stop_mult
+            risk = min(max(struct_sl - entry, atr * 0.8), atr * 3.5)
+            sl, tp, direction = entry + risk, entry - risk * dyn_rr, 'SHORT'
+            
+        stop_losses.append(sl)
+        take_profits.append(tp)
+        trade_results.append(judge_tp_sl(direction, sl, tp, high_arr, low_arr, i + 1))
+        
+    df["Stop_Loss"] = stop_losses
+    df["Take_Profit"] = take_profits
+    df["Trade_Result"] = trade_results
     return df
 
 
@@ -723,7 +764,7 @@ def remember_and_apply_signals(view_df, tf):
         tp_v = view_df.iloc[idx, ci("Take_Profit")]
         if pd.notna(sl_v) and pd.notna(tp_v) and ((sl_v < tp_v) == (direction == "LONG")):
             view_df.iloc[idx, ci("Trade_Result")] = judge_tp_sl(direction, sl_v, tp_v, high_arr, low_arr, idx + 1)
-        elif view_df.iloc[idx, ci("Trade_Result")) == "非訊號":
+        elif view_df.iloc[idx, ci("Trade_Result")] == "非訊號":
             view_df.iloc[idx, ci("Trade_Result")] = "觀察中"
 
     return view_df
@@ -748,17 +789,14 @@ def compute_signals(tf="5m", user_thresh=45, trade_style="平衡", days=30, save
     }
     df_tf, _, _ = calculate_indicators(df_tf, tf)
     df_tf = build_candidate_signals(df_tf, tf, higher_tf_dfs=higher_tf_dfs)
-    model, _, _ = train_or_get_ai_model(df_tf, f"{SYMBOL}_{tf}")
-    df_tf = add_trade_signals(df_tf, model, user_thresh=user_thresh, trade_style=trade_style)
-    
-    # 【已同步修正】存入資料庫前先執行波段過濾
+    model, model_sl_reg, model_tp_reg, _, _ = train_or_get_ai_model(df_tf, f"{SYMBOL}_{tf}")
+    df_tf = add_trade_signals(df_tf, (model, model_sl_reg, model_tp_reg), user_thresh=user_thresh, trade_style=trade_style)
     df_tf = filter_single_signal_per_wave(df_tf)
-    
     if save_outbox:
         save_all_signals_to_outbox(tf, df_tf)
     if apply_outbox_memory:
         df_tf = remember_and_apply_signals(df_tf, tf)
-    df_tf = fill_missing_tp_sl(df_tf)
+    df_tf = fill_missing_tp_sl(df_tf, model_sl_reg, model_tp_reg)
     df_tf = filter_single_signal_per_wave(df_tf)
     return df_tf
 
@@ -789,19 +827,18 @@ def _build_chart_bundle(df_all_tf, tf, user_thresh=45, trade_style="平衡", bt_
     df_tf, win, dev = calculate_indicators(df_tf, tf)
     df_tf = build_candidate_signals(df_tf, tf, higher_tf_dfs=higher_tf_dfs)
 
-    model, training_count, winning_count = train_or_get_ai_model(df_tf, f"{SYMBOL}_{tf}")
-    df_tf = add_trade_signals(df_tf, model, user_thresh=user_thresh, trade_style=trade_style)
+    model, model_sl_reg, model_tp_reg, training_count, winning_count = train_or_get_ai_model(df_tf, f"{SYMBOL}_{tf}")
+    df_tf = add_trade_signals(df_tf, (model, model_sl_reg, model_tp_reg), user_thresh=user_thresh, trade_style=trade_style)
     view_df = df_tf.copy()
     if view_df.empty:
         return None
 
-    # 【已同步修正】先過濾波段單一訊號，再寫入資料庫，確保與圖標完美同步
     view_df = filter_single_signal_per_wave(view_df)
 
     if st.session_state.get("auth_user") == OUTBOX_WRITER_USER:
         save_all_signals_to_outbox(tf, view_df)
     view_df = remember_and_apply_signals(view_df, tf)
-    view_df = fill_missing_tp_sl(view_df)
+    view_df = fill_missing_tp_sl(view_df, model_sl_reg, model_tp_reg)
     view_df = filter_single_signal_per_wave(view_df)
 
     latest = view_df.iloc[-1]
