@@ -1460,15 +1460,32 @@ c_left, c_right = st.columns([1.2, 2.8])
 
 with c_left:
     with st.form("search_form"):
-        # 提供熱門選項讓使用者直接點擊下拉選擇，或者也可以自己打字（若用 st.selectbox）
-        # 註：st.selectbox 點擊即有下拉選單
-        selected_coin = st.selectbox(
-            "🔍 選擇或輸入加密貨幣：",
-            ["","BTC", "ETH"],
-            index=0 if st.session_state.search_query != "ETH" else 1,
+        input_val = st.text_input(
+            "🔍 請輸入加密貨幣名稱（例如 BTC 或 ETH）：",
+            value=st.session_state.search_query,
+            placeholder="請輸入 BTC 或 ETH",
         )
         st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
         submitted = st.form_submit_button("送出查詢", width="stretch")
+
+    # 快捷點擊選單按鈕（不需送出表單，點擊即可一鍵帶入查詢）
+    q_col1, q_col2, q_col3 = st.columns(3)
+    with q_col1:
+        if st.button("🔥 查詢 BTC", use_container_width=True):
+            st.session_state.search_query = "BTC"
+            st.session_state.is_searched = True
+            st.rerun()
+    with q_col2:
+        if st.button("⚡ 查詢 ETH", use_container_width=True):
+            st.session_state.search_query = "ETH"
+            st.session_state.is_searched = True
+            st.rerun()
+    with q_col3:
+        if st.button("🔄 清空重設", use_container_width=True):
+            st.session_state.search_query = ""
+            st.session_state.is_searched = False
+            st.rerun()
+
 with c_right:
     @st.fragment(run_every=(30 if btc_chart.is_mobile_client() else 15))
     def render_live_account_header():
