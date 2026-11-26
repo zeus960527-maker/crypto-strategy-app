@@ -1464,7 +1464,7 @@ with c_left:
         # 註：st.selectbox 點擊即有下拉選單
         selected_coin = st.selectbox(
             "🔍 選擇或輸入加密貨幣：",
-            ["BTC", "ETH"],
+            ["","BTC", "ETH"],
             index=0 if st.session_state.search_query != "ETH" else 1,
         )
         st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
