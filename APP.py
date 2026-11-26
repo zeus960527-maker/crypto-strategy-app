@@ -104,13 +104,13 @@ h1 {{
 h2, h3, h4 {{ color: #f0f3f6 !important; }}
 p, li, label {{ color: #e5e7eb; }}
 div[data-testid="stRadio"] > div {{ flex-direction: row; gap: 12px; flex-wrap: wrap; }}
-.stTextInput input {{
+.stTextInput input, .stSelectbox input {{
     background-color: #1e2329 !important;
     color: #eaecef !important;
     border: 1px solid #2b313a !important;
     border-radius: 8px !important;
 }}
-.stTextInput input:focus {{
+.stTextInput input:focus, .stSelectbox input:focus {{
     border: 1px solid #f0b90b !important;
     box-shadow: 0 0 8px rgba(240,185,11,.3) !important;
 }}
@@ -1043,7 +1043,6 @@ def _render_order_log(user):
 
 # ------------------------------------------------------------
 # 獨立背景自動下單執行緒（24小時不間斷背景監控）
-# 訊號由各幣種模組 (btc_chart / eth_chart) 計算，並由模組寫入 strategy_signal_outbox
 # ------------------------------------------------------------
 def _tw_log(msg):
     try:
@@ -1054,8 +1053,8 @@ def _tw_log(msg):
 
 @st.cache_resource
 def _start_background_trade_worker():
-    SCAN_BARS = 3           # 每輪檢查最近幾根 K 棒，避免剛好錯過最新一根
-    MAX_BAR_AGE_MIN = 15    # 超過這個分鐘數的舊訊號不追單
+    SCAN_BARS = 3
+    MAX_BAR_AGE_MIN = 15
     TF = "5m"
 
     def _worker_loop():
@@ -1070,7 +1069,7 @@ def _start_background_trade_worker():
 
                 active = 0
                 now_tw = datetime.now(TAIWAN_TZ).replace(tzinfo=None)
-                sig_cache = {}  # 同一輪中，相同 (幣種, 門檻, 風格) 只計算一次
+                sig_cache = {}
 
                 for row in users:
                     user = row[0]
@@ -1083,10 +1082,8 @@ def _start_background_trade_worker():
                     try:
                         creds = _get_exchange_creds(user, exchange)
                         if not creds.get("key") or not creds.get("secret"):
-                            _tw_log(f"{user}: {exchange} API 金鑰為空或解密失敗（請確認 APP_SECRET_KEY 沒有被更動）")
                             continue
-                    except Exception as e:
-                        _tw_log(f"{user}: 讀取 {exchange} 金鑰失敗：{e}")
+                    except Exception:
                         continue
 
                     enabled_at = None
@@ -1105,7 +1102,7 @@ def _start_background_trade_worker():
 
                     for sym, mod in COIN_MODULES.items():
                         try:
-                            write_outbox = (user == btc_chart.OUTBOX_WRITER_USER)  # 只有指定帳號才寫入訊號資料表
+                            write_outbox = (user == btc_chart.OUTBOX_WRITER_USER)
                             ck = (sym, user_thresh, trade_style, bt_days, write_outbox)
                             if ck not in sig_cache:
                                 sig_cache[ck] = mod.compute_signals(
@@ -1113,7 +1110,6 @@ def _start_background_trade_worker():
                                 )
                             df_tf = sig_cache[ck]
                             if df_tf is None or df_tf.empty:
-                                _tw_log(f"{user} {sym}: 讀不到 {TF} K 線資料")
                                 continue
 
                             for _, r in df_tf.tail(SCAN_BARS).iloc[::-1].iterrows():
@@ -1128,12 +1124,11 @@ def _start_background_trade_worker():
                                 direction = "LONG" if long_sig else "SHORT"
                                 sl, tp = r.get("Stop_Loss"), r.get("Take_Profit")
                                 if pd.isna(sl) or pd.isna(tp):
-                                    _tw_log(f"{user} {sym} {bar_t:%m/%d %H:%M} {direction}: 缺少止損/止盈，略過")
                                     continue
 
                                 order_id = _claim_order(user, exchange, sym, TF, bar_t, direction)
                                 if not order_id:
-                                    continue  # 這根訊號已處理過
+                                    continue
                                 try:
                                     seed = f"{user}|{exchange}|{sym}|{TF}|{bar_t.isoformat()}"
                                     detail = place_exchange_order(
@@ -1141,21 +1136,15 @@ def _start_background_trade_worker():
                                         float(r["close_price"]), float(sl), float(tp), seed,
                                     )
                                     _finish_order(order_id, "success", detail)
-                                    _tw_log(f"{user} {sym} {direction} 下單成功：{detail}")
                                 except OrderSkip as e:
                                     _finish_order(order_id, "skipped", str(e))
-                                    _tw_log(f"{user} {sym} {direction} 略過：{e}")
                                 except Exception as e:
                                     _finish_order(order_id, "failed", str(e))
-                                    _tw_log(f"{user} {sym} {direction} 下單失敗：{e}")
-                                break  # 每輪每個幣種最多下一張
-                        except Exception as e:
-                            _tw_log(f"{user} {sym}: 處理失敗：{e}")
-
-                if tick % 20 == 1:
-                    _tw_log(f"運作中，已啟用自動下單的使用者數：{active}")
-            except Exception as e:
-                _tw_log(f"主迴圈錯誤：{e}")
+                                break
+                        except Exception:
+                            pass
+            except Exception:
+                pass
 
     t = threading.Thread(target=_worker_loop, daemon=True, name="background-trade-worker")
     t.start()
@@ -1166,7 +1155,6 @@ _start_background_trade_worker()
 
 
 def render_exchange_trade_panel(symbol, pair, tf, latest, latest_close):
-    """傳給幣種模組 render(tf, trade_panel=...) 的自動下單面板。"""
     user = st.session_state.get("auth_user")
     if not user:
         return
@@ -1460,32 +1448,18 @@ c_left, c_right = st.columns([1.2, 2.8])
 
 with c_left:
     with st.form("search_form"):
-        # 既可以手動打字，也能透過下方快速按鈕點擊帶入
-        input_val = st.text_input(
-            "🔍 請輸入或選擇加密貨幣名稱：",
-            value=st.session_state.search_query,
-            placeholder="例如 BTC 或 ETH",
+        # 支援下拉選單與自訂打字的欄位 (預設為空/None)
+        current_val = st.session_state.search_query if st.session_state.search_query in ["BTC", "ETH"] else None
+        input_val = st.selectbox(
+            "🔍 請選擇或輸入加密貨幣名稱：",
+            options=["BTC", "ETH"],
+            index=None,
+            placeholder="請選擇或輸入 BTC、ETH...",
         )
-        st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
-        submitted = st.form_submit_button("送出查詢", width="stretch")
         
-    # 在表單下方提供熱門幣種快速點擊按鈕（點擊即可選，不用手動打字）
-    qc1, qc2, qc3 = st.columns(3)
-    with qc1:
-        if st.button("🔥 帶入 BTC", use_container_width=True):
-            st.session_state.search_query = "BTC"
-            st.session_state.is_searched = True
-            st.rerun()
-    with qc2:
-        if st.button("⚡ 帶入 ETH", use_container_width=True):
-            st.session_state.search_query = "ETH"
-            st.session_state.is_searched = True
-            st.rerun()
-    with qc3:
-        if st.button("🔄 清空重設", use_container_width=True):
-            st.session_state.search_query = ""
-            st.session_state.is_searched = False
-            st.rerun()
+        # 若使用者直接用打字或選單填寫，同步對應
+        st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+        submitted = st.form_submit_button("送出查詢", width="stretch")
 
 with c_right:
     @st.fragment(run_every=(30 if btc_chart.is_mobile_client() else 15))
@@ -1521,7 +1495,7 @@ with c_right:
     render_live_account_header()
 
 if submitted:
-    q = input_val.strip().upper()
+    q = (input_val or "").strip().upper()
     st.session_state.search_query = q
     st.session_state.is_searched = ("BTC" in q or "ETH" in q)
 
