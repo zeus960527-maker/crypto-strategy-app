@@ -807,11 +807,6 @@ def _http_json(req):
 
 
 def _bitunix_request(method, path, creds=None, params=None, body=None):
-    """Bitunix Futures API：簽章為雙重 SHA256
-    digest = sha256(nonce + timestamp + apiKey + queryParams + body)
-    sign   = sha256(digest + secretKey)
-    queryParams 依 key 排序後以 key+value 直接串接。creds=None 時為公開端點（不簽章）。
-    """
     params = {k: str(v) for k, v in (params or {}).items()}
     body_str = json.dumps(body, separators=(",", ":")) if body is not None else ""
     headers = {"Content-Type": "application/json", "User-Agent": "Mozilla/5.0", "language": "en-US"}
@@ -840,9 +835,6 @@ def _bitunix_request(method, path, creds=None, params=None, body=None):
 
 
 def _bingx_request(method, path, creds=None, params=None, body=None):
-    """BingX Swap API：所有參數（含 POST 的下單參數）都放在 query string，簽章對原始字串做 HMAC-SHA256。
-    body 參數會被合併進 query（BingX 不吃 JSON body）。creds=None 時為公開端點（不簽章）。
-    """
     p = {k: str(v) for k, v in (params or {}).items()}
     if body:
         p.update({k: str(v) for k, v in body.items()})
@@ -878,7 +870,6 @@ def _bingx_symbol(pair):
 
 
 def get_exchange_balance(exchange, creds, demo):
-    """回傳可用 USDT。查不到時一律丟錯，不再用假餘額，避免超額下單。"""
     if exchange == "OKX":
         data = _okx_request("GET", "/api/v5/account/balance", creds, params={"ccy": "USDT"}, demo=demo)
         details = (data[0].get("details") or []) if data else []
@@ -910,7 +901,6 @@ def get_exchange_balance(exchange, creds, demo):
 
 
 def check_exchange_position(exchange, creds, demo, inst_id):
-    """該合約是否已有持倉（三間交易所都檢查）。"""
     if exchange == "OKX":
         data = _okx_request("GET", "/api/v5/account/positions", creds, params={"instType": "SWAP", "instId": inst_id}, demo=demo)
         for p in data:
@@ -949,7 +939,6 @@ def check_exchange_position(exchange, creds, demo, inst_id):
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_exchange_instrument(exchange, inst_id):
-    """統一回傳 ctVal / ctMult / minSz / lotSz / tickSz / lever，方便共用下單數量計算。"""
     if exchange == "OKX":
         data = _okx_request("GET", "/api/v5/public/instruments", params={"instType": "SWAP", "instId": inst_id})
         if not data:
@@ -979,7 +968,7 @@ def get_exchange_instrument(exchange, inst_id):
             "minSz": str(row.get("tradeMinQuantity") or "0.001"),
             "lotSz": format(Decimal(1).scaleb(-int(row.get("quantityPrecision") or 3)), "f"),
             "tickSz": format(Decimal(1).scaleb(-int(row.get("pricePrecision") or 1)), "f"),
-            "lever": 10,  # BingX 合約列表不含最大槓桿，沿用原本「最大槓桿」上限 10x
+            "lever": 10,
         }
     return {"ctVal": "1", "ctMult": "1", "minSz": "1", "lotSz": "1", "tickSz": "0.1", "lever": 10}
 
@@ -1000,10 +989,6 @@ def _fmt_px(price, tick):
 
 
 def _calc_order(inst, s, avail, price, slots):
-    """三間交易所共用的下單數量計算。
-    slots = 這一批訊號中「包含自己在內」還要下的單數。
-    餘額夠時每張單用設定金額；不夠時把可用餘額平均分給剩下的單，確保每個訊號都能下到。
-    """
     max_lev = max(1, int(float(inst.get("lever") or 1)))
     lever = max_lev if s.get("use_max_lever") else max(1, min(int(s.get("manual_lever", 10)), max_lev))
     ct = Decimal(str(inst.get("ctVal") or "1")) * Decimal(str(inst.get("ctMult") or "1"))
@@ -1072,7 +1057,7 @@ def place_exchange_order(exchange, creds, s, pair, direction, price, sl, tp, clo
             raise ExchangeError("可用 USDT 餘額為 0。")
         lever, qty, _ = _calc_order(inst, s, avail, price, slots)
 
-        try:  # 保證金模式：已是該模式或有持倉時交易所會回錯，不影響下單
+        try:
             _bitunix_request("POST", "/api/v1/futures/account/change_margin_mode", creds, body={
                 "symbol": symbol, "marginCoin": "USDT",
                 "marginMode": "ISOLATION" if s.get("td_mode", "逐倉") == "逐倉" else "CROSS",
@@ -1108,7 +1093,7 @@ def place_exchange_order(exchange, creds, s, pair, direction, price, sl, tp, clo
             raise ExchangeError("可用 USDT 餘額為 0。")
         lever, qty, _ = _calc_order(inst, s, avail, price, slots)
 
-        try:  # 保證金模式：已是該模式時交易所會回錯，不影響下單
+        try:
             _bingx_request("POST", "/openApi/swap/v2/trade/marginType", creds, body={
                 "symbol": symbol,
                 "marginType": "ISOLATED" if s.get("td_mode", "逐倉") == "逐倉" else "CROSSED",
@@ -1186,9 +1171,6 @@ def _render_order_log(user):
         st.dataframe(df, width="stretch", hide_index=True)
 
 
-# ------------------------------------------------------------
-# 獨立背景自動下單執行緒（24小時不間斷背景監控）
-# ------------------------------------------------------------
 def _tw_log(msg):
     try:
         print(f"[trade-worker] {datetime.now(TAIWAN_TZ).strftime('%m-%d %H:%M:%S')} {msg}", flush=True)
@@ -1203,7 +1185,6 @@ def _start_background_trade_worker():
     TF = "5m"
 
     def _collect_signals(user, s, enabled_at, now_tw, sig_cache):
-        """掃描所有幣種，每個幣種只取「最新一根」有效訊號，回傳這一輪出現的訊號清單。"""
         user_thresh = s.get("ai_confidence_thresh", 45)
         trade_style = s.get("trade_style", "平衡")
         try:
@@ -1241,15 +1222,12 @@ def _start_background_trade_worker():
                         "direction": "LONG" if long_sig else "SHORT",
                         "price": float(r["close_price"]), "sl": float(sl), "tp": float(tp),
                     })
-                    break  # 只取最新一根，不回頭撿舊訊號
+                    break
             except Exception as e:
                 _tw_log(f"{user} {sym}: 掃描訊號失敗：{e}")
         return found
 
     def _execute_signals(user, exchange, creds, s, signals):
-        """同一輪出現的所有訊號都下單；不是同時出現的，會在各自出現的那一輪單獨下單。
-        每張單互相獨立：某一幣種失敗/略過不影響其他幣種。
-        """
         claimed = []
         for sig in signals:
             try:
@@ -1257,12 +1235,12 @@ def _start_background_trade_worker():
             except Exception as e:
                 _tw_log(f"{user} {sig['sym']}: 登記訂單失敗：{e}")
                 continue
-            if oid:  # 沒拿到代表這個訊號先前已處理過
+            if oid:
                 claimed.append((oid, sig))
 
         total = len(claimed)
         for idx, (order_id, sig) in enumerate(claimed):
-            slots_left = total - idx  # 含自己，餘額不足時用來平均分配
+            slots_left = total - idx
             try:
                 seed = f"{user}|{exchange}|{sig['sym']}|{TF}|{sig['bar_t'].isoformat()}"
                 detail = place_exchange_order(
@@ -1281,7 +1259,7 @@ def _start_background_trade_worker():
     def _worker_loop():
         _tw_log("背景下單執行緒已啟動")
         while True:
-            time.sleep(5)  # <--- 已將輪詢間隔縮短至 5 秒，大幅減少下單延遲
+            time.sleep(5)
             try:
                 with _acct_engine().connect() as conn:
                     users = conn.execute(text("SELECT username, settings_json FROM app_users")).fetchall()
@@ -1621,7 +1599,6 @@ c_left, c_right = st.columns([1.2, 2.8])
 
 with c_left:
     with st.form("search_form"):
-        # 支援下拉選單與自訂打字的欄位 (預設為空/None)
         input_val = st.selectbox(
             "🔍 請選擇或輸入商品名稱：",
             options=COIN_OPTIONS,
@@ -1629,7 +1606,6 @@ with c_left:
             placeholder="請選擇或輸入幣種",
         )
         
-        # 若使用者直接用打字或選單填寫，同步對應
         st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
         submitted = st.form_submit_button("送出查詢", width="stretch")
 
@@ -1693,7 +1669,7 @@ else:
 # ============================================================
 # 未顯示的幣種也要執行：背景掃描訊號並寫入 strategy_signal_outbox
 # ============================================================
-@st.fragment(run_every=10)  # <--- 已將未顯示幣種背景掃描的頻率縮短至 10 秒
+@st.fragment(run_every=10)
 def _scan_coin_signals(sym):
     mod = COIN_MODULES.get(sym)
     if mod is None:
