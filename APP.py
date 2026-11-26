@@ -1473,7 +1473,7 @@ with c_left:
             "🔍 請選擇或輸入商品名稱：",
             options=COIN_OPTIONS,
             index=None,
-            placeholder="請選擇或輸入 " + "、".join(COIN_OPTIONS) + "...",
+            placeholder="請選擇或輸入幣種",
         )
         
         # 若使用者直接用打字或選單填寫，同步對應
