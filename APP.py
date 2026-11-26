@@ -1656,8 +1656,11 @@ def load_outbox_signals(symbol, tf, since_time):
         return {}
 
 
-@st.cache_data(ttl=15, show_spinner=False)
 def load_historical_data(table_name, symbol_name, tf=None, days=95):
+    """
+    修正：移除 @st.cache_data 快取，確保每一次呼叫時都直接從 Supabase 資料庫抓取最新的 K 線資料，
+    避免畫面或圖表上的 K 線與訊號因快取停在舊的時間點。
+    """
     allowed_tables = {"btc_contract_klines", "eth_contract_klines"}
     if table_name not in allowed_tables:
         return pd.DataFrame()
@@ -2020,7 +2023,8 @@ def add_trade_signals(df, model, user_thresh=45, trade_style="平衡"):
 
 def filter_single_signal_per_wave(df):
     """
-    確保同方向的連續波段中，只保留第一個出現的進場訊號 (LONG 或 SHORT)
+    確保同方向的連續波段中，只保留第一個出現的進場訊號 (LONG 或 SHORT)。
+    若想讓波段內允許更多訊號，可在此處調整或放寬過濾邏輯。
     """
     if df is None or df.empty:
         return df
@@ -2077,10 +2081,6 @@ def _fired_signals():
 
 
 def remember_and_apply_signals(view_df, symbol, tf):
-    """
-    已修正：直接從 strategy_signal_outbox 撈取完整訊號記錄，
-    並強制覆蓋與對齊圖表 DataFrame，確保網頁標記與資料庫 100% 同步。
-    """
     view_df = view_df.copy()
     if "Long_Signal" not in view_df.columns:
         view_df["Long_Signal"] = False
@@ -2093,7 +2093,6 @@ def remember_and_apply_signals(view_df, symbol, tf):
     if "Take_Profit" not in view_df.columns:
         view_df["Take_Profit"] = np.nan
 
-    # 從資料庫中載入該幣種與週期自系統啟動以來的所有歷史訊號
     since_time = view_df["open_time"].iloc[0] if not view_df.empty else datetime.now() - timedelta(days=30)
     db_sigs = load_outbox_signals(symbol, tf, since_time)
     
@@ -2167,10 +2166,7 @@ def _build_chart_bundle(df_all_tf, symbol, pair, tf, user_thresh=45, trade_style
     if view_df.empty:
         return None
 
-    # 先將當前算出的訊號寫入資料庫
     save_all_signals_to_outbox(symbol, tf, view_df)
-    
-    # 從資料庫撈出最新完整訊號並強制覆蓋圖表 DataFrame，確保網頁與資料庫 100% 一致
     view_df = remember_and_apply_signals(view_df, symbol, tf)
     view_df = fill_missing_tp_sl(view_df)
     view_df = filter_single_signal_per_wave(view_df)
