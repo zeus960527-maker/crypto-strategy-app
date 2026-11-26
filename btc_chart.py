@@ -1,17 +1,4 @@
-"""BTC K 線圖獨立模組（與 eth_chart.py 結構相同，只有 SYMBOL / PAIR / TABLE 不同）。
-
-主程式只需要：
-    import btc_chart
-    btc_chart.render(selected_tf, trade_panel=render_exchange_trade_panel)
-
-背景自動下單執行緒取得 5m 訊號：
-    df = btc_chart.compute_signals("5m", user_thresh, trade_style, days=backtest_days)
-
-本模組內含 BTC 專屬的全部功能：
-  讀取 K 線 → 指標 → 候選訊號 → AI(LightGBM) 過濾 → 止損/止盈 → 畫圖
-  → 只要有訊號就寫入 Supabase (crypto_db) 的 strategy_signal_outbox 資料表
-  → 績效回測報表、最近訊號面板
-"""
+"""BTC K 線圖獨立模組。含交易型態識別（W底、頭肩頂、M頂、頭肩底、收斂三角、上漲旗型、下跌旗型）。"""
 import os
 import time
 from datetime import datetime, timedelta
@@ -26,21 +13,19 @@ import lightgbm as lgb
 from sqlalchemy import create_engine, text
 
 # ============================================================
-# 幣種設定（ETH 版只改這三行）
+# 幣種設定（BTC 版）
 # ============================================================
 SYMBOL = "BTC"
 PAIR = "BTC-USDT-SWAP"
 TABLE = "btc_contract_klines"
 
-# K 棒高度調整：數值越大 → Y 軸顯示範圍越寬 → K 棒越矮（原本 0.55；想更矮就調大，例如 1.2）
 CANDLE_Y_SCALE = 1.0
 
 TAIWAN_TZ = ZoneInfo("Asia/Taipei")
 TF_STEP = {"5m": "5min", "15m": "15min", "1h": "1h", "4h": "4h"}
 OUTBOX_TABLE = "strategy_signal_outbox"
-# 只有這個帳號會把訊號寫入資料表；其他使用者只讀取、不寫入
 OUTBOX_WRITER_USER = "zeus"
-FEATURE_COLS = ["RSI", "vol_ratio", "body_ratio", "atr_ratio", "ema_diff", "macro_trend_bias", "macro_sentiment"]
+FEATURE_COLS = ["RSI", "vol_ratio", "body_ratio", "atr_ratio", "ema_diff", "macro_trend_bias", "macro_sentiment", "pattern_bullish_score", "pattern_bearish_score"]
 
 
 def _log(msg):
@@ -50,9 +35,6 @@ def _log(msg):
         pass
 
 
-# ============================================================
-# 1. Supabase 連線
-# ============================================================
 def _database_url():
     url = os.getenv("SUPABASE_DB_URL", "").strip()
     if not url:
@@ -92,7 +74,7 @@ def _engine():
                 )
             """))
     except Exception as e:
-        _log(f"建立 {OUTBOX_TABLE} 失敗（若資料表已存在可忽略）：{e}")
+        _log(f"建立 {OUTBOX_TABLE} 失敗：{e}")
     try:
         with engine.begin() as conn:
             conn.execute(text(
@@ -112,16 +94,12 @@ def _engine():
     return engine
 
 
-# ============================================================
-# 2. 訊號寫入 / 讀取 strategy_signal_outbox
-# ============================================================
 @st.cache_resource
 def _saved_outbox_cache():
     return set()
 
 
 def save_all_signals_to_outbox(tf, view_df):
-    """有訊號（且已有止損/止盈）就寫入 strategy_signal_outbox；已寫過的不重複寫。"""
     try:
         sigs = view_df[view_df["Long_Signal"] | view_df["Short_Signal"]]
         sigs = sigs[sigs["Stop_Loss"].notna() & sigs["Take_Profit"].notna()]
@@ -157,7 +135,7 @@ def save_all_signals_to_outbox(tf, view_df):
                 """),
                 rows,
             )
-        cache.update(keys)  # 寫入成功後才記錄，失敗的下次會重試
+        cache.update(keys)
     except Exception as e:
         _log(f"寫入 {OUTBOX_TABLE} 失敗：{e}")
 
@@ -211,9 +189,6 @@ def _load_outbox_signals(tf, since_time):
         return {}
 
 
-# ============================================================
-# 3. K 線資料
-# ============================================================
 def load_historical_data(tf=None, days=95):
     try:
         cols = "timeframe, open_time, open_price, high_price, low_price, close_price, volume"
@@ -251,9 +226,70 @@ def load_historical_data(tf=None, days=95):
     return df.dropna(subset=["open_time", "open_price", "high_price", "low_price", "close_price", "volume"])
 
 
-# ============================================================
-# 4. 指標與策略
-# ============================================================
+def detect_chart_patterns(df):
+    """識別交易型態：W底、頭肩頂、M頂、頭肩底、收斂三角、上漲旗型、下跌旗型"""
+    df = df.copy()
+    n = len(df)
+    
+    w_bottom = np.zeros(n)
+    m_top = np.zeros(n)
+    hs_bottom = np.zeros(n)
+    hs_top = np.zeros(n)
+    triangle = np.zeros(n)
+    bull_flag = np.zeros(n)
+    bear_flag = np.zeros(n)
+    
+    if n >= 35:
+        highs = df["high_price"].values
+        lows = df["low_price"].values
+        closes = df["close_price"].values
+        
+        for i in range(30, n):
+            h_sub = highs[i-30:i+1]
+            l_sub = lows[i-30:i+1]
+            c_sub = closes[i-30:i+1]
+            
+            recent_lows_idx = np.argsort(l_sub[:25])[:3]
+            if len(recent_lows_idx) >= 2:
+                sorted_idx = sorted(recent_lows_idx)
+                if abs(l_sub[sorted_idx[0]] - l_sub[sorted_idx[1]]) / l_sub[sorted_idx[0]] < 0.008:
+                    w_bottom[i] = 1.0
+                if len(sorted_idx) >= 3 and l_sub[sorted_idx[1]] < l_sub[sorted_idx[0]] and l_sub[sorted_idx[1]] < l_sub[sorted_idx[2]]:
+                    hs_bottom[i] = 1.0
+
+            recent_highs_idx = np.argsort(h_sub[:25])[-3:]
+            if len(recent_highs_idx) >= 2:
+                sorted_idx = sorted(recent_highs_idx)
+                if abs(h_sub[sorted_idx[0]] - h_sub[sorted_idx[1]]) / h_sub[sorted_idx[0]] < 0.008:
+                    m_top[i] = 1.0
+                if len(sorted_idx) >= 3 and h_sub[sorted_idx[1]] > h_sub[sorted_idx[0]] and h_sub[sorted_idx[1]] > h_sub[sorted_idx[2]]:
+                    hs_top[i] = 1.0
+
+            h_std = np.std(h_sub[-15:])
+            l_std = np.std(l_sub[-15:])
+            if h_std < np.std(h_sub[:15]) * 0.7 and l_std < np.std(l_sub[:15]) * 0.7:
+                triangle[i] = 1.0
+
+            price_change_prev = (c_sub[10] - c_sub[0]) / c_sub[0]
+            flag_range_std = np.std(c_sub[10:])
+            if price_change_prev > 0.02 and flag_range_std < np.std(c_sub[:10]) * 0.8:
+                bull_flag[i] = 1.0
+            elif price_change_prev < -0.02 and flag_range_std < np.std(c_sub[:10]) * 0.8:
+                bear_flag[i] = 1.0
+
+    df["pattern_W_Bottom"] = w_bottom
+    df["pattern_M_Top"] = m_top
+    df["pattern_HS_Bottom"] = hs_bottom
+    df["pattern_HS_Top"] = hs_top
+    df["pattern_Triangle"] = triangle
+    df["pattern_Bull_Flag"] = bull_flag
+    df["pattern_Bear_Flag"] = bear_flag
+    
+    df["pattern_bullish_score"] = w_bottom + hs_bottom + triangle * 0.5 + bull_flag
+    df["pattern_bearish_score"] = m_top + hs_top + triangle * 0.5 + bear_flag
+    return df
+
+
 def calculate_trendline_channel(df, window=30, num_dev=1.8):
     df = df.copy()
     close = df["close_price"].astype(float).values
@@ -291,6 +327,7 @@ def calculate_indicators(df, tf):
     win = 20 if tf in ["5m", "15m"] else 40
     dev = 1.5 if tf in ["5m", "15m"] else 2.0
     df = calculate_trendline_channel(df, win, dev)
+    df = detect_chart_patterns(df)
 
     delta = df["close_price"].diff()
     gain = delta.where(delta > 0, 0).rolling(14).mean()
@@ -423,14 +460,14 @@ def build_candidate_signals(df, tf, higher_tf_dfs=None):
 
     df["Rule1_Long_Break"] = (df["close_price"] > df["Trend_Resistance"] * 0.998) & (df["close_price"] > df["open_price"])
     df["Base_Long"] = (
-        (df["Rule1_Long_Break"] | (df["close_price"] > df["EMA_21"])) & (df["Body_Ratio"] > body_min)
+        (df["Rule1_Long_Break"] | (df["close_price"] > df["EMA_21"]) | (df["pattern_bullish_score"] > 0)) & (df["Body_Ratio"] > body_min)
         & df["RSI"].between(rsi_l_min, rsi_l_max) & (df["volume"] > df["Vol_SMA20"] * vol_mult)
         & macro_long_filter & ema_long_ok & htf_long_ok & close_strong_long & not_chasing_long
     )
 
     df["Rule1_Short_Break"] = (df["close_price"] < df["Trend_Support"] * 1.002) & (df["close_price"] < df["open_price"])
     df["Base_Short"] = (
-        (df["Rule1_Short_Break"] | (df["close_price"] < df["EMA_21"])) & (df["Body_Ratio"] > body_min)
+        (df["Rule1_Short_Break"] | (df["close_price"] < df["EMA_21"]) | (df["pattern_bearish_score"] > 0)) & (df["Body_Ratio"] > body_min)
         & df["RSI"].between(rsi_s_min, rsi_s_max) & (df["volume"] > df["Vol_SMA20"] * vol_mult)
         & macro_short_filter & ema_short_ok & htf_short_ok & close_strong_short & not_chasing_short
     )
@@ -656,19 +693,8 @@ def remember_and_apply_signals(view_df, tf):
     return view_df
 
 
-# ============================================================
-# 5. 給背景自動下單執行緒使用的訊號計算（流程與圖表完全相同）
-# ============================================================
 def compute_signals(tf="5m", user_thresh=45, trade_style="平衡", days=30, save_outbox=False,
                     apply_outbox_memory=True):
-    """回傳已含 Long_Signal / Short_Signal / Stop_Loss / Take_Profit 的 DataFrame；讀不到資料回傳空表。
-
-    流程與圖表 (_build_chart_bundle) 完全一致，確保「下單訊號 = 圖上看到的訊號」：
-      載入 days+5 天資料 → 只保留最近 days 天的 tf K 線 → 指標 → 候選訊號 → AI 過濾
-      → (save_outbox) 寫入 outbox → (apply_outbox_memory) 套用 outbox 已記住的訊號
-      → 補止損/止盈 → 每波只留一個訊號
-    days 請傳使用者設定的「回測與分析歷史天數」。
-    """
     days = int(days)
     df_all = load_historical_data(None, days=max(days + 5, 14))
     if df_all.empty:
@@ -697,9 +723,6 @@ def compute_signals(tf="5m", user_thresh=45, trade_style="平衡", days=30, save
     return df_tf
 
 
-# ============================================================
-# 6. 圖表
-# ============================================================
 def is_mobile_client():
     try:
         ua = str(st.context.headers.get("User-Agent", "")).lower()
@@ -732,7 +755,6 @@ def _build_chart_bundle(df_all_tf, tf, user_thresh=45, trade_style="平衡", bt_
     if view_df.empty:
         return None
 
-    # 有訊號 → 寫入 Supabase strategy_signal_outbox
     if st.session_state.get("auth_user") == OUTBOX_WRITER_USER:
         save_all_signals_to_outbox(tf, view_df)
     view_df = remember_and_apply_signals(view_df, tf)
@@ -748,7 +770,6 @@ def _build_chart_bundle(df_all_tf, tf, user_thresh=45, trade_style="平衡", bt_
 
     mobile = is_mobile_client()
     display_len = 40 if mobile else 85
-    # 手機：只把最近 300 根送到瀏覽器（指標、訊號、回測仍用完整 view_df 計算）；桌機維持完整資料
     plot_df = view_df.iloc[-300:] if mobile else view_df
     if len(view_df) > display_len:
         start_time = view_df["open_time"].iloc[-display_len]
@@ -1034,7 +1055,6 @@ def _render_live_kline_chart(tf, trade_panel=None):
                     )
                 st.markdown("".join(cards), unsafe_allow_html=True)
 
-    # 回測報表：桌機直接顯示；手機改為開關（預設關閉，開啟才計算與繪製）
     if is_mobile_client():
         if st.toggle("📊 顯示進階策略績效回測報表", value=False, key=f"{SYMBOL.lower()}_show_backtest"):
             render_backtest_analytics(view_df)
@@ -1052,9 +1072,5 @@ def _live_fragment(tf, trade_panel):
     _inner()
 
 
-# ============================================================
-# 7. 對外入口（主程式只呼叫這個）
-# ============================================================
 def render(tf, trade_panel=None):
-    """顯示 K 線圖（桌機每 15 秒、手機每 30 秒自動更新）。trade_panel 為主程式的自動下單面板函式 (可省略)。"""
     _live_fragment(tf, trade_panel)
