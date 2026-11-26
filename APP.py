@@ -1552,7 +1552,7 @@ def get_db_engine():
         with engine.begin() as conn:
             conn.execute(text("CREATE INDEX IF NOT EXISTS idx_btc_klines_tf_time ON btc_contract_klines (timeframe, open_time DESC);"))
             conn.execute(text("CREATE INDEX IF NOT EXISTS idx_eth_klines_tf_time ON eth_contract_klines (timeframe, open_time DESC);"))
-            conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS idx_outbox_sym_tf_time ON strategy_signal_outbox (symbol, timeframe, signal_time_taipei);"))
+            conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS idx_outbox_sym_tf_time ON strategy_singal_outbox (symbol, timeframe, signal_time_taipei);"))
     except Exception:
         pass
     return engine
@@ -1594,7 +1594,7 @@ def save_all_signals_to_outbox(symbol, tf, view_df):
         with engine.begin() as conn:
             conn.execute(
                 text("""
-                    INSERT INTO strategy_signal_outbox
+                    INSERT INTO strategy_singal_outbox
                         (symbol, timeframe, signal_time_taipei, direction, entry_price, stop_loss, take_profit)
                     VALUES (:sym, :tf, :t0, :d, :e, :sl, :tp)
                     ON CONFLICT DO NOTHING
@@ -1611,7 +1611,7 @@ def outbox_stamp(symbol, tf):
         engine = get_db_engine()
         with engine.connect() as conn:
             r = conn.execute(
-                text("SELECT COUNT(*), MAX(id) FROM strategy_signal_outbox "
+                text("SELECT COUNT(*), MAX(id) FROM strategy_singal_outbox "
                      "WHERE UPPER(symbol) LIKE :sym AND LOWER(timeframe) = :tf"),
                 {"sym": str(symbol).upper() + "%", "tf": str(tf).lower()},
             ).fetchone()
@@ -1628,7 +1628,7 @@ def load_outbox_signals(symbol, tf, since_time):
             df = pd.read_sql(
                 text("""
                     SELECT signal_time_taipei, direction, entry_price, stop_loss, take_profit
-                    FROM strategy_signal_outbox
+                    FROM strategy_singal_outbox
                     WHERE UPPER(symbol) LIKE :sym AND LOWER(timeframe) = :tf
                     ORDER BY id DESC LIMIT 500
                 """),
