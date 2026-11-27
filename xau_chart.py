@@ -33,7 +33,7 @@ PAIR = "XAU-USDT-SWAP"
 TABLE = "xau_contract_klines"
 
 # K 棒高度調整：數值越大 → Y 軸顯示範圍越寬 → K 棒越矮（原本 0.55；想更矮就調大，例如 1.2）
-CANDLE_Y_SCALE = 1.0
+CANDLE_Y_SCALE = 0.6  # smaller = taller candles (Y-axis zoom); 1.0 = original
 
 TAIWAN_TZ = ZoneInfo("Asia/Taipei")
 TF_STEP = {"5m": "5min", "15m": "15min", "1h": "1h", "4h": "4h"}
