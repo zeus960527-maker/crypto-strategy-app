@@ -19,7 +19,7 @@ SYMBOL = "BTC"
 PAIR = "BTC-USDT-SWAP"
 TABLE = "btc_contract_klines"
 
-CANDLE_Y_SCALE = 0.6  # smaller = taller candles (Y-axis zoom); 1.0 = original
+CANDLE_Y_SCALE = 1.0  # Y 軸留白倍率：1.0 = 最高/最低價剛好貼齊圖表上下緣；越小 K 線越高（會裁切），越大越矮
 
 TAIWAN_TZ = ZoneInfo("Asia/Taipei")
 TF_STEP = {"5m": "5min", "15m": "15min", "1h": "1h", "4h": "4h"}
@@ -824,8 +824,8 @@ def _build_chart_bundle(df_all_tf, tf, user_thresh=45, trade_style="平衡", bt_
 
     low, high = visible_df["low_price"].min(), visible_df["high_price"].max()
     span = max(high - low, abs(high) * 0.001, 1e-8)
-    center_y = (float(latest["high_price"]) + float(latest["low_price"])) / 2
-    half = max(high - center_y, center_y - low, span * 0.05) * CANDLE_Y_SCALE
+    center_y = (high + low) / 2  # 以可見範圍的高低點置中，K 線整體位於圖表正中
+    half = max(span / 2, abs(high) * 0.0005) * CANDLE_Y_SCALE
     y_range = [center_y - half, center_y + half]
     change_pct = ((latest_close - latest["open_price"]) / latest["open_price"] * 100) if latest["open_price"] else 0
     status_color = "#0ECB81" if latest["close_price"] >= latest["open_price"] else "#F6465D"
