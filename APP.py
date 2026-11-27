@@ -23,15 +23,9 @@ from datetime import datetime, timedelta, timezone
 # ---- 幣種 K 線模組（BTC / ETH / XAU 各自獨立）----
 import btc_chart
 import eth_chart
+import xau_chart
 
-COIN_MODULES = {"BTC": btc_chart, "ETH": eth_chart}
-
-# XAU（黃金）模組：需要 xau_chart.py（介面與 eth_chart.py 相同）
-try:
-    import xau_chart
-    COIN_MODULES["XAU"] = xau_chart
-except Exception:
-    xau_chart = None
+COIN_MODULES = {"BTC": btc_chart, "ETH": eth_chart, "XAU": xau_chart}
 
 # 搜尋別名 -> 幣種代碼
 COIN_ALIASES = {"BTC": "BTC", "ETH": "ETH", "XAU": "XAU", "GOLD": "XAU", "黃金": "XAU", "黄金": "XAU"}
