@@ -6,6 +6,8 @@
 
 背景自動下單執行緒取得 5m 訊號：
     df = xau_chart.compute_signals("5m", user_thresh, trade_style, days=backtest_days)
+  （預設 save_outbox=True：背景執行緒取得訊號時會同步寫入 strategy_signal_outbox，不需有人登入 zeus；
+   若只想讀取不寫入，請明確傳入 save_outbox=False）
 
 本模組內含 XAU 專屬的全部功能：
   讀取 K 線 → 指標 → 交易型態識別 → 候選訊號 → AI(LightGBM) 過濾 → AI 智慧止損/止盈 → 畫圖
@@ -770,7 +772,7 @@ def remember_and_apply_signals(view_df, tf):
     return view_df
 
 
-def compute_signals(tf="5m", user_thresh=45, trade_style="平衡", days=30, save_outbox=False,
+def compute_signals(tf="5m", user_thresh=45, trade_style="平衡", days=30, save_outbox=True,
                     apply_outbox_memory=True):
     days = int(days)
     df_all = load_historical_data(None, days=max(days + 5, 14))
