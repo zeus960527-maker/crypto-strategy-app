@@ -521,6 +521,24 @@ def _acct_engine():
                 UNIQUE (username, exchange, symbol, timeframe, signal_time)
             )
         """))
+
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS position_guard (
+                id BIGSERIAL PRIMARY KEY,
+                username TEXT NOT NULL,
+                exchange TEXT NOT NULL,
+                pair TEXT NOT NULL,
+                direction TEXT NOT NULL,
+                entry DOUBLE PRECISION NOT NULL,
+                init_sl DOUBLE PRECISION NOT NULL,
+                cur_sl DOUBLE PRECISION NOT NULL,
+                tp DOUBLE PRECISION,
+                best DOUBLE PRECISION NOT NULL,
+                status TEXT NOT NULL DEFAULT 'open',
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+        """))
     return engine
 
 
@@ -1165,6 +1183,236 @@ def _render_order_log(user):
         st.dataframe(df, width="stretch", hide_index=True)
 
 
+# ======================================================================
+#  持倉守護：止損保護 (protect_sl) / 移動止損 (trailing_stop)
+#  - 下單成功後登記到 position_guard，由背景執行緒定期檢查並調整交易所上的止損單
+#  - 開關每個週期都會重新讀取使用者設定，開／關立即對「已持有的倉位」生效
+# ======================================================================
+PROTECT_TRIGGER_R = 1.0     # 浮盈達 1R 時，止損保護把 SL 移到進場價（保本）
+PROTECT_BUFFER_PCT = 0.0010  # 保本價再多留 0.10%，用來覆蓋手續費
+TRAIL_ACTIVATE_R = 1.0      # 浮盈達 1R 後，移動止損開始啟動
+TRAIL_DISTANCE_R = 1.0      # 移動止損與最佳價格保持 1R 的距離
+MIN_SL_GAP_PCT = 0.0005     # 新 SL 與現價至少相距 0.05%，避免交易所因「觸發價已越過」而拒單
+GUARD_INTERVAL_SEC = 10     # 守護檢查週期（秒）
+GUARD_CLOSE_GRACE_SEC = 60  # 剛下單後這段時間內查不到持倉，不視為已平倉
+
+
+def _guard_register(user, exchange, pair, direction, entry, sl, tp):
+    with _acct_engine().begin() as conn:
+        conn.execute(
+            text("""
+                INSERT INTO position_guard (username, exchange, pair, direction, entry, init_sl, cur_sl, tp, best)
+                VALUES (:u, :ex, :p, :d, :e, :sl, :sl, :tp, :e)
+            """),
+            {"u": user, "ex": exchange, "p": pair, "d": direction,
+             "e": float(entry), "sl": float(sl), "tp": float(tp)},
+        )
+
+
+def _guard_open_rows():
+    with _acct_engine().connect() as conn:
+        rows = conn.execute(text("""
+            SELECT g.id, g.username, g.exchange, g.pair, g.direction, g.entry, g.init_sl,
+                   g.cur_sl, g.tp, g.best, g.created_at, u.settings_json
+            FROM position_guard g JOIN app_users u ON u.username = g.username
+            WHERE g.status = 'open'
+        """)).mappings().all()
+    return [dict(r) for r in rows]
+
+
+def _guard_update(guard_id, **fields):
+    if not fields:
+        return
+    allowed = {"entry", "cur_sl", "best", "status"}
+    sets = ", ".join(f"{k} = :{k}" for k in fields if k in allowed)
+    params = {k: v for k, v in fields.items() if k in allowed}
+    params["i"] = guard_id
+    with _acct_engine().begin() as conn:
+        conn.execute(text(f"UPDATE position_guard SET {sets}, updated_at = now() WHERE id = :i"), params)
+
+
+def _calc_guard_sl(is_long, entry, init_sl, best, protect, trailing):
+    """依兩個開關計算「理想止損價」；沒有達到啟動條件時回傳 None。"""
+    r = abs(entry - init_sl)
+    if r <= 0:
+        return None
+    sign = 1 if is_long else -1
+    gain_r = sign * (best - entry) / r
+    cands = []
+    if protect and gain_r >= PROTECT_TRIGGER_R:
+        cands.append(entry + sign * entry * PROTECT_BUFFER_PCT)
+    if trailing and gain_r >= TRAIL_ACTIVATE_R:
+        cands.append(best - sign * r * TRAIL_DISTANCE_R)
+    if not cands:
+        return None
+    return max(cands) if is_long else min(cands)
+
+
+def get_open_position(exchange, creds, demo, pair):
+    """回傳 {'is_long','entry','qty','id'}；查詢成功但沒有持倉時回傳 None。"""
+    if exchange == "OKX":
+        data = _okx_request("GET", "/api/v5/account/positions", creds,
+                            params={"instType": "SWAP", "instId": pair}, demo=demo)
+        for p in data:
+            pos = float(p.get("pos") or 0)
+            if abs(pos) > 0:
+                ps = p.get("posSide")
+                is_long = (ps == "long") if ps in ("long", "short") else pos > 0
+                return {"is_long": is_long, "entry": float(p.get("avgPx") or 0), "qty": abs(pos), "id": None}
+        return None
+    elif exchange == "Bitunix":
+        data = _bitunix_request("GET", "/api/v1/futures/position/get_pending_positions", creds,
+                                params={"symbol": _bitunix_symbol(pair)})
+        if isinstance(data, dict):
+            data = data.get("positionList") or data.get("list") or ([data] if data else [])
+        for p in data or []:
+            qty = float(p.get("qty") or 0)
+            if abs(qty) > 0:
+                entry = float(p.get("avgOpenPrice") or p.get("entryPrice") or 0)
+                return {"is_long": str(p.get("side", "")).upper() == "BUY", "entry": entry,
+                        "qty": abs(qty), "id": p.get("positionId")}
+        return None
+    elif exchange == "BingX":
+        data = _bingx_request("GET", "/openApi/swap/v2/user/positions", creds,
+                              params={"symbol": _bingx_symbol(pair)})
+        if isinstance(data, dict):
+            data = data.get("positions") or []
+        for p in data or []:
+            amt = float(p.get("positionAmt") or 0)
+            if abs(amt) > 0:
+                is_long = str(p.get("positionSide", "")).upper() == "LONG" if p.get("positionSide") in ("LONG", "SHORT") else amt > 0
+                return {"is_long": is_long, "entry": float(p.get("avgPrice") or 0),
+                        "qty": abs(amt), "id": p.get("positionId")}
+        return None
+    raise ExchangeError(f"未知的交易所：{exchange}")
+
+
+def get_last_price(exchange, creds, demo, pair):
+    if exchange == "OKX":
+        data = _okx_request("GET", "/api/v5/market/ticker", params={"instId": pair})
+        return float(data[0]["last"])
+    elif exchange == "Bitunix":
+        data = _bitunix_request("GET", "/api/v1/futures/market/tickers", params={"symbols": _bitunix_symbol(pair)})
+        row = data[0] if isinstance(data, list) and data else data
+        return float(row.get("lastPrice") or row.get("last") or row.get("markPrice"))
+    elif exchange == "BingX":
+        data = _bingx_request("GET", "/openApi/swap/v2/quote/price", params={"symbol": _bingx_symbol(pair)})
+        row = data[0] if isinstance(data, list) and data else data
+        return float(row.get("price"))
+    raise ExchangeError(f"未知的交易所：{exchange}")
+
+
+def modify_stop_loss(exchange, creds, demo, pair, is_long, new_sl, tp, tick, pos):
+    """把交易所上該持倉的止損單改成 new_sl（止盈維持不變）。"""
+    sl_s = _fmt_px(new_sl, tick)
+
+    if exchange == "OKX":
+        algos = []
+        for ord_type in ("oco", "conditional"):
+            try:
+                algos += _okx_request("GET", "/api/v5/trade/orders-algo-pending", creds,
+                                      params={"ordType": ord_type, "instType": "SWAP", "instId": pair}, demo=demo)
+            except ExchangeError:
+                pass
+        want = "long" if is_long else "short"
+        done = 0
+        for a in algos:
+            if not a.get("slTriggerPx"):
+                continue
+            if a.get("posSide") in ("long", "short") and a.get("posSide") != want:
+                continue
+            _okx_request("POST", "/api/v5/trade/amend-algos", creds, demo=demo, body={
+                "instId": pair, "algoId": a["algoId"],
+                "newSlTriggerPx": sl_s, "newSlOrdPx": "-1", "newSlTriggerPxType": "last",
+            })
+            done += 1
+        if not done:
+            raise ExchangeError("OKX 找不到該持倉的止損單，無法調整。")
+
+    elif exchange == "Bitunix":
+        symbol = _bitunix_symbol(pair)
+        body = {"symbol": symbol, "positionId": pos.get("id"),
+                "slPrice": sl_s, "slStopType": "LAST_PRICE"}
+        if tp:
+            body.update({"tpPrice": _fmt_px(tp, tick), "tpStopType": "LAST_PRICE"})
+        try:
+            _bitunix_request("POST", "/api/v1/futures/tpsl/position/modify_order", creds, body=body)
+        except ExchangeError:
+            _bitunix_request("POST", "/api/v1/futures/tpsl/position/place_order", creds, body=body)
+
+    elif exchange == "BingX":
+        symbol = _bingx_symbol(pair)
+        side_str = "LONG" if is_long else "SHORT"
+        data = _bingx_request("GET", "/openApi/swap/v2/trade/openOrders", creds, params={"symbol": symbol})
+        orders = data.get("orders", []) if isinstance(data, dict) else (data or [])
+        old = [o for o in orders
+               if str(o.get("type", "")).upper().startswith("STOP")
+               and str(o.get("positionSide", "")).upper() == side_str]
+        # 先掛新的、再撤舊的：中間不會出現沒有止損的空窗
+        _bingx_request("POST", "/openApi/swap/v2/trade/order", creds, body={
+            "symbol": symbol, "side": "SELL" if is_long else "BUY", "positionSide": side_str,
+            "type": "STOP_MARKET", "quantity": format(Decimal(str(pos["qty"])).normalize(), "f"),
+            "stopPrice": float(sl_s), "workingType": "MARK_PRICE",
+        })
+        for o in old:
+            try:
+                _bingx_request("DELETE", "/openApi/swap/v2/trade/order", creds,
+                               params={"symbol": symbol, "orderId": o.get("orderId")})
+            except Exception as e:
+                _tw_log(f"BingX 撤銷舊止損單失敗 {o.get('orderId')}：{e}")
+    else:
+        raise ExchangeError(f"未知的交易所：{exchange}")
+
+
+def _guard_tick(g, s, creds):
+    """處理單一守護紀錄：回報價格、必要時上調止損。"""
+    ex, pair = g["exchange"], g["pair"]
+    demo = bool(s.get("demo")) and ex == "OKX"
+    is_long = g["direction"] == "LONG"
+
+    pos = get_open_position(ex, creds, demo, pair)
+    if pos is None:
+        age = (datetime.now(timezone.utc) - g["created_at"]).total_seconds()
+        if age > GUARD_CLOSE_GRACE_SEC:
+            _guard_update(g["id"], status="closed")
+            _tw_log(f"{g['username']} {ex} {pair} 持倉已結束，停止守護")
+        return
+    if pos["is_long"] != is_long:
+        return  # 目前持倉方向與紀錄不同，不是這張單
+
+    entry = pos["entry"] or g["entry"]
+    price = get_last_price(ex, creds, demo, pair)
+    best = max(g["best"], price) if is_long else min(g["best"], price)
+
+    target = _calc_guard_sl(
+        is_long, entry, g["init_sl"], best,
+        bool(s.get("protect_sl")), bool(s.get("trailing_stop")),
+    )
+    if target is None:
+        if best != g["best"] or abs(entry - g["entry"]) > 0:
+            _guard_update(g["id"], best=best, entry=entry)
+        return
+
+    inst = get_exchange_instrument(ex, pair)
+    tick = float(inst.get("tickSz") or 0.1)
+    r = abs(entry - g["init_sl"])
+
+    gap = price * MIN_SL_GAP_PCT
+    target = min(target, price - gap) if is_long else max(target, price + gap)
+
+    cur = g["cur_sl"]
+    step = max(tick, r * 0.1)
+    improved = (target - cur >= step) if is_long else (cur - target >= step)
+    if not improved:
+        _guard_update(g["id"], best=best, entry=entry)
+        return
+
+    modify_stop_loss(ex, creds, demo, pair, is_long, target, g["tp"], tick, pos)
+    new_sl = float(_fmt_px(target, tick))
+    _guard_update(g["id"], best=best, entry=entry, cur_sl=new_sl)
+    _tw_log(f"{g['username']} {ex} {pair} {g['direction']} 止損 {cur} → {new_sl}（現價 {price}）")
+
+
 def _tw_log(msg):
     try:
         print(f"[trade-worker] {datetime.now(TAIWAN_TZ).strftime('%m-%d %H:%M:%S')} {msg}", flush=True)
@@ -1243,6 +1491,11 @@ def _start_background_trade_worker():
                 )
                 _finish_order(order_id, "success", detail)
                 _tw_log(f"{user} {exchange} {sig['sym']} {sig['direction']} 成功：{detail}")
+                try:
+                    _guard_register(user, exchange, sig["pair"], sig["direction"],
+                                    sig["price"], sig["sl"], sig["tp"])
+                except Exception as e:
+                    _tw_log(f"{user} {sig['sym']}: 登記持倉守護失敗（止損保護/移動止損不會生效）：{e}")
             except OrderSkip as e:
                 _finish_order(order_id, "skipped", str(e))
                 _tw_log(f"{user} {exchange} {sig['sym']} 略過：{e}")
@@ -1291,8 +1544,35 @@ def _start_background_trade_worker():
             except Exception as e:
                 _tw_log(f"worker 迴圈錯誤：{e}")
 
-    t = threading.Thread(target=_worker_loop, daemon=True, name="background-trade-worker")
-    t.start()
+    def _guard_loop():
+        _tw_log("持倉守護執行緒已啟動")
+        while True:
+            time.sleep(GUARD_INTERVAL_SEC)
+            try:
+                rows = _guard_open_rows()
+                cred_cache = {}
+                for g in rows:
+                    try:
+                        s = _load_settings(g["settings_json"])
+                        if not (s.get("protect_sl") or s.get("trailing_stop")):
+                            continue
+                        ck = (g["username"], g["exchange"])
+                        if ck not in cred_cache:
+                            try:
+                                cred_cache[ck] = _get_exchange_creds(g["username"], g["exchange"])
+                            except Exception:
+                                cred_cache[ck] = {}
+                        creds = cred_cache[ck]
+                        if not creds.get("key") or not creds.get("secret"):
+                            continue
+                        _guard_tick(g, s, creds)
+                    except Exception as e:
+                        _tw_log(f"{g['username']} {g['pair']}: 持倉守護失敗：{e}")
+            except Exception as e:
+                _tw_log(f"guard 迴圈錯誤：{e}")
+
+    threading.Thread(target=_worker_loop, daemon=True, name="background-trade-worker").start()
+    threading.Thread(target=_guard_loop, daemon=True, name="position-guard-worker").start()
     return True
 
 
@@ -1508,7 +1788,11 @@ def render_settings_popover(user):
             auto = st.toggle("啟用自動下單", value=bool(s["auto_trade"]))
             demo = st.toggle("使用模擬盤 (僅 OKX 支援)", value=bool(s["demo"]))
 
-            trailing = st.toggle("🛡️ 啟用智慧移動止損 (Trailing Stop)", value=bool(s.get("trailing_stop", True)))
+            trailing = st.toggle(
+                "🛡️ 啟用智慧移動止損 (Trailing Stop)", value=bool(s.get("trailing_stop", True)),
+                help="浮盈達 1R（R＝進場價到原始止損的距離）後啟動，止損價會跟著最有利價格上移（多單）或下移（空單），"
+                     "始終保持 1R 的距離，只會往有利方向移動。對已持有的倉位也會生效。",
+            )
 
             td_current = s.get("td_mode", "逐倉")
             if td_current not in ["逐倉", "全倉"]:
@@ -1527,7 +1811,11 @@ def render_settings_popover(user):
 
             maxlev = st.toggle("使用最大槓桿", value=bool(s["use_max_lever"]))
             manual = st.number_input("自訂槓桿", 1, 125, int(s["manual_lever"]))
-            protect = st.toggle("止損保護", value=bool(s["protect_sl"]))
+            protect = st.toggle(
+                "止損保護", value=bool(s["protect_sl"]),
+                help="浮盈達 1R 時，自動把止損移到進場價上方（空單為下方）0.1%（保本＋覆蓋手續費），只執行一次。"
+                     "與移動止損同時開啟時，以較有利者為準。",
+            )
 
             st.markdown("---")
             st.markdown("#### 🎛️ AI 策略與過濾參數")
